@@ -8,7 +8,7 @@ export const citySchemaMap = {
   gorakhpur: "gorakhpur",
   jhansi: "jhansi",
   kanpur: "kanpur",
-  lucknow: "public" , //luknow: "lucknow" change,
+  lucknow: "lucknow",
   mathura: "mathura",
   meerut: "meerut",
   moradabad: "moradabad",
@@ -29,8 +29,6 @@ export const getWardTable = (city) => {
   const c = city.toLowerCase();
   const schema = citySchemaMap[c];
   if (!schema) throw new Error(`Invalid city schema for ${city}`);
-  // Special case for lucknow if needed, otherwise generic
-  if (c === 'lucknow') return 'public.lucknow_ward_boundary'; 
   return `${schema}.${c}_ward_boundary`;
 };
 
@@ -46,21 +44,6 @@ export const getAmenityTable = (city, amenityType) => {
   const c = city.toLowerCase();
   const schema = citySchemaMap[c];
   if (!schema) throw new Error(`Invalid city schema for ${city}`);
-  if (c === "lucknow" && amenityType === "education") {
-    return "public.education";
-  }
-  if (c === "lucknow" && amenityType === "hospital") {
-    return "public.hospital";
-  }
-  if (c === "lucknow" && (amenityType === "bank" || amenityType === "atm_bank")) {
-    return "public.atm_bank";
-  }
-  if (c === "lucknow" && amenityType === "hotel") {
-    return "public.hotel";
-  }
-  if (c === "lucknow" && amenityType === "park") {
-    return "public.park";
-  }
 
   const isCitySchema = schema !== 'public';
 
