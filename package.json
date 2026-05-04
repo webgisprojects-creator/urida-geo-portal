@@ -23,7 +23,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "git+ssh://git@github.com/webgisprojects-creator/urida-geo-portal.git"
   },
   "license": "UNLICENSED"
 }
