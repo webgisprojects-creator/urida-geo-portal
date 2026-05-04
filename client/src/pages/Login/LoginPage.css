@@ -1,0 +1,601 @@
+/* Reset + Base */
+* {
+  box-sizing: border-box;
+}
+
+body,
+html {
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  min-height: 100%;
+  height: 100%;
+  overflow-x: hidden;
+}
+
+html.login-page,
+body.login-page,
+#root.login-page {
+  height: 100%;
+  overflow-y: auto;
+}
+
+.login-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: linear-gradient(white, #e9d7a4);
+}
+
+/* Header Native */
+.header-native {
+  background: linear-gradient(white, #f9f4ed);
+  padding: 5px 0;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  height: auto;
+}
+
+.header-native picture img {
+  width: 100%;
+  max-width: 1907px;
+  height: auto;
+  max-height: 10vh;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
+}
+
+/* Page Title Context */
+.page-title-container {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  /* Since the left col (400) vs right col (300) is offset in the main content beneath it,
+     a raw centered text looks skewed relative to the road image itself.
+     We inject the exact 50px delta padding to true-center it visually. */
+  padding-left: 100px;
+}
+
+/* Page Title */
+.page-title {
+  text-align: center;
+  color: #ff6a00;
+  margin: 15px 0 15px;
+  font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif;
+  font-size: clamp(28px, 3vw, 36px);
+  /* Very large! */
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 0;
+}
+
+/* Main Layout */
+.main-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: stretch;
+  max-width: 1950px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 20px 30px;
+  gap: 20px;
+  flex: 1;
+}
+
+/* Left Side - Yogi Ji */
+.left-side {
+  flex: 0 0 400px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  /* Matches road image alignment perfectly */
+  position: relative;
+  width: 100%;
+}
+
+.left-side .img-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 380px;
+  max-height: 646px;
+  /* Do not allow infinite zoom blowout on 2K monitors */
+  /* Allows Yogi to shrink naturally on laptops instead of breaking out */
+  aspect-ratio: 380 / 646;
+  /* mathematically guaranteed to preserve the squashed oval proportions */
+  overflow: hidden;
+  border-radius: 50%;
+  border: 4px solid #fff;
+  background-color: #fff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  margin: 0 auto;
+}
+
+.left-side .img-wrap img {
+  width: 100%;
+  height: 98%;
+  /* Slightly shy of 100% to ensure top fingers don't graze the top white curve */
+  object-fit: fill;
+  /* Allows the image to squeeze its thinness matching the oval */
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  transition: transform 0.3s ease;
+}
+
+.left-side .img-wrap:hover img {
+  transform: translate(-50%, -50%) scale(1.05);
+}
+
+/* Explicitly target ONLY left side caption */
+.left-side .img-wrap .img-caption {
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  background: rgb(255 141 0);
+  color: #fff;
+  padding: 15px 5px 35px 5px;
+  /* Deep pad covers bottom curve completely */
+  text-align: center;
+  line-height: 1.2;
+}
+
+/* Center - Road Image + Button */
+.center-form {
+  flex: 1 1 600px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  /* Align directly to top */
+  align-items: center;
+}
+
+.road-image-wrapper {
+  position: relative;
+  width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+}
+
+.road-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 646px;
+  /* Lock height on ultra-wide monitors */
+  aspect-ratio: 600 / 646;
+  /* Syncs natively with the scale of Yogi to preserve exact symmetry at all widths */
+  object-fit: cover;
+}
+
+.login-button {
+  position: absolute;
+  bottom: 8%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--color-primary);
+  color: #fff;
+  border: none;
+  padding: clamp(10px, 1.5vw, 15px) clamp(20px, 3vw, 35px);
+  font-size: clamp(14px, 1.2vw, 18px);
+  font-weight: 700;
+  border-radius: 50px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(255, 123, 0, 0.3);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.login-button:hover {
+  background: var(--color-primary-700);
+  transform: translateX(-50%) translateY(-2px);
+  box-shadow: 0 6px 20px rgba(255, 123, 0, 0.4);
+}
+
+/* Right - Minister Cards Grid */
+.right-side {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  max-height: 646px;
+  /* Absolute lock corresponding to Yogi/Center Image on 2K displays */
+}
+
+.grid-images {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.small-circle {
+  width: 100%;
+  max-width: 300px;
+  max-height: 151px;
+  /* Stop infinite scaling on huge screens */
+  /* Flexible height calculated to fill the space cleanly on laptops */
+  aspect-ratio: 300 / 151;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: #fff;
+  border: 2px solid #ff8800;
+  border-radius: 15px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  /* This absolutely critical rule forces the orange box at the bottom to perfectly trace the rounded corners of the card! */
+}
+
+.small-circle img {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  border: 3px solid #ff9100;
+  object-fit: cover;
+  margin-top: 6px;
+  /* Pushes image slightly down from top border */
+}
+
+.small-circle .img-caption {
+  width: 92%;
+  background: rgb(255 141 0);
+  color: #fff;
+  padding: 6px 4px 6px 4px;
+  margin: auto auto 6px auto;
+  /* Centers horizontally and snaps near bottom */
+  border-radius: 10px;
+  /* Makes it a pill-shaped box "hanging" inside the card */
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  overflow: hidden;
+  /* Prevents overflow clipping bugs on tablet view */
+}
+
+/* Beautiful Typographic Hierarchy for Cards */
+.minister-name {
+  font-size: 0.80rem;
+  font-weight: 600;
+  margin: 0 0 2px 0;
+  display: block;
+}
+
+.minister-name-large {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 0 0 3px 0;
+  display: block;
+}
+
+.minister-title {
+  font-size: 0.60rem;
+  font-weight: 400;
+  margin: 0;
+  line-height: 1.25;
+}
+
+.minister-title-large {
+  font-size: 0.8rem;
+  font-weight: 400;
+  margin: 0;
+  line-height: 1.3;
+}
+
+/* Footer Native */
+.footer-native {
+  background-color: #f8f9fa;
+  text-align: center;
+  padding: 2px 0;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
+  margin-top: auto;
+}
+
+.footer-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.footer-content img {
+  max-width: 500px;
+  width: 80%;
+  height: auto;
+}
+
+/* ============================= */
+/* Overlay Login Popup */
+/* ============================= */
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(8px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 2000;
+  animation: fadeIn 0.3s ease-out forwards;
+}
+
+.login-modal {
+  background: #ffffff;
+  padding: 35px;
+  border-radius: 16px;
+  box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.3);
+  width: 100%;
+  max-width: 400px;
+  text-align: center;
+  position: relative;
+  animation: slideUp 0.3s ease forwards;
+  margin: 20px;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(30px);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.close-btn {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  border: none;
+  background: #f1f5f9;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.close-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.form__title {
+  color: var(--color-primary-800);
+  margin: 0 0 20px 0;
+  font-weight: 800;
+  font-size: 24px;
+}
+
+.form__input-group {
+  margin-bottom: 16px;
+  text-align: left;
+}
+
+.form__input {
+  width: 100%;
+  padding: 12px 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 15px;
+  color: #1e293b;
+  font-family: inherit;
+}
+
+.form__input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  background: #ffffff;
+}
+
+.form__button {
+  width: 100%;
+  background: var(--color-primary);
+  color: white;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 16px;
+  transition: all 0.3s ease;
+  margin-top: 8px;
+}
+
+.form__button:hover:not(:disabled) {
+  background: var(--color-primary-700);
+}
+
+.form__message {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  padding: 10px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 14px;
+}
+
+.form__message:contains("successful") {
+  background: #f0fdf4;
+  color: #15803d;
+  border-color: #bbf7d0;
+}
+
+
+/* ============================= */
+/* Responsive Layout Adjustments */
+/* ============================= */
+
+/* 1. Remove the asymmetric visual offset for screens where layout wraps */
+@media (max-width: 1400px) {
+  .page-title-container {
+    padding-left: 0;
+  }
+}
+
+/* 2. Laptops & Tablets (1200px and below) - Stack the layout elegantly */
+@media (max-width: 1200px) {
+  .main-content {
+    flex-wrap: wrap;
+    justify-content: center;
+    height: auto;
+    gap: 30px;
+  }
+
+  /* Emphasize the road image across the full top */
+  .center-form {
+    order: 1;
+    flex: 0 0 100%;
+    max-width: 800px;
+  }
+
+  .road-image {
+    height: auto;
+    aspect-ratio: 16/9;
+    /* Switch to cinematic ratio for top banner slot */
+  }
+
+  /* Place Yogi beautifully on the left under the image */
+  .left-side {
+    order: 2;
+    flex: 0 0 calc(50% - 15px);
+    justify-content: flex-end;
+    align-items: center;
+    /* keep circular shape centered */
+  }
+
+  /* Place Cards beautifully on the right under the image */
+  .right-side {
+    order: 3;
+    flex: 0 0 calc(50% - 15px);
+  }
+
+  /* Release the math height lock on the cards so they can wrap/flow */
+  .grid-images {
+    height: auto;
+    gap: 15px;
+  }
+
+  .login-button {
+    bottom: 4%;
+  }
+}
+
+/* 3. Mobile (800px and below) - Strict User Hierarchy */
+@media (max-width: 800px) {
+  .page-title {
+    font-size: clamp(20px, 4vw, 24px);
+    margin: 10px 0;
+  }
+
+  .main-content {
+    flex-direction: column;
+    align-items: center;
+    padding: 15px;
+  }
+
+  /* Clear the 50% split for mobile */
+  .left-side,
+  .right-side {
+    flex: 0 0 100%;
+    justify-content: center;
+    order: unset;
+  }
+
+  .right-side {
+    /* Required to allow children to assume their own absolute flex orders */
+    display: contents;
+  }
+
+  /* 1. Yogi Adityanath (Absolute Highest Priority) */
+  .left-side {
+    order: 1;
+    margin-bottom: 20px;
+  }
+
+  /* 2. Top Ministers */
+  .top-ministers {
+    order: 2;
+    width: 100%;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+
+  /* 3. Road Image */
+  .center-form {
+    order: 3;
+    margin-bottom: 5px;
+  }
+
+  /* 4. IAS Officers */
+  .bottom-ias {
+    order: 4;
+    width: 100%;
+    align-items: center;
+  }
+
+  /* Scale down Yogi gracefully */
+  .left-side .img-wrap {
+    width: 280px;
+    /* Base width */
+    max-width: 100%;
+  }
+
+  /* Wrap cards nicely */
+  .grid-images {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .small-circle {
+    flex: 1 1 300px;
+    max-width: 320px;
+    aspect-ratio: auto;
+    height: 140px;
+    /* Re-affirm fixed height on mobile so they don't squash infinitely */
+  }
+
+  .login-button {
+    font-size: 14px;
+    padding: 10px 25px;
+  }
+}
+
+/* Root Variables */
+:root {
+  --color-bg: #fffaf0;
+  --color-text: #222222;
+  --color-primary: #f97316;
+  --color-primary-700: #ea580c;
+  --color-primary-800: #c2410c;
+}

@@ -1,0 +1,46 @@
+# ─── Local-only reference (kept off GitHub) ───────────────────
+archive/
+
+# ─── Dependencies ─────────────────────────────────────────────
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# ─── Build output ─────────────────────────────────────────────
+client/build/
+client/dist/
+build/
+dist/
+
+# ─── Environment / secrets ────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
+nohup.out
+pm2.log
+prod_url.txt
+ngrok_prod.log
+serveo_staging_custom.log
+
+# ─── Editor / OS ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ─── Scratch / debug / archives ───────────────────────────────
+test_*
+debug_*
+find_roads.js
+output.xml
+*.zip
+*.rar
+*.7z
+
+# ─── Caches ───────────────────────────────────────────────────
+.npm/
+.cache/
