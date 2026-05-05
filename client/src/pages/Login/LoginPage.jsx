@@ -16,7 +16,27 @@ const uridaLogo = require("../../assets/Login/URIDA.PNG");
 const rsacBanner = require("../../assets/Login/rsac_banner.png");
 
 const API_BASE_URL = "/api/auth";
-const IP_HOSTNAME_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+
+/*
+ * LEGACY DIAGNOSTIC — disabled.
+ *
+ * This old raw-IP HTTPS check was useful only when https://27.100.38.133
+ * used a self-signed certificate.
+ *
+ * Current production uses a trusted Let's Encrypt IP certificate, so this logic
+ * must not run. Public users should use only:
+ * https://27.100.38.133
+ *
+ * Do not tell users to open :8060 directly in production.
+ *
+ * Old idea kept only for future troubleshooting:
+ * const currentHostname = window.location.hostname;
+ * const directIpPattern = /^(\\d{1,3}\\.){3}\\d{1,3}$/;
+ * const isDirectIpHttps =
+ *   window.location.protocol === "https:" && directIpPattern.test(currentHostname);
+ * const directHttpUrl = `http://${currentHostname}:8060`;
+ */
+
 
 export default function LoginPage() {
   const [showLogin, setShowLogin] = useState(false);
@@ -24,11 +44,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const currentHostname = window.location.hostname;
-  const isDirectIpHttps =
-    window.location.protocol === "https:" &&
-    IP_HOSTNAME_PATTERN.test(currentHostname);
-  const directHttpUrl = `http://${currentHostname}:8060`;
 
   useEffect(() => {
     const token = localStorage.getItem("authToken");
@@ -52,12 +67,6 @@ export default function LoginPage() {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (isDirectIpHttps) {
-      setMessage(`⚠️ Open ${directHttpUrl} for login. HTTPS on the raw IP is not trusted by the browser.`);
-    }
-  }, [directHttpUrl, isDirectIpHttps]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -84,11 +93,7 @@ export default function LoginPage() {
       }
     } catch (error) {
       console.error(error);
-      if (isDirectIpHttps) {
-        setMessage(`⚠️ Login requests are blocked on ${window.location.origin}. Open ${directHttpUrl} and try again.`);
-      } else {
-        setMessage("⚠️ Server not reachable.");
-      }
+      setMessage("⚠️ Server not reachable. Please check API connection.");
     } finally {
       setLoading(false);
     }

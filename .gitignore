@@ -44,3 +44,8 @@ output.xml
 # ─── Caches ───────────────────────────────────────────────────
 .npm/
 .cache/
+
+# Local backup files created during server hotfixes
+*.bak
+*.bak.*
+

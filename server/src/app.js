@@ -26,6 +26,10 @@ const allowedOrigins = [
   'http://localhost:3002',
   'http://27.100.38.131:3000',
   'http://27.100.38.131:8060',
+  'http://27.100.38.133',
+  'https://27.100.38.133',
+  'http://uridageoportal.com',
+  'https://uridageoportal.com',
   'http://www.uridageoportal.com',
   'https://www.uridageoportal.com',
   'https://prod-uridageo-rsac.loca.lt'
