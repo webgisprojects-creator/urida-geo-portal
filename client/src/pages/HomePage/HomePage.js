@@ -63,23 +63,23 @@ const HOME_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes – refresh freque
  *  Use your actual names from GeoServer; these match your legacy scheme.
  */
 const BOUNDARY_WFS = {
-  agra: { ws: "ulb_boundary", layer: "Agra_Boundary" },
-  aligarh: { ws: "ulb_boundary", layer: "Aligarh_Boundary" },
-  ayodhya: { ws: "ulb_boundary", layer: "Ayodhya_Boundary" },
-  bareilly: { ws: "ulb_boundary", layer: "Bareilly_Boundary" },
-  firozabad: { ws: "ulb_boundary", layer: "Firozabad_Boundary" },
-  ghaziabad: { ws: "ulb_boundary", layer: "Ghaziabad_Boundary" },
-  gorakhpur: { ws: "ulb_boundary", layer: "Gorakhpur_Boundary" },
-  jhansi: { ws: "ulb_boundary", layer: "Jhansi_Boundary" },
-  kanpur: { ws: "ulb_boundary", layer: "Kanpur_Boundary" },
-  lucknow: { ws: "ulb_boundary", layer: "Lucknow_Boundary" },
-  mathura: { ws: "ulb_boundary", layer: "Mathura_Boundary" },
-  meerut: { ws: "ulb_boundary", layer: "Meerut_Boundary" },
-  moradabad: { ws: "ulb_boundary", layer: "Moradabad_Boundary" },
-  prayagraj: { ws: "ulb_boundary", layer: "Prayagraj_Boundary" },
-  saharanpur: { ws: "ulb_boundary", layer: "Saharanpur_Boundary" },
-  shahjahanpur: { ws: "ulb_boundary", layer: "Shahjahanpur_Boundary" },
-  varanasi: { ws: "ulb_boundary", layer: "Varanasi_Boundary" },
+  agra: { ws: "Ward_38", layer: "All_Boundaries", name: "Agra" },
+  aligarh: { ws: "Ward_38", layer: "All_Boundaries", name: "Aligarh" },
+  ayodhya: { ws: "Ward_38", layer: "All_Boundaries", name: "Ayodhya" },
+  bareilly: { ws: "Ward_38", layer: "All_Boundaries", name: "Bareilly" },
+  firozabad: { ws: "Ward_38", layer: "All_Boundaries", name: "Firozabad" },
+  ghaziabad: { ws: "Ward_38", layer: "All_Boundaries", name: "Ghaziabad" },
+  gorakhpur: { ws: "Ward_38", layer: "All_Boundaries", name: "Gorakhpur" },
+  jhansi: { ws: "Ward_38", layer: "All_Boundaries", name: "Jhansi" },
+  kanpur: { ws: "Ward_38", layer: "All_Boundaries", name: "Kanpur" },
+  lucknow: { ws: "Ward_38", layer: "All_Boundaries", name: "Lucknow" },
+  mathura: { ws: "Ward_38", layer: "All_Boundaries", name: "Mathura" },
+  meerut: { ws: "Ward_38", layer: "All_Boundaries", name: "Meerut" },
+  moradabad: { ws: "Ward_38", layer: "All_Boundaries", name: "Moradabad" },
+  prayagraj: { ws: "Ward_38", layer: "All_Boundaries", name: "Prayagraj" },
+  saharanpur: { ws: "Ward_38", layer: "All_Boundaries", name: "Saharanpur" },
+  shahjahanpur: { ws: "Ward_38", layer: "All_Boundaries", name: "Shahjahanpur" },
+  varanasi: { ws: "Ward_38", layer: "All_Boundaries", name: "Varanasi" },
 };
 
 const CITY_BOUNDARY_COLORS = {
@@ -480,11 +480,6 @@ export default function HomePage() {
         if (mapRef.current?.upBoundaryLayer) {
           mapRef.current.upBoundaryLayer.setVisible(isVisible);
         }
-        if (mapRef.current?.upBoundaryLayers) {
-          mapRef.current.upBoundaryLayers.forEach((layer) =>
-            layer.setVisible(isVisible)
-          );
-        }
       }
       if (key === "cityBoundary" && mapRef.current?.boundaryLayer) {
         mapRef.current.boundaryLayer.setVisible(isVisible);
@@ -705,7 +700,7 @@ export default function HomePage() {
       title: "UP District Boundaries",
       source: createWMSSource(
         `${GEOSERVER_BASE}/Ward_38/wms`,
-        "Ward_38:up_district"
+        "Ward_38:Up_District"
       ),
       visible: true,
       opacity: 1.0,      // full opacity — GeoServer style controls the look
@@ -715,7 +710,7 @@ export default function HomePage() {
 
     // 5️⃣  UP City Boundary — WFS VectorLayer (unique colors per city, hover-ready)
     const upBoundarySource = new VectorSource({
-      url: `${GEOSERVER_BASE}/Ward_38/ows?service=WFS&version=2.0.0&request=GetFeature&typeName=Ward_38:4326_all_boundaries&outputFormat=application/json`,
+      url: `${GEOSERVER_BASE}/Ward_38/ows?service=WFS&version=2.0.0&request=GetFeature&typeName=Ward_38:All_Boundaries&outputFormat=application/json`,
       format: new GeoJSON({ featureProjection: 'EPSG:3857' }),
     });
 
@@ -738,47 +733,11 @@ export default function HomePage() {
     map.addLayer(upDistrictLayer);
     map.addLayer(upBoundaryLayer);
 
-    const cityBoundaryLayers = Object.keys(BOUNDARY_WFS).map((city) => {
-      const { ws, layer } = BOUNDARY_WFS[city];
-      const color = CITY_BOUNDARY_COLORS[city] || "#2f6fd6";
-      const styleName = CITY_BOUNDARY_STYLE[city];
-      const wmsParams = {
-        LAYERS: `${ws}:${layer}`,
-        FORMAT: "image/png",
-        TRANSPARENT: true,
-        TILED: true,
-        FORMAT_OPTIONS: "dpi:140",
-      };
-      if (styleName) {
-        wmsParams.STYLES = styleName;
-      } else {
-        wmsParams.SLD_BODY = buildBoundarySld(color, 3.2);
-      }
-      return new ImageLayer({
-        title: `${city.toUpperCase()} Boundary`,
-        source: new ImageWMS({
-          url: `${GEOSERVER_BASE}/${ws}/wms`,
-          params: wmsParams,
-          serverType: "geoserver",
-          ratio: 1,
-          crossOrigin: "anonymous",
-          projection: "EPSG:3857",
-        }),
-        visible: true,
-        opacity: 0.9,
-        imageSmoothing: false,
-        zIndex: 40,
-      });
-    });
-
-    cityBoundaryLayers.forEach((layer) => map.addLayer(layer));
-
     // ✅ Store references
     mapRef.current = {
       ...mapRef.current,
       upDistrictLayer,
       upBoundaryLayer,
-      upBoundaryLayers: cityBoundaryLayers,
     };
 
     // ✅ Desktop hover popup — reuses the same city-overlay popup as the dropdown selection
@@ -1170,8 +1129,8 @@ export default function HomePage() {
 
     // ✅ Force refresh of WMS layers once map is ready
     map.once("rendercomplete", () => {
-      const { upDistrictLayer, upBoundaryLayer, upBoundaryLayers } = mapRef.current;
-      [upDistrictLayer, upBoundaryLayer, ...(upBoundaryLayers || [])].forEach((layer) => {
+      const { upDistrictLayer, upBoundaryLayer } = mapRef.current;
+      [upDistrictLayer, upBoundaryLayer].forEach((layer) => {
         if (layer && layer.getSource && layer.getSource().updateParams) {
           layer.getSource().updateParams({ time: new Date().getTime() });
         }
@@ -1277,7 +1236,6 @@ export default function HomePage() {
       });
 
       const upBoundaryLayer = mapRef.current.upBoundaryLayer;
-      const upBoundaryLayers = mapRef.current.upBoundaryLayers || [];
       if (upBoundaryLayer) {
         upBoundaryLayer.setVisible(layerVisibility.upBoundary);
         const source = upBoundaryLayer.getSource();
@@ -1287,15 +1245,6 @@ export default function HomePage() {
           });
         }
       }
-      upBoundaryLayers.forEach((layer) => {
-        layer.setVisible(layerVisibility.upBoundary);
-        const source = layer.getSource();
-        if (source && source.updateParams) {
-          source.updateParams({
-            time: new Date().getTime(),
-          });
-        }
-      });
 
       // Set initial view to show UP state
       const upExtent = [77.0, 23.5, 84.5, 31.0]; // [minX, minY, maxX, maxY]
@@ -1737,66 +1686,38 @@ export default function HomePage() {
     }
   };
 
-  const fetchBoundaryExtent4326 = useCallback(async (entry) => {
-    if (!entry) return null;
-    const layerName = `${entry.ws}:${entry.layer}`;
-    const cache = boundaryExtentCacheRef.current || {};
-    if (cache[layerName]) {
-      return cache[layerName];
-    }
-    try {
-      const url = `${GEOSERVER_BASE}/${entry.ws}/wms?service=WMS&request=GetCapabilities`;
-      const res = await fetch(url);
-      if (!res.ok) return null;
-      const text = await res.text();
-      const doc = new DOMParser().parseFromString(text, "text/xml");
-      const layers = Array.from(doc.getElementsByTagName("Layer"));
-      const layerNode = layers.find((node) => {
-        const nameEl = node.getElementsByTagName("Name")[0];
-        return nameEl && nameEl.textContent === layerName;
-      });
-      if (!layerNode) return null;
-      const exGeo = layerNode.getElementsByTagName("EX_GeographicBoundingBox")[0];
-      if (!exGeo) return null;
-      const west = parseFloat(exGeo.getElementsByTagName("westBoundLongitude")[0]?.textContent);
-      const east = parseFloat(exGeo.getElementsByTagName("eastBoundLongitude")[0]?.textContent);
-      const south = parseFloat(exGeo.getElementsByTagName("southBoundLatitude")[0]?.textContent);
-      const north = parseFloat(exGeo.getElementsByTagName("northBoundLatitude")[0]?.textContent);
-      if (![west, east, south, north].every(Number.isFinite)) return null;
-      const extent = [west, south, east, north];
-      boundaryExtentCacheRef.current = { ...cache, [layerName]: extent };
-      return extent;
-    } catch {
-      return null;
-    }
-  }, []);
-
   const fitViewToCityBoundary = useCallback(async (city) => {
     const map =
       mapRef.current?.instance || mapRef.current?.map || mapRef.current;
     if (!map || !city) return;
     const entry = BOUNDARY_WFS[city];
     const view = map.getView();
-    if (entry) {
-      const extent4326 = await fetchBoundaryExtent4326(entry);
-      if (extent4326) {
-        const min = fromLonLat([extent4326[0], extent4326[1]]);
-        const max = fromLonLat([extent4326[2], extent4326[3]]);
-        view.fit([min[0], min[1], max[0], max[1]], {
-          padding: mapPadding,
-          duration: 800,
-          maxZoom: cityMaxZoom,
-        });
-        return;
+    
+    // Attempt to get extent from already loaded WFS features
+    if (mapRef.current?.upBoundaryLayer && entry) {
+      const source = mapRef.current.upBoundaryLayer.getSource();
+      if (source && typeof source.getFeatures === 'function') {
+        const features = source.getFeatures();
+        const feat = features.find(f => normalizeWfsName(f.get('Name')) === city);
+        if (feat) {
+          const extent = feat.getGeometry().getExtent();
+          view.fit(extent, {
+            padding: mapPadding,
+            duration: 800,
+            maxZoom: cityMaxZoom,
+          });
+          return;
+        }
       }
     }
+    
     const cityCenter = CITY_CENTER[city] || fromLonLat([80.8, 26.8]);
     view.animate({
       center: cityCenter,
       zoom: isMobileView ? 10 : 11,
       duration: 800,
     });
-  }, [fetchBoundaryExtent4326, isMobileView, mapPadding, cityMaxZoom]);
+  }, [isMobileView, mapPadding, cityMaxZoom]);
 
   /* ----------------- LAYERS ----------------- */
 
@@ -1807,7 +1728,7 @@ export default function HomePage() {
 
     const map =
       mapRef.current?.instance || mapRef.current?.map || mapRef.current;
-    const { upDistrictLayer, upBoundaryLayer, upBoundaryLayers } = mapRef.current;
+    const { upDistrictLayer, upBoundaryLayer } = mapRef.current;
 
     if (upDistrictLayer) {
       upDistrictLayer.setVisible(true);
@@ -1815,11 +1736,6 @@ export default function HomePage() {
 
     if (upBoundaryLayer) {
       upBoundaryLayer.setVisible(layerVisibility.upBoundary);
-    }
-    if (upBoundaryLayers) {
-      upBoundaryLayers.forEach((layer) =>
-        layer.setVisible(layerVisibility.upBoundary)
-      );
     }
 
     if (mapRef.current.boundaryLayer) {
@@ -1847,6 +1763,7 @@ export default function HomePage() {
             url: `${GEOSERVER_BASE}/${entry.ws}/wms`,
             params: {
               LAYERS: `${entry.ws}:${entry.layer}`,
+              CQL_FILTER: `Name='${entry.name}'`,
               FORMAT: 'image/png',
               VERSION: '1.3.0',
               TRANSPARENT: true,
@@ -2100,7 +2017,7 @@ export default function HomePage() {
     const arr = [];
     if (layerVisibility.upDistrict) {
       arr.push({
-        layerName: "Ward_38:up_district",
+        layerName: "Ward_38:Up_District",
         label: "UP District Boundary"
       });
     }
