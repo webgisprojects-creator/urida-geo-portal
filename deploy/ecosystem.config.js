@@ -1,6 +1,6 @@
 // PM2 process manifest for the URIDA Geo Portal backend.
 //
-// Usage on the production app server (27.100.38.131):
+// Usage on the production app server (APP_SERVER_IP):
 //   pm2 start deploy/ecosystem.config.js
 //   pm2 save
 //

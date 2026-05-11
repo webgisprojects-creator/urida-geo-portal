@@ -15,7 +15,7 @@ These cause the hover popup and click-to-select to fail for 3 cities.
 
 ### Fix when you have PostGIS access on the production server:
 
-Connect to the `All_DB` database (host: 162.245.218.6, user: postgres) and run:
+Connect to the `All_DB` database (host: GEOSERVER_OR_DB_HOST, user: postgres) and run:
 
 ```sql
 UPDATE "4326_all_boundaries" SET "Name" = 'Varanasi'    WHERE "Name" = 'Varansi';
@@ -43,14 +43,14 @@ curl -u admin:geoserver -X PUT -H "Content-Type: application/json" \
 Run the same curl command replacing `localhost` with the GeoServer host. Credentials: `admin:geoserver`.
 
 ### Verify caching is active:
-- Visit GeoServer Admin → Tile Caching → Tile Layers → `Ward_38:up_district`
+- Visit GeoServer Admin â†’ Tile Caching â†’ Tile Layers â†’ `Ward_38:up_district`
 - Should show `Enabled: Yes`, `In-Memory Caching: Yes`
 
 ---
 
-## 3. Pre-seed Tile Cache (optional — for fastest cold-start performance)
+## 3. Pre-seed Tile Cache (optional â€” for fastest cold-start performance)
 
-Once caching is enabled, seed the cache at zoom levels used by the app (zoom 7–10):
+Once caching is enabled, seed the cache at zoom levels used by the app (zoom 7â€“10):
 
 ```bash
 curl -u admin:geoserver -X POST \

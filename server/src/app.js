@@ -20,20 +20,23 @@ app.set('trust proxy', 1);
 
 app.use(compression()); // Compress all responses
 
-const allowedOrigins = [
+const defaultAllowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:3002',
-  'http://27.100.38.131:3000',
-  'http://27.100.38.131:8060',
-  'http://27.100.38.133',
-  'https://27.100.38.133',
+  'http://localhost:8060',
   'http://uridageoportal.com',
   'https://uridageoportal.com',
   'http://www.uridageoportal.com',
-  'https://www.uridageoportal.com',
-  'https://prod-uridageo-rsac.loca.lt'
+  'https://www.uridageoportal.com'
 ];
+
+const envAllowedOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...envAllowedOrigins])];
 const ngrokPattern = /https?:\/\/.+\.(ngrok\.io|ngrok-free\.app)$/;
 
 app.use(cors({
@@ -48,7 +51,7 @@ app.use(cors({
 }));
 
 // Proxy for Geoserver - must be before body-parser
-// Target is configurable via GEOSERVER_PROXY_TARGET (e.g. http://27.100.38.133)
+// Target is configurable via GEOSERVER_PROXY_TARGET, for example http://localhost:8080
 app.use(
   '/geoserver',
   createProxyMiddleware({
