@@ -1,4 +1,4 @@
-import express from 'express';
+﻿import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import bodyParser from 'body-parser';
@@ -51,7 +51,7 @@ app.use(cors({
 }));
 
 // Proxy for Geoserver - must be before body-parser
-// Target is configurable via GEOSERVER_PROXY_TARGET, for example http://localhost:8080
+// Target is configurable via GEOSERVER_PROXY_TARGET, for example http://localhost:8080/geoserver
 app.use(
   '/geoserver',
   createProxyMiddleware({
@@ -101,3 +101,4 @@ app.get('*', (req, res, next) => {
 });
 
 export default app;
+
