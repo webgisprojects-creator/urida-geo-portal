@@ -13,37 +13,58 @@ import roadNetworkRoutes from './roadNetwork.js';
 import { auditLogger } from './middleware/authMiddleware.js';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 
-dotenv.config({ path: path.resolve(process.cwd(), 'server/.env') });
+// Use __dirname-relative path so this works regardless of which directory
+// the process is started from (project root, server/, or anywhere else).
+const __filename_app = fileURLToPath(import.meta.url);
+const __dirname_app  = path.dirname(__filename_app);
+dotenv.config({ path: path.resolve(__dirname_app, '../../server/.env') });
 
 const app = express();
 app.set('trust proxy', 1);
 
 app.use(compression()); // Compress all responses
 
-const defaultAllowedOrigins = [
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'http://localhost:3002',
-  'http://localhost:8060',
+// Origins always allowed in production (and dev)
+const productionAllowedOrigins = [
   'http://uridageoportal.com',
   'https://uridageoportal.com',
   'http://www.uridageoportal.com',
   'https://www.uridageoportal.com'
 ];
 
+// Extra origins from .env (comma-separated), merged in for any environment
 const envAllowedOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
-  .map(origin => origin.trim())
+  .map(o => o.trim())
   .filter(Boolean);
 
-const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...envAllowedOrigins])];
-const ngrokPattern = /https?:\/\/.+\.(ngrok\.io|ngrok-free\.app)$/;
+const allowedOrigins = [...new Set([...productionAllowedOrigins, ...envAllowedOrigins])];
+
+// Patterns always allowed regardless of environment
+const localhostPattern = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+const ngrokPattern    = /^https?:\/\/.+\.(ngrok\.io|ngrok-free\.app)$/;
+
+const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 
 app.use(cors({
   origin: (origin, callback) => {
+    // Non-browser requests (curl, server-to-server) have no Origin — allow them
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    if (ngrokPattern.test(origin)) return callback(null, true);
+
+    // Normalize: some browsers / proxies append a trailing slash to the origin
+    const o = origin.replace(/\/$/, '');
+
+    // In development: automatically allow any localhost / 127.0.0.1 origin
+    // on any port so developers never need to touch .env for CORS.
+    if (isDev && localhostPattern.test(o)) return callback(null, true);
+
+    // Production allowlist (hardcoded domains + CORS_ORIGINS from .env)
+    if (allowedOrigins.includes(o)) return callback(null, true);
+
+    // Ngrok tunnels (used for staging / demos)
+    if (ngrokPattern.test(o)) return callback(null, true);
+
+    console.warn(`[CORS] Blocked origin: ${origin}`);
     return callback(new Error('Not allowed by CORS'));
   },
   methods: ['GET', 'POST'],
