@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import bodyParser from 'body-parser';
@@ -101,4 +101,3 @@ app.get('*', (req, res, next) => {
 });
 
 export default app;
-
