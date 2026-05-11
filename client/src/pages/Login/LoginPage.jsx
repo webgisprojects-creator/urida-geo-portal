@@ -18,14 +18,14 @@ const rsacBanner = require("../../assets/Login/rsac_banner.png");
 const API_BASE_URL = "/api/auth";
 
 /*
- * LEGACY DIAGNOSTIC — disabled.
+ * LEGACY DIAGNOSTIC â€” disabled.
  *
- * This old raw-IP HTTPS check was useful only when https://27.100.38.133
+ * This old raw-IP HTTPS check was useful only when https://LOAD_BALANCER_IP
  * used a self-signed certificate.
  *
  * Current production uses a trusted Let's Encrypt IP certificate, so this logic
  * must not run. Public users should use only:
- * https://27.100.38.133
+ * https://LOAD_BALANCER_IP
  *
  * Do not tell users to open :8060 directly in production.
  *
@@ -84,16 +84,16 @@ export default function LoginPage() {
       if (data.success) {
         localStorage.setItem("authToken", data.token);
         localStorage.setItem("authUser", username);
-        setMessage("✅ Login successful! Redirecting...");
+        setMessage("âœ… Login successful! Redirecting...");
         setTimeout(() => {
           window.location.href = "/home"; // Redirect if needed
         }, 1000);
       } else {
-        setMessage("❌ Invalid username or password");
+        setMessage("âŒ Invalid username or password");
       }
     } catch (error) {
       console.error(error);
-      setMessage("⚠️ Server not reachable. Please check API connection.");
+      setMessage("âš ï¸ Server not reachable. Please check API connection.");
     } finally {
       setLoading(false);
     }
@@ -115,7 +115,7 @@ export default function LoginPage() {
 
       {/* MAIN CONTENT */}
       <div className="main-content">
-        {/* LEFT – CM */}
+        {/* LEFT â€“ CM */}
         <div className="left-side">
           <div className="img-wrap large-circle">
             <img src={cmYogi} alt="CM Yogi Adityanath" />
@@ -130,7 +130,7 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {/* CENTER – Road Image and Login */}
+        {/* CENTER â€“ Road Image and Login */}
         <div className="center-form">
           <div className="road-image-wrapper">
             <img src={roadImage} alt="Road" className="road-image" />
@@ -143,7 +143,7 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {/* RIGHT – Minister Cards */}
+        {/* RIGHT â€“ Minister Cards */}
         <div className="right-side">
           <div className="grid-images top-ministers">
             <div className="img-wrap small-circle">
@@ -218,7 +218,7 @@ export default function LoginPage() {
               className="close-btn"
               onClick={() => setShowLogin(false)}
             >
-              ✕
+              âœ•
             </button>
             <h2 className="form__title">Login</h2>
             {message && <div className="form__message">{message}</div>}

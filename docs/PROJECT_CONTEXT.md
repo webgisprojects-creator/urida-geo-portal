@@ -1,6 +1,6 @@
 # URIDA Codebase Context & Technical Documentation
 
-This document provides a **complete, self-explanatory overview** of the URIDA (Urban Road Infrastructure Development Agency) codebase. Any AI—Claude, GPT, or Gemini—should read this file first to understand the architecture, database schema, APIs, UI layout, and deployment setup before modifying the codebase.
+This document provides a **complete, self-explanatory overview** of the URIDA (Urban Road Infrastructure Development Agency) codebase. Any AIâ€”Claude, GPT, or Geminiâ€”should read this file first to understand the architecture, database schema, APIs, UI layout, and deployment setup before modifying the codebase.
 
 ---
 
@@ -11,7 +11,7 @@ This document provides a **complete, self-explanatory overview** of the URIDA (U
 - **Process Manager:** `pm2` manages all Node processes. **NEVER** run `pm2 restart`, `pm2 stop`, `pm2 reload`, or `pm2 delete`.
 - **Package Managers:** **NEVER** run `npm install`, `yarn`, or `pip install`. The environment is frozen.
 - **Backend Port:** 8060. The backend also statically serves the React client.
-- **GeoServer:** GeoServer runs on `8080` (e.g., Tomcat) and the Node.js backend proxies it from `/geoserver/*` to `http://103.15.81.74:8080/geoserver/...`.
+- **GeoServer:** GeoServer runs on `8080` (e.g., Tomcat) and the Node.js backend proxies it from `/geoserver/*` to `http://WINDOWS_TOMCAT_HOST:8080/geoserver/...`.
 
 ---
 
@@ -137,7 +137,7 @@ Stored in `server/.env`:
 | Variable | Purpose | Example / Value |
 |----------|---------|---------|
 | PORT | Backend Node port | 8060 |
-| DB_HOST | PostgreSQL host | 162.245.218.6 |
+| DB_HOST | PostgreSQL host | GEOSERVER_OR_DB_HOST |
 | DB_PORT | PostgreSQL port | 5432 |
 | DB_NAME | Database name | All_DB |
 | DB_USER | DB username | postgres |
@@ -177,22 +177,22 @@ Key logic wrapped in `client/src/components/MapContainer.jsx`:
 ## 12. Complete Folder Structure
 ```text
 client/
-├── libs/             # OpenLayers layerswitcher and popup extensions
-├── public/           # Static assets, index.html, manifest.json
-└── src/
-    ├── assets/       # Amenities_Icons, Login images, NN_Logo, configs/cityConfig.js
-    ├── components/   # UI: Header, Sidebar, SummaryTable, MapContainer, MapLegend, etc.
-    ├── pages/        # Route wrappers: HomePage.js, Dashboard.jsx, Login templates
-    └── utils/        # Utility helpers: gisExport.js (PDF/Excel maps)
+â”œâ”€â”€ libs/             # OpenLayers layerswitcher and popup extensions
+â”œâ”€â”€ public/           # Static assets, index.html, manifest.json
+â””â”€â”€ src/
+    â”œâ”€â”€ assets/       # Amenities_Icons, Login images, NN_Logo, configs/cityConfig.js
+    â”œâ”€â”€ components/   # UI: Header, Sidebar, SummaryTable, MapContainer, MapLegend, etc.
+    â”œâ”€â”€ pages/        # Route wrappers: HomePage.js, Dashboard.jsx, Login templates
+    â””â”€â”€ utils/        # Utility helpers: gisExport.js (PDF/Excel maps)
 server/
-├── logs/             # generated audit.log
-└── src/
-    ├── config/       # cityConfig.js, db.js (pg pool logic)
-    ├── controllers/  # Route logic: authController.js, cityController.js
-    ├── middleware/   # check JWT logic & rate limiter integrations
-    ├── routes/       # authRoutes.js, cityRoutes.js
-    ├── scripts/      # Stand-alone util endpoints or schema loaders
-    └── server.js / app.js # Core express entrypoints
+â”œâ”€â”€ logs/             # generated audit.log
+â””â”€â”€ src/
+    â”œâ”€â”€ config/       # cityConfig.js, db.js (pg pool logic)
+    â”œâ”€â”€ controllers/  # Route logic: authController.js, cityController.js
+    â”œâ”€â”€ middleware/   # check JWT logic & rate limiter integrations
+    â”œâ”€â”€ routes/       # authRoutes.js, cityRoutes.js
+    â”œâ”€â”€ scripts/      # Stand-alone util endpoints or schema loaders
+    â””â”€â”€ server.js / app.js # Core express entrypoints
 ```
 
 ---
@@ -214,7 +214,7 @@ Key production dependencies:
 
 ---
 
-## FILE AUDIT — EVERY FILE WITH STATUS
+## FILE AUDIT â€” EVERY FILE WITH STATUS
 
 As a Staff Engineer, I have read every file and checked all imports.
 Status: ACTIVE | DEAD | ORPHANED | DUPLICATE | UNCLEAR
@@ -267,7 +267,7 @@ Status: ACTIVE | DEAD | ORPHANED | DUPLICATE | UNCLEAR
 
 ## DEEP FUNCTION DOCUMENTATION
 
-### roadNetwork.js — Every Function Explained
+### roadNetwork.js â€” Every Function Explained
 
 #### `buildSafeFilter(filters)`
 - **Purpose:** Prevents SQL injection by validating query parameters against an allowed list. 
@@ -291,7 +291,7 @@ Status: ACTIVE | DEAD | ORPHANED | DUPLICATE | UNCLEAR
 - **Output:** Integer (e.g., `4326`, `32644`).
 - **When is it triggered:** Lazily invoked on first load of any spatial API requesting distance metrics.
 
-### SummaryTable.jsx — Every Function & Prop Explained
+### SummaryTable.jsx â€” Every Function & Prop Explained
 
 #### Props received:
 | Prop | Type | Purpose | Where it comes from |
@@ -308,7 +308,7 @@ Status: ACTIVE | DEAD | ORPHANED | DUPLICATE | UNCLEAR
 - `handleRowClick(record)`: Fires a callback to auto-pan the OpenLayers map view to the selected `road_id` bounds.
 - `handleApplyTableFilter()`: Packages internal Table textual searches into `cql_filter` compatible URI components to style the map canvas above it.
 
-### authMiddleware.js — Complete Logic
+### authMiddleware.js â€” Complete Logic
 
 #### `verifyToken(req, res, next)`
 - **How JWT is extracted:** Reads `req.headers.authorization`, separating `Bearer ` from the actual token array index `[1]`.
@@ -324,9 +324,9 @@ Status: ACTIVE | DEAD | ORPHANED | DUPLICATE | UNCLEAR
 
 ---
 
-## FULL CITY CONFIG — EXACT VALUES
+## FULL CITY CONFIG â€” EXACT VALUES
 
-### server/src/config/cityConfig.js — Complete Object
+### server/src/config/cityConfig.js â€” Complete Object
 ```javascript
 export const citySchemaMap = {
   agra: "agra",
@@ -349,7 +349,7 @@ export const citySchemaMap = {
 };
 ```
 
-### client/src/assets/configs/cityConfig.js — Complete Object  
+### client/src/assets/configs/cityConfig.js â€” Complete Object  
 ```javascript
 export const cityConfig = {
   agra: { name: "Agra", center: fromLonLat([78.0081, 27.1767]), zoom: 11, zoneLayer: "Ward_Boundary_New:Agra_Zone_Boundary", wardLayer: "Ward_Boundary_New:Agra_Ward_Boundary", roadLayer: "Road_Network:Agra_Road_Network" },
@@ -372,7 +372,7 @@ export const cityConfig = {
 };
 ```
 
-### GeoServer Layer Names — Exact Strings Per City
+### GeoServer Layer Names â€” Exact Strings Per City
 | City | Zone Layer (exact) | Ward Layer (exact) | Road Layer (exact) |
 |------|------------------|------------------|------------------|
 | Agra | `Ward_Boundary_New:Agra_Zone_Boundary` | `Ward_Boundary_New:Agra_Ward_Boundary` | `Road_Network:Agra_Road_Network` |
@@ -395,7 +395,7 @@ export const cityConfig = {
 
 ---
 
-## DATABASE CONNECTION — db.js COMPLETE LOGIC
+## DATABASE CONNECTION â€” db.js COMPLETE LOGIC
 
 ```javascript
 import pkg from 'pg';
@@ -417,11 +417,11 @@ export const pool = new Pool({
 });
 
 pool.connect()
-  .then(() => console.log('✅ Connected to PostgreSQL'))
-  .catch(err => console.error('❌ Database connection error:', err));
+  .then(() => console.log('âœ… Connected to PostgreSQL'))
+  .catch(err => console.error('âŒ Database connection error:', err));
 
 pool.on("error", (err) => {
-  console.error("❌ Unexpected PG pool error:", err);
+  console.error("âŒ Unexpected PG pool error:", err);
 });
 ```
 
@@ -440,9 +440,9 @@ Must implement query throttling or increase `DB_POOL_MAX` in `.env` along with b
 
 ---
 
-## CLEANUP RECOMMENDATIONS — STAFF ENGINEER VERDICT
+## CLEANUP RECOMMENDATIONS â€” STAFF ENGINEER VERDICT
 
-### 🗑️ SAFE TO DELETE
+### ðŸ—‘ï¸ SAFE TO DELETE
 These files have zero imports. Deleting them will not break anything.
 - `client/src/components/MeasureOptions.jsx` (Dead component never imported)
 - `client/src/components/DrainFilter.jsx` (Dead component never imported)
@@ -451,7 +451,7 @@ These files have zero imports. Deleting them will not break anything.
 - `server/src/services/authService.js` (Empty skeleton file)
 - `client/src/App.test.js` & `client/src/setupTests.js` (unused boilerplate)
 
-### 📦 SAFE TO ARCHIVE (move to /archive folder)
+### ðŸ“¦ SAFE TO ARCHIVE (move to /archive folder)
 Orphaned scripts that may be needed for maintenance but not runtime.
 - `find_roads.js` (Standalone CLI verification script)
 - `server/inspect_db_schema.js` (Helpful CLI schema dump util)
@@ -459,15 +459,15 @@ Orphaned scripts that may be needed for maintenance but not runtime.
 - `test_fix.js`, `test_real_api.js`, `test_backend.js` (Sandbox debug scripts)
 - `debug_geometry.js` (Sandbox geometry script)
 
-### 🔁 DUPLICATES — CONSOLIDATE THESE
+### ðŸ” DUPLICATES â€” CONSOLIDATE THESE
 - `client/src/pages/Login/LoginPage.jsx` AND `LoginPage_v2.jsx` contain duplicate logic.
 Recommendation: keep `LoginPage_v2.jsx` because it receives active visual module imports, while the older component has outdated references.
 
-### ⚠️ NEEDS HUMAN REVIEW BEFORE TOUCHING
+### âš ï¸ NEEDS HUMAN REVIEW BEFORE TOUCHING
 - `client/src/components/MapContainer.jsx`: At 5100 lines, it manages its own heavily volatile component lifecycles. Removing specific imports unexpectedly breaks SVG tile rendering caching overlays.
 - `server/src/roadNetwork.js`: Needs a massive `Promise.all` refactor for DB concurrency throttling, but directly touching concurrency max-limits without observing system RAM might cause node allocation failure overhead.
 
-### ✅ DO NOT TOUCH — CONFIRMED CRITICAL
+### âœ… DO NOT TOUCH â€” CONFIRMED CRITICAL
 - `client/src/assets/configs/cityConfig.js`
 - `server/src/app.js`
 

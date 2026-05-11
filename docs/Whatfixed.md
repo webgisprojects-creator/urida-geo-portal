@@ -193,7 +193,7 @@ The configuration is now improved so the tunnel goes directly to port `8060` and
 The application itself is already reachable directly on the server without using localtunnel:
 
 ```bash
-curl -kI https://162.245.218.6
+curl -kI https://GEOSERVER_OR_DB_HOST
 ```
 
 Result:
@@ -207,7 +207,7 @@ And the login endpoint is reachable directly too:
 ```bash
 curl -k -X POST -H 'Content-Type: application/json' \
   -d '{"username":"x","password":"y"}' \
-  https://162.245.218.6/api/auth/login
+  https://GEOSERVER_OR_DB_HOST/api/auth/login
 ```
 
 Result:
@@ -223,7 +223,7 @@ That confirms the stable part of the system is the server itself, not the tunnel
 - Do not rely on `https://prod-uridageo-rsac.loca.lt` for production or regular public access.
 - Use direct server access until proper DNS and SSL are finalized.
 - Best permanent setup is:
-  - map a real DNS name to `162.245.218.6`
+  - map a real DNS name to `GEOSERVER_OR_DB_HOST`
   - install a valid SSL certificate for that DNS name
   - stop using `localtunnel` entirely
 
@@ -232,13 +232,13 @@ That confirms the stable part of the system is the server itself, not the tunnel
 When the site is opened as:
 
 ```text
-https://162.245.218.6
+https://GEOSERVER_OR_DB_HOST
 ```
 
 the homepage may load after a browser warning, but login can still show:
 
 ```text
-⚠️ Server not reachable.
+âš ï¸ Server not reachable.
 ```
 
 Reason:
@@ -250,7 +250,7 @@ Reason:
 Evidence:
 
 ```bash
-curl -I https://162.245.218.6
+curl -I https://GEOSERVER_OR_DB_HOST
 ```
 
 Result:
@@ -264,10 +264,10 @@ curl: (60) SSL certificate problem: self-signed certificate
 The backend is publicly reachable on plain HTTP port `8060` and the login API works there:
 
 ```bash
-curl -I http://162.245.218.6:8060
+curl -I http://GEOSERVER_OR_DB_HOST:8060
 curl -X POST -H 'Content-Type: application/json' \
   -d '{"username":"x","password":"y"}' \
-  http://162.245.218.6:8060/api/auth/login
+  http://GEOSERVER_OR_DB_HOST:8060/api/auth/login
 ```
 
 Result:
@@ -284,13 +284,13 @@ That proves the login route is reachable. The failure is the HTTPS certificate o
 Use:
 
 ```text
-http://162.245.218.6:8060
+http://GEOSERVER_OR_DB_HOST:8060
 ```
 
 Do not use:
 
 ```text
-https://162.245.218.6
+https://GEOSERVER_OR_DB_HOST
 ```
 
 unless a valid certificate is installed for a real DNS hostname.

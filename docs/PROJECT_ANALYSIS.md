@@ -36,7 +36,7 @@ graph TD
 1.  **Client -> Nginx**: All external traffic hits Nginx on port 80/443.
 2.  **Nginx -> Node.js**: Requests to `/api` and the root `/` (serving React app) are proxied to `http://localhost:8060`.
 3.  **Nginx -> GeoServer**: Requests to `/geoserver` are proxied to `http://localhost:8080/geoserver`.
-4.  **Node.js -> PostgreSQL**: Backend connects via TCP to `162.245.218.6:5432` using `pg` pool.
+4.  **Node.js -> PostgreSQL**: Backend connects via TCP to `GEOSERVER_OR_DB_HOST:5432` using `pg` pool.
 5.  **GeoServer -> PostgreSQL**: GeoServer connects directly to the database to render map tiles.
 
 ---
@@ -76,7 +76,7 @@ module.exports = {
 ### Environment Variables
 **File**: `server/.env`
 *   `PORT`: 8060
-*   `DB_HOST`: 162.245.218.6
+*   `DB_HOST`: GEOSERVER_OR_DB_HOST
 *   `DB_PORT`: 5432
 *   `DB_USER`: postgres
 *   `DB_PASS`: [REDACTED]
@@ -144,7 +144,7 @@ pkill -f "node server/src/server.js"
 
 ### Troubleshooting
 *   **502 Bad Gateway**: Check if Node.js backend is running (`pm2 status` or `ps aux | grep node`). Check if Nginx is running (`systemctl status nginx`).
-*   **Database Connection Error**: Verify `DB_HOST` is reachable. Check firewall rules on 162.245.218.6.
+*   **Database Connection Error**: Verify `DB_HOST` is reachable. Check firewall rules on GEOSERVER_OR_DB_HOST.
 *   **Map Tiles Not Loading**: Check GeoServer status (`curl http://localhost:8080/geoserver/web/`).
 
 ### Scaling
@@ -156,7 +156,7 @@ pkill -f "node server/src/server.js"
 The system uses PostgreSQL. Regular backups should be performed using `pg_dump`.
 ```bash
 # Backup all databases
-pg_dumpall -h 162.245.218.6 -U postgres -f /var/www/backups/urida_db_$(date +%F).sql
+pg_dumpall -h GEOSERVER_OR_DB_HOST -U postgres -f /var/www/backups/urida_db_$(date +%F).sql
 ```
 *Note: Ensure `.pgpass` is configured for passwordless auth.*
 
@@ -167,7 +167,7 @@ tar -czvf /var/www/backups/urida_code_$(date +%F).tar.gz /var/www/urida_prod
 ```
 
 **Recovery**:
-1.  **Database**: `psql -h 162.245.218.6 -U postgres -f backup_file.sql`
+1.  **Database**: `psql -h GEOSERVER_OR_DB_HOST -U postgres -f backup_file.sql`
 2.  **Files**: Extract the tarball to the web directory.
 
 ---
