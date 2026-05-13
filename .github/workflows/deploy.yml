@@ -5,8 +5,10 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # ── Step 1: CI must pass first ────────────────────────────────────────────
-  build:
+  # ── Step 1: Verify the build compiles cleanly ─────────────────────────────
+  # Named "verify" — NOT "build" — so it does not conflict with the
+  # "build" status-check that branch protection requires from ci.yml.
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4.2.2
@@ -26,11 +28,14 @@ jobs:
           CI: "false"
           REACT_APP_GEOSERVER_BASE: /geoserver
 
-  # ── Step 2: Deploy only after CI passes ──────────────────────────────────
+  # ── Step 2: Deploy only after verify passes ───────────────────────────────
+  # Deploys to pre-production server via SSH.
+  # Secrets required in GitHub → Settings → Secrets:
+  #   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY
   deploy:
     runs-on: ubuntu-latest
-    needs: build                  # waits for build job to succeed
-    environment: pre-production   # optional: add approval gate in GitHub UI
+    needs: verify
+    environment: pre-production
 
     steps:
       - name: Deploy to pre-production server
@@ -52,16 +57,4 @@ jobs:
             npm --prefix server install --omit=dev
 
             echo "==> Building React client..."
-            npm --prefix client install --omit=dev
-            REACT_APP_GEOSERVER_BASE=/geoserver npm --prefix client run build
-
-            echo "==> Restarting backend..."
-            pm2 restart urida-backend --update-env
-
-            echo "==> Health checks..."
-            sleep 3
-            curl -sf http://localhost:8060/api/test-db > /dev/null && echo "DB OK"
-            curl -sf http://localhost:8060/api/home/summary > /dev/null && echo "API OK"
-
-            echo "==> Deploy complete."
-            pm2 logs urida-backend --lines 20 --nostream
+        
