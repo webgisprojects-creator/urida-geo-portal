@@ -57,4 +57,16 @@ jobs:
             npm --prefix server install --omit=dev
 
             echo "==> Building React client..."
-        
+            npm --prefix client install --omit=dev
+            REACT_APP_GEOSERVER_BASE=/geoserver npm --prefix client run build
+
+            echo "==> Restarting backend..."
+            pm2 restart urida-backend --update-env
+
+            echo "==> Health checks..."
+            sleep 3
+            curl -sf http://localhost:8060/api/test-db > /dev/null && echo "DB OK"
+            curl -sf http://localhost:8060/api/home/summary > /dev/null && echo "API OK"
+
+            echo "==> Deploy complete."
+            pm2 logs urida-backend --lines 20 --nostream
