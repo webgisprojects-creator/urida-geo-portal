@@ -4,6 +4,7 @@
   "private": true,
   "description": "URIDA Geo Portal — GIS portal for urban infrastructure across 17 cities in Uttar Pradesh.",
   "scripts": {
+    "setup": "node scripts/setup-dev.js",
     "install:all": "npm --prefix server install && npm --prefix client install",
     "dev:server": "npm --prefix server run dev",
     "dev:client": "npm --prefix client start",

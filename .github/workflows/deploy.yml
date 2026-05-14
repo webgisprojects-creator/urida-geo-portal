@@ -5,8 +5,10 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # ── Step 1: CI must pass first ────────────────────────────────────────────
-  build:
+  # ── Step 1: Verify the build compiles cleanly ─────────────────────────────
+  # Named "verify" — NOT "build" — so it does not conflict with the
+  # "build" status-check that branch protection requires from ci.yml.
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4.2.2
@@ -26,11 +28,14 @@ jobs:
           CI: "false"
           REACT_APP_GEOSERVER_BASE: /geoserver
 
-  # ── Step 2: Deploy only after CI passes ──────────────────────────────────
+  # ── Step 2: Deploy only after verify passes ───────────────────────────────
+  # Deploys to pre-production server via SSH.
+  # Secrets required in GitHub → Settings → Secrets:
+  #   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY
   deploy:
     runs-on: ubuntu-latest
-    needs: build                  # waits for build job to succeed
-    environment: pre-production   # optional: add approval gate in GitHub UI
+    needs: verify
+    environment: pre-production
 
     steps:
       - name: Deploy to pre-production server

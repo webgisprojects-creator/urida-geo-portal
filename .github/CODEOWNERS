@@ -1,16 +1,10 @@
-# CODEOWNERS — URIDA Geo Portal
-#
-# Every pull request requires review and approval from the owner below
-# before it can be merged into main.
-#
-# Format: <path pattern>  <GitHub username(s)>
-# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+﻿# CODEOWNERS — URIDA Geo Portal
 
 # Default owner for everything in the repo
-*  @webgisprojects-creator
+*  @webgisprojects-creator @khateebali
 
-# CI/CD config — extra protection, same owner must approve
-.github/  @webgisprojects-creator
+# CI/CD config — extra protection
+.github/  @webgisprojects-creator @khateebali
 
 # Server and credentials-adjacent files
-server/   @webgisprojects-creator
+server/   @webgisprojects-creator @khateebali
