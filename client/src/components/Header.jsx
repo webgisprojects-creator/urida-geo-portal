@@ -48,6 +48,7 @@ const cityLogos = {
 const Header = ({
   city,
   onMenuClick,
+  backTarget,
 
   // ⭐ NEW PROPS for dynamic road search
   showRoadSearch,       // boolean → Dashboard se aata hai
@@ -86,8 +87,8 @@ const Header = ({
     <header className="lucknow-header">
       <div
         className="back-button"
-        onClick={() => navigate("/home")}
-        title="Back to Home"
+        onClick={() => navigate(backTarget || "/home")}
+        title="Back"
         style={{
           cursor: "pointer",
           marginRight: "15px",
@@ -177,11 +178,10 @@ const Header = ({
           }}>
             <div
               onClick={() => {
-                const token = localStorage.getItem("authToken");
-                if (token) {
-                  fetch("/api/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => { });
-                }
-                localStorage.removeItem("authToken");
+                fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => { });
+                localStorage.removeItem("authUser");
+                localStorage.removeItem("authRole");
+                localStorage.removeItem("authCity");
                 window.location.href = "/";
               }}
               style={{ padding: '10px 15px', cursor: 'pointer', fontSize: '14px' }}

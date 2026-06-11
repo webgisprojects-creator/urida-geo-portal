@@ -146,6 +146,7 @@ const MapToolbar = ({
             "Content-Type": "application/json",
             Accept: "application/json",
           },
+          credentials: "include",
         });
 
         if (!response.ok) {
@@ -769,6 +770,10 @@ const MapToolbar = ({
 
         <button className="map-btn wide-btn" onClick={handleDataAnalysis}>
           <i className="fas fa-chart-column" /> <span>Data Analysis</span>
+        </button>
+
+        <button className="map-btn wide-btn" onClick={() => onDssRoad?.()}>
+          <i className="fas fa-sitemap" /> <span>DSS</span>
         </button>
 
       </div>

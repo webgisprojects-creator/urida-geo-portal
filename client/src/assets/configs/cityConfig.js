@@ -129,6 +129,7 @@ export const cityConfig = {
           condition: "Road_Network:Ayodhya_Drain_Condition",
           material: "Road_Network:Ayodhya_Drain_Material",
           status: "Road_Network:Ayodhya_Drain_Status",
+          type: "Road_Network:Ayodhya_Drain_Type",
         },
       },
       slum: {
@@ -347,11 +348,8 @@ export const cityConfig = {
       state_gov: "Amenities:Jhansi_State_Gov",
     },
 
-    specializedNetworks: {
-      lulc: {
-        label: "LULC",
-        layer: "LULC:Jhansi_LULC",
-      },
+    LCLUClassifications: {
+      Jhansi_LCLU_ULU: "Amenities:Jhansi_LCLU_ULU",
     },
   },
 
@@ -394,6 +392,16 @@ export const cityConfig = {
       post_office: "Amenities:Kanpur_Post_Office",
       religious: "Amenities:Kanpur_Religious",
       state_gov: "Amenities:Kanpur_State_Gov",
+    },
+
+    LCLUClassifications: {
+      Kanpur_LCLU_Bridge_Culvert: "Amenities:Kanpur_LCLU_Bridge_Culvert",
+      Kanpur_LCLU_Bus_Stop_Point: "Amenities:Kanpur_LCLU_Bus_Stop_Point",
+      Kanpur_LCLU_Communication_Point:
+        "Amenities:Kanpur_LCLU_Communication_Point",
+      Kanpur_LCLU_Community_Toilet: "Amenities:Kanpur_LCLU_Community_Toilet",
+      Kanpur_LCLU_Fire_Station: "Amenities:Kanpur_LCLU_Fire_Station",
+      Kanpur_LCLU_ULU: "Amenities:Kanpur_LCLU_ULU",
     },
   },
 
@@ -441,16 +449,6 @@ export const cityConfig = {
       post_office: "Amenities:Lucknow_Post_Office",
       religious: "Amenities:Lucknow_Religious",
       state_gov: "Amenities:Lucknow_State_Gov",
-    },
-
-    specializedNetworks: {
-      sewage: {
-        label: "Sewage Network",
-        options: {
-          diameter: "Road_Network:Lucknow_Sewage_Diameter_Net",
-          length: "Road_Network:Lucknow_Sewage_Length_Net",
-        },
-      },
     },
   },
 
@@ -613,7 +611,6 @@ export const cityConfig = {
       state_gov: "Amenities:Prayagraj_State_Gov",
       // temple:"Amenities:Prayagraj_Temple",
     },
-
   },
 
   saharanpur: {

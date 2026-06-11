@@ -55,6 +55,8 @@ import { cityConfig } from "../assets/configs/cityConfig";
 import MapLegend from "./MapLegend";
 import Overlay from "ol/Overlay";
 
+const EMPTY_ARRAY = [];
+
 const GEOSERVER_BASE = window.location.port === "8060"
   ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
   : (process.env.REACT_APP_GEOSERVER_BASE || process.env.GEOSERVER_BASE || "/geoserver");
@@ -414,32 +416,7 @@ const buildBoundaryLabelSld = (layerName, labelAttr, color) => `
               <CssParameter name="stroke-opacity">1</CssParameter>
             </Stroke>
           </PolygonSymbolizer>
-          <PointSymbolizer>
-            <Geometry>
-              <ogc:Function name="centroid">
-                <ogc:PropertyName>the_geom</ogc:PropertyName>
-              </ogc:Function>
-            </Geometry>
-            <Graphic>
-              <Mark>
-                <WellKnownName>circle</WellKnownName>
-                <Fill>
-                  <CssParameter name="fill">${color}</CssParameter>
-                </Fill>
-                <Stroke>
-                  <CssParameter name="stroke">#ffffff</CssParameter>
-                  <CssParameter name="stroke-width">2</CssParameter>
-                </Stroke>
-              </Mark>
-              <Size>26</Size>
-            </Graphic>
-          </PointSymbolizer>
           <TextSymbolizer>
-            <Geometry>
-              <ogc:Function name="centroid">
-                <ogc:PropertyName>the_geom</ogc:PropertyName>
-              </ogc:Function>
-            </Geometry>
             <Label>
               <ogc:PropertyName>${labelAttr}</ogc:PropertyName>
             </Label>
@@ -448,6 +425,13 @@ const buildBoundaryLabelSld = (layerName, labelAttr, color) => `
               <CssParameter name="font-size">14</CssParameter>
               <CssParameter name="font-weight">bold</CssParameter>
             </Font>
+            <Halo>
+              <Radius>2</Radius>
+              <Fill>
+                <CssParameter name="fill">${color}</CssParameter>
+                <CssParameter name="fill-opacity">0.9</CssParameter>
+              </Fill>
+            </Halo>
             <Fill>
               <CssParameter name="fill">#ffffff</CssParameter>
             </Fill>
@@ -877,11 +861,25 @@ const MapContainer = forwardRef(({
   city = "lucknow",
   layerVisibility = {},
   streetViewVisible,
+  streetLightVisible = false,
+  streetLightGeojson = null,
+  streetLightCounts = null,
+  streetLightFilters = null,
+  onStreetLightFilterChange,
+  underdevelopedVisible = false,
+  underdevelopedGeojson = null,
+  underdevelopedCounts = null,
+  underdevelopedFilters = null,
+  onUnderdevelopedFilterChange,
+  encroachmentVisible = false,
+  encroachmentGeojson = null,
+  encroachmentZone = "",
+  encroachmentTotals = null,
   selectedRoadName,
   selectedRoadId,
   roadFilter, // STRING: zone_no='1' AND condition='Good'
   zoomFilter, // ⭐ ADDED: Filter for auto-zoom functionality
-  selectedRoadIds = [], // ⭐ NEW: Array of currently selected road IDs
+  selectedRoadIds = EMPTY_ARRAY, // ⭐ NEW: Array of currently selected road IDs
   isMultiSelectMode = false, // ⭐ NEW: Multi-select active flag
   tableFilterActive = false,
   layerFilters = {}, // ⭐ NEW
@@ -955,15 +953,18 @@ const MapContainer = forwardRef(({
 
   const amenityLayersRef = useRef({});
   const otherLayersRef = useRef({});
+  const lcluLayersRef = useRef({});
   const amenitiesGroupRef = useRef(null);
   const othersGroupRef = useRef(null);
   const streetLayerRef = useRef(null);
+  const lastLayerFiltersRef = useRef({});
 
   const roadNetworkLayerRef = useRef(null); // 🔹 main road layer (search)
   const clickedGeometriesCacheRef = useRef(new Map()); // ⭐ NEW
   const roadClassLayersRef = useRef({}); // 🔹 classification layers
   const roadLabelsLayerRef = useRef(null);
   const analysisLayersRef = useRef({});
+  const dssLayersRef = useRef({});
   const selectedRoadLayerRef = useRef(null);
   const filteredRoadLayerRef = useRef(null);
   const filteredRoadColorRef = useRef(null);
@@ -1470,7 +1471,11 @@ const MapContainer = forwardRef(({
     selectedRoadLayerRef.current?.getSource?.()?.getFeatures?.()?.[0]?.getGeometry?.() ||
     null;
   const setSelectedRoadGeometry = (geometry) => {
-    selectedRoadGeomRef.current = geometry || null;
+    const next = geometry || null;
+    const prev = selectedRoadGeomRef.current || null;
+    if (!prev && !next) return;
+    if (prev === next) return;
+    selectedRoadGeomRef.current = next;
     setSelectedRoadToken((value) => value + 1);
   };
 
@@ -2362,14 +2367,20 @@ const MapContainer = forwardRef(({
       // Support both string-layer and grouped-options structure
       const isGroup = specCfg && typeof specCfg === "object" && specCfg.options;
       const activeOption = layerVisibility?.specializedOptions?.[id];
-      
+      const defaultNoneGroup = id === "drainage" || id === "slum";
+      const wantsNone =
+        isGroup &&
+        (String(activeOption) === "none" ||
+          (defaultNoneGroup && (activeOption === undefined || activeOption === null)));
+
       let layerName = "";
       if (isGroup) {
-        const optKey = activeOption || Object.keys(specCfg.options)[0];
+        const firstKey = Object.keys(specCfg.options)[0];
+        const optKey = wantsNone ? firstKey : (activeOption || firstKey);
         const opt = specCfg.options[optKey];
-        layerName = typeof opt === 'string' ? opt : (opt.layer || "");
+        layerName = typeof opt === "string" ? opt : (opt?.layer || "");
       } else {
-        layerName = typeof specCfg === 'string' ? specCfg : (specCfg.layer || "");
+        layerName = typeof specCfg === "string" ? specCfg : (specCfg.layer || "");
       }
 
       const normalizedName = normalizeLayerName(layerName);
@@ -2377,7 +2388,7 @@ const MapContainer = forwardRef(({
 
       specializedLayers[id] = new TileLayer({
         title: `Network: ${specCfg.label || id}`,
-        visible: !!layerVisibility?.network?.[id],
+        visible: !!layerVisibility?.network?.[id] && !wantsNone,
         source: new TileWMS({
           url: `${GEOSERVER_BASE}/wms`, // Use Global WMS to support cross-workspace layers
           params: {
@@ -2400,6 +2411,9 @@ const MapContainer = forwardRef(({
     // ---------- ROAD CLASSIFICATION LAYERS ----------
     const roadClassLayers = {};
     Object.entries(cfg.roadClassifications || {}).forEach(([key, rcfg]) => {
+      if (!rcfg || typeof rcfg !== "object") return;
+      if (!rcfg.layer) return;
+
       const classParams = {
         LAYERS: rcfg.layer,
         TILED: true,
@@ -2423,6 +2437,31 @@ const MapContainer = forwardRef(({
       roadClassLayers[key].setZIndex(45);
     });
     roadClassLayersRef.current = roadClassLayers;
+
+    const lcluLayers = {};
+    Object.entries(cfg.LCLUClassifications || {}).forEach(([id, layerName]) => {
+      const normalizedName = normalizeLayerName(layerName);
+      if (!normalizedName) return;
+      lcluLayers[id] = new TileLayer({
+        title: `LCLU: ${id}`,
+        visible: !!layerVisibility?.lclu?.[id],
+        source: new TileWMS({
+          url: `${GEOSERVER_BASE}/wms`,
+          params: {
+            LAYERS: normalizedName,
+            TILED: true,
+            FORMAT: "image/png",
+            TRANSPARENT: true,
+            _t: Date.now(),
+          },
+          serverType: "geoserver",
+          transition: 0,
+          crossOrigin: "anonymous",
+        }),
+      });
+      lcluLayers[id].setZIndex(55);
+    });
+    lcluLayersRef.current = lcluLayers;
 
     const amenityLayers = {};
     const isDark = baseMap === "satellite" || baseMap === "toner";
@@ -2560,6 +2599,7 @@ const MapContainer = forwardRef(({
         chainageLayer,
         ...Object.values(specializedLayers),
         ...Object.values(roadClassLayers),
+        ...Object.values(lcluLayers),
         searchAreaLayer,
         amenitiesGroup,
         othersGroup,
@@ -3604,6 +3644,57 @@ const MapContainer = forwardRef(({
     };
   }, [city]);
 
+  const dssLegend = useMemo(() => {
+    const groups = [];
+
+    if (streetLightVisible) {
+      const c = streetLightCounts || {};
+      groups.push({
+        id: "streetLight",
+        title: "Street Light",
+        rows: [
+          { label: "Illuminated", color: "#10b981", count: c.illuminated },
+          { label: "Non-Illuminated", color: "#ef4444", count: c.nonIlluminated },
+          { label: "Others", color: "#f59e0b", count: c.others },
+        ],
+      });
+    }
+
+    if (underdevelopedVisible) {
+      const c = underdevelopedCounts || {};
+      groups.push({
+        id: "underdeveloped",
+        title: "Underdeveloped Zones",
+        rows: [
+          { label: "Developed", color: "#10b981", count: c.developed },
+          { label: "Underdeveloped", color: "#f59e0b", count: c.underdeveloped },
+          { label: "Non-Developed", color: "#ef4444", count: c.nonDeveloped },
+        ],
+      });
+    }
+
+    if (encroachmentVisible) {
+      const t = encroachmentTotals || {};
+      groups.push({
+        id: "encroachment",
+        title: "Encroachment",
+        rows: [
+          { label: "Encroached Roads", color: "#7c3aed", count: t.encroachedRoads },
+          { label: "Total Roads", color: "#334155", count: t.totalRoads },
+        ],
+      });
+    }
+
+    return groups;
+  }, [
+    streetLightVisible,
+    streetLightCounts,
+    underdevelopedVisible,
+    underdevelopedCounts,
+    encroachmentVisible,
+    encroachmentTotals,
+  ]);
+
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
     if (zoomFilter) return;
@@ -4003,6 +4094,22 @@ const MapContainer = forwardRef(({
       const cfg = cityConfig[city.toLowerCase()];
       if (!cfg) return null;
 
+      const normalizedTarget = normalizeLayerName(layerName);
+      if (normalizedTarget) {
+        const matchesWmsName = (layer) => {
+          const src = layer?.getSource?.();
+          const params = src?.getParams?.();
+          const current = normalizeLayerName(params?.LAYERS);
+          return !!current && current === normalizedTarget;
+        };
+
+        const specializedMatch = Object.values(specializedLayersRef.current || {}).find(matchesWmsName);
+        if (specializedMatch) return specializedMatch;
+
+        const lcluMatch = Object.values(lcluLayersRef.current || {}).find(matchesWmsName);
+        if (lcluMatch) return lcluMatch;
+      }
+
       if (cfg.amenities) {
         const amenityId = Object.keys(cfg.amenities).find(
           (key) => cfg.amenities[key] === layerName
@@ -4023,18 +4130,29 @@ const MapContainer = forwardRef(({
       return null;
     };
 
-    Object.entries(layerFilters).forEach(([layerName, filter]) => {
+    const prevFilters = lastLayerFiltersRef.current || {};
+    const nextFilters = layerFilters || {};
+    const allKeys = new Set([
+      ...Object.keys(prevFilters),
+      ...Object.keys(nextFilters),
+    ]);
+
+    allKeys.forEach((layerName) => {
+      const nextFilter = nextFilters[layerName];
+      const prevFilter = prevFilters[layerName];
+      if (nextFilter === prevFilter) return;
+
       const layer = findLayerBySourceParam(layerName);
       if (!layer) return;
-      const source = layer.getSource();
+      const source = layer.getSource?.();
       if (!source) return;
 
       if (typeof source.updateParams === "function") {
         source.updateParams({
-          CQL_FILTER: filter || null,
+          CQL_FILTER: nextFilter || null,
           _t: Date.now(),
         });
-        layer.setVisible(true);
+        if (nextFilter) layer.setVisible(true);
         return;
       }
 
@@ -4044,14 +4162,16 @@ const MapContainer = forwardRef(({
         if (url.includes("&CQL_FILTER=")) {
           url = url.split("&CQL_FILTER=")[0];
         }
-        if (filter) {
-          url = `${url}&CQL_FILTER=${encodeURIComponent(filter)}`;
+        if (nextFilter) {
+          url = `${url}&CQL_FILTER=${encodeURIComponent(nextFilter)}`;
         }
         source.setUrl(url);
         source.refresh();
-        layer.setVisible(true);
+        if (nextFilter) layer.setVisible(true);
       }
     });
+
+    lastLayerFiltersRef.current = nextFilters;
   }, [layerFilters, city]);
 
   // =====================================================
@@ -4422,14 +4542,17 @@ const MapContainer = forwardRef(({
 
     const filterLower = (roadFilter || "").toLowerCase();
     const isIdentifier = /gis_id\s*=|road_id\s*=/.test(filterLower);
+    const isNoneSelected = !!layerVisibility.roadClassifications?.none;
     const isAnyClassLayerVisible = Object.keys(layers).some(
-      key => !!layerVisibility.roadClassifications?.[key]
+      key => !!layerVisibility.roadClassifications?.[key] && key !== "none"
     );
 
     // Manage base road layer visibility
     if (roadNetworkLayerRef.current) {
-      // If a classification layer is active, HIDE the base layer
-      if (isAnyClassLayerVisible) {
+      if (isNoneSelected) {
+        roadNetworkLayerRef.current.setVisible(false);
+      } else if (isAnyClassLayerVisible) {
+        // If a classification layer is active, HIDE the base layer
         roadNetworkLayerRef.current.setVisible(false);
       } else {
         // Otherwise, show it if network.roads is enabled OR if there's a filter
@@ -4448,6 +4571,7 @@ const MapContainer = forwardRef(({
         });
       }
       const shouldShowLabels =
+        !isNoneSelected &&
         !getIsLowBandwidth() &&
         !isAnyClassLayerVisible &&
         (!!roadNetworkLayerRef.current?.getVisible?.() || !!roadFilter);
@@ -4467,7 +4591,7 @@ const MapContainer = forwardRef(({
       });
 
       const isVisibleByToggle = !!layerVisibility.roadClassifications?.[key];
-      const isVisible = isVisibleByToggle;
+      const isVisible = !isNoneSelected && isVisibleByToggle;
 
       if (isVisible) {
         layer.setVisible(true);
@@ -4548,14 +4672,38 @@ const MapContainer = forwardRef(({
         layer.setVisible(isVisible);
 
         if (isVisible && isGroup) {
-          const activeOption = layerVisibility?.specializedOptions?.[key] || Object.keys(specCfg.options)[0];
-          const opt = specCfg.options[activeOption];
-          const newLayerName = normalizeLayerName(typeof opt === 'string' ? opt : (opt.layer || ""));
+          const activeOption = layerVisibility?.specializedOptions?.[key];
+          const defaultNoneGroup = key === "drainage" || key === "slum";
+          const wantsNone =
+            String(activeOption) === "none" ||
+            (defaultNoneGroup && (activeOption === undefined || activeOption === null));
+
+          if (wantsNone) {
+            layer.setVisible(false);
+            return;
+          }
+
+          const optKey = activeOption || Object.keys(specCfg.options)[0];
+          const opt = specCfg.options[optKey];
+          const newLayerName = normalizeLayerName(typeof opt === "string" ? opt : (opt?.layer || ""));
 
           const source = layer.getSource();
           if (source && source.getParams().LAYERS !== newLayerName) {
             source.updateParams({ LAYERS: newLayerName, _t: Date.now() });
           }
+        }
+      }
+    });
+
+    Object.entries(lcluLayersRef.current).forEach(([id, layer]) => {
+      const visible = !!layerVisibility?.lclu?.[id];
+      layer.setVisible(visible);
+      if (visible) {
+        const source = layer.getSource?.();
+        if (source?.updateParams) {
+          source.updateParams({ _t: Date.now() });
+        } else if (source?.refresh) {
+          source.refresh();
         }
       }
     });
@@ -4764,6 +4912,15 @@ const MapContainer = forwardRef(({
               dataProjection: "EPSG:4326",
               featureProjection: "EPSG:3857",
             });
+
+            const analysisColorMap = {
+              bankRoad: "#2563eb",
+              hospitalRoad: "#ef4444",
+              educationRoad: "#a855f7",
+              hotelRoad: "#f59e0b",
+              parkRoad: "#10b981",
+            };
+
             const source = new VectorSource({
               features,
             });
@@ -4772,7 +4929,7 @@ const MapContainer = forwardRef(({
               visible: true,
               source,
               style: new Style({
-                stroke: new Stroke({ color: "#ff9800", width: 3 }),
+                stroke: new Stroke({ color: analysisColorMap[id] || "#ff9800", width: 3 }),
               }),
             });
             layer.setZIndex(65);
@@ -4815,6 +4972,129 @@ const MapContainer = forwardRef(({
       map.removeLayer(layer);
     });
     analysisLayersRef.current = {};
+  }, [city]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const styleStreetLight = (feature) => {
+      const status = String(feature?.get?.("illumination_status") || "").toUpperCase();
+      const filters = streetLightFilters || { illuminated: true, nonIlluminated: true, others: true };
+      const visible =
+        (status === "ILLUMINATED" && filters.illuminated) ||
+        (status === "NON_ILLUMINATED" && filters.nonIlluminated) ||
+        (!["ILLUMINATED", "NON_ILLUMINATED"].includes(status) && filters.others);
+      if (!visible) return null;
+      const color =
+        status === "ILLUMINATED" ? "#10b981" :
+        status === "NON_ILLUMINATED" ? "#ef4444" :
+        "#f59e0b";
+      return new Style({
+        stroke: new Stroke({ color, width: 3.5 }),
+      });
+    };
+
+    const styleUnderdeveloped = (feature) => {
+      const label = String(feature?.get?.("classification") || "").toLowerCase();
+      const filters = underdevelopedFilters || { developed: true, underdeveloped: true, nonDeveloped: true };
+      const visible =
+        (label === "developed" && filters.developed) ||
+        (label === "underdeveloped" && filters.underdeveloped) ||
+        (label === "non-developed" && filters.nonDeveloped);
+      if (!visible) return null;
+      const color =
+        label === "developed" ? "#10b981" :
+        label === "underdeveloped" ? "#f59e0b" :
+        "#ef4444";
+      return new Style({
+        stroke: new Stroke({ color, width: 4 }),
+      });
+    };
+
+    const syncGeojsonLayer = ({ id, visible, geojson, styleFn, zIndex }) => {
+      const existing = dssLayersRef.current[id];
+      if (!visible || !geojson?.features?.length) {
+        if (existing) existing.setVisible(false);
+        return;
+      }
+
+      const features = new GeoJSON().readFeatures(geojson, {
+        dataProjection: "EPSG:4326",
+        featureProjection: map.getView().getProjection(),
+      });
+
+      if (existing) {
+        existing.getSource?.().clear?.();
+        existing.getSource?.().addFeatures?.(features);
+        existing.setStyle(styleFn);
+        existing.setVisible(true);
+        return;
+      }
+
+      const layer = new VectorLayer({
+        title: `DSS: ${id}`,
+        visible: true,
+        source: new VectorSource({ features }),
+        style: styleFn,
+      });
+      layer.setZIndex(zIndex);
+      map.addLayer(layer);
+      dssLayersRef.current[id] = layer;
+    };
+
+    syncGeojsonLayer({
+      id: "streetLight",
+      visible: !!streetLightVisible,
+      geojson: streetLightGeojson,
+      styleFn: styleStreetLight,
+      zIndex: 140,
+    });
+
+    syncGeojsonLayer({
+      id: "underdeveloped",
+      visible: !!underdevelopedVisible,
+      geojson: underdevelopedGeojson,
+      styleFn: styleUnderdeveloped,
+      zIndex: 141,
+    });
+
+    const styleEncroachment = (feature) => {
+      const zoneNo = String(feature?.get?.("zone_no") || "").trim();
+      if (encroachmentZone && zoneNo !== String(encroachmentZone).trim()) return null;
+      return new Style({
+        stroke: new Stroke({ color: "#7c3aed", width: 4 }),
+      });
+    };
+
+    syncGeojsonLayer({
+      id: "encroachment",
+      visible: !!encroachmentVisible,
+      geojson: encroachmentGeojson,
+      styleFn: styleEncroachment,
+      zIndex: 142,
+    });
+  }, [
+    streetLightVisible,
+    streetLightGeojson,
+    streetLightFilters,
+    underdevelopedVisible,
+    underdevelopedGeojson,
+    underdevelopedFilters,
+    encroachmentVisible,
+    encroachmentGeojson,
+    encroachmentZone,
+  ]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    return () => {
+      Object.values(dssLayersRef.current).forEach((layer) => {
+        try { map.removeLayer(layer); } catch { }
+      });
+      dssLayersRef.current = {};
+    };
   }, [city]);
 
   // =====================================================
@@ -4895,9 +5175,9 @@ const MapContainer = forwardRef(({
   // ⭐ NEW: CENTRALIZED MAP HIGHLIGHT RENDERER
   // =====================================================
   const activeRoadIds = useMemo(() => {
-    if (isMultiSelectMode) return selectedRoadIds || [];
+    if (isMultiSelectMode) return selectedRoadIds || EMPTY_ARRAY;
     if (selectedRoadId) return [String(selectedRoadId)];
-    return [];
+    return EMPTY_ARRAY;
   }, [isMultiSelectMode, selectedRoadIds, selectedRoadId]);
 
   useEffect(() => {
@@ -5189,6 +5469,7 @@ const MapContainer = forwardRef(({
           onApplyFilter={onRoadFilterChange}
           amenityCounts={amenityLegendCounts}
           otherCounts={otherLegendCounts}
+          dssLegend={dssLegend}
         />
       </div>
 

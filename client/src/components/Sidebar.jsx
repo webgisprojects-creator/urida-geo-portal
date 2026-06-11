@@ -2,6 +2,7 @@
 /* Sidebar UI for layer toggles, road classifications, and analysis options. */
 import React, { useMemo, useState } from "react";
 import { cityConfig } from "../assets/configs/cityConfig";
+import DrainFilter from "./DrainFilter";
 
 const formatLabel = (value) =>
     String(value || "")
@@ -41,20 +42,17 @@ const otherIconMap = {
 const networkIconMap = {
     sewage_diameter: "fa-faucet-drip",
     sewage_length: "fa-ruler-horizontal",
-    drainage: "fa-faucet",
-    drainage_condition: "fa-clipboard-check",
-    drainage_material: "fa-trowel-bricks",
     lulc: "fa-map",
     slum_roads: "fa-road",
     slum_boundary: "fa-vector-square",
 };
 
 const analysisOptions = [
-    { id: "bankRoad", label: "Roads Near Banks", icon: "fa-university" },
-    { id: "hospitalRoad", label: "Roads Near Hospitals", icon: "fa-hospital" },
-    { id: "educationRoad", label: "Roads Near Education", icon: "fa-book-open" },
-    { id: "hotelRoad", label: "Roads Near Hotels", icon: "fa-hotel" },
-    { id: "parkRoad", label: "Roads Near Parks", icon: "fa-tree" },
+    { id: "bankRoad", label: "Roads Near Banks", icon: "fa-university", color: "#2563eb" },
+    { id: "hospitalRoad", label: "Roads Near Hospitals", icon: "fa-hospital", color: "#ef4444" },
+    { id: "educationRoad", label: "Roads Near Education", icon: "fa-book-open", color: "#a855f7" },
+    { id: "hotelRoad", label: "Roads Near Hotels", icon: "fa-hotel", color: "#f59e0b" },
+    { id: "parkRoad", label: "Roads Near Parks", icon: "fa-tree", color: "#10b981" },
 ];
 
 const Sidebar = ({
@@ -65,6 +63,8 @@ const Sidebar = ({
     tableVisible = false,
     tableMinimized = false,
     tableHasRows = false,
+    drainageController = null,
+    onClose,
 }) => {
     const [activeTab, setActiveTab] = useState("amenities");
     const normalizedCity = String(city || "").toLowerCase().trim();
@@ -72,10 +72,21 @@ const Sidebar = ({
 
     const amenities = useMemo(() => Object.keys(cityData.amenities || {}), [cityData]);
     const others = useMemo(() => Object.keys(cityData.others || {}), [cityData]);
+    const lcluClassifications = useMemo(() => Object.keys(cityData.LCLUClassifications || {}), [cityData]);
     const classifications = useMemo(
         () => Object.keys(cityData.roadClassifications || {}),
         [cityData]
     );
+
+    const cityPrefix = useMemo(
+        () => String(cityData?.name || "").replace(/\s+/g, "_"),
+        [cityData]
+    );
+    const getLcluLabel = (key) => {
+        const prefix = cityPrefix ? `${cityPrefix}_` : "";
+        const value = prefix && String(key).startsWith(prefix) ? String(key).slice(prefix.length) : key;
+        return formatLabel(value);
+    };
     const specializedNetworks = useMemo(
         () => Object.keys(cityData.specializedNetworks || {}),
         [cityData]
@@ -138,6 +149,14 @@ const Sidebar = ({
                 </button>
                 <button
                     type="button"
+                    className={`sidebar-tab-btn ${activeTab === "lclu" ? "active" : ""}`}
+                    onClick={() => setActiveTab("lclu")}
+                >
+                    <i className="fa-solid fa-map lclu-icon"></i>
+                    LCLU
+                </button>
+                <button
+                    type="button"
                     className={`sidebar-tab-btn ${activeTab === "analysis" ? "active" : ""}`}
                     onClick={() => setActiveTab("analysis")}
                 >
@@ -175,16 +194,86 @@ const Sidebar = ({
                             <input
                                 type="checkbox"
                                 checked={!!layerVisibility?.network?.roads}
-                                onChange={(e) => toggleLayer("network", "roads", e.target.checked)}
+                                onChange={(e) => {
+                                    const checked = e.target.checked;
+                                    toggleLayer("network", "roads", checked);
+                                    if (!checked) {
+                                        toggleLayer("roadClassifications", "none", false);
+                                        classifications.forEach((key) => toggleLayer("roadClassifications", key, false));
+                                    }
+                                }}
                             />
                             <i className="icon fa-solid fa-road"></i>
                             <span className="text">Road Network</span>
                         </label>
+                    </form>
+
+                    {!!layerVisibility?.network?.roads && (
+                        <div className="sub-options-radio">
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="road-classification"
+                                    checked={selectedClassification === "none"}
+                                    onChange={() => toggleLayer("roadClassifications", "none", true)}
+                                />
+                                <i className="icon fa-solid fa-ban"></i>
+                                <span className="text">None</span>
+                            </label>
+                            {classifications.map((key) => (
+                                <label key={key}>
+                                    <input
+                                        type="radio"
+                                        name="road-classification"
+                                        checked={selectedClassification === key}
+                                        onChange={() => toggleLayer("roadClassifications", key, true)}
+                                    />
+                                    <i className="icon fa-solid fa-layer-group"></i>
+                                    <span className="text">{formatLabel(key)}</span>
+                                </label>
+                            ))}
+                        </div>
+                    )}
+
+                    <div className="section-divider"></div>
+
+                    <form>
                         {specializedNetworks.map((key) => {
+                            if (key === "drainage") {
+                                return (
+                                    <DrainFilter
+                                        key="drainage"
+                                        city={city}
+                                        layerVisibility={layerVisibility}
+                                        setLayerVisibility={drainageController?.setLayerVisibility}
+                                        tableDataset={drainageController?.tableDataset}
+                                        setIsLoading={drainageController?.setIsLoading}
+                                        setSelectedRoadId={drainageController?.setSelectedRoadId}
+                                        setSelectedRoadIds={drainageController?.setSelectedRoadIds}
+                                        setIsMultiSelectMode={drainageController?.setIsMultiSelectMode}
+                                        setSelectedRoad={drainageController?.setSelectedRoad}
+                                        setActiveFilterColumn={drainageController?.setActiveFilterColumn}
+                                        setFilterPosition={drainageController?.setFilterPosition}
+                                        setColumnFilters={drainageController?.setColumnFilters}
+                                        setSpecializedColumnFilters={drainageController?.setSpecializedColumnFilters}
+                                        setSpecializedAllRows={drainageController?.setSpecializedAllRows}
+                                        setTableRows={drainageController?.setTableRows}
+                                        setGlobalTableMetrics={drainageController?.setGlobalTableMetrics}
+                                        setCurrentPage={drainageController?.setCurrentPage}
+                                        setTableDataset={drainageController?.setTableDataset}
+                                        setShouldFetchTable={drainageController?.setShouldFetchTable}
+                                        setIsTableMinimized={drainageController?.setIsTableMinimized}
+                                    />
+                                );
+                            }
                             const specCfg = cityData.specializedNetworks[key];
                             const isGroup = specCfg && typeof specCfg === "object" && specCfg.options;
                             const isChecked = !!layerVisibility?.network?.[key];
                             const activeOption = layerVisibility?.specializedOptions?.[key];
+                            const effectiveOption =
+                                key === "slum" && (activeOption === undefined || activeOption === null)
+                                    ? "none"
+                                    : activeOption;
 
                             return (
                                 <div key={key} className="specialized-network-item">
@@ -197,7 +286,33 @@ const Sidebar = ({
                                         <i className={`icon fa-solid ${networkIconMap[key] || "fa-route"}`}></i>
                                         <span className="text">{specCfg.label || formatLabel(key)}</span>
                                     </label>
-                                    {isGroup && isChecked && (
+                                    {isGroup && isChecked && key === "slum" && (
+                                        <div className="sub-options-radio">
+                                            <label key="none">
+                                                <input
+                                                    type="radio"
+                                                    name={`specialized-${key}`}
+                                                    checked={String(effectiveOption) === "none"}
+                                                    onChange={() => toggleLayer("network", key, true, "none")}
+                                                />
+                                                <i className="icon fa-solid fa-ban"></i>
+                                                <span className="text">None</span>
+                                            </label>
+                                            {Object.entries(specCfg.options).map(([optKey, optCfg]) => (
+                                                <label key={optKey}>
+                                                    <input
+                                                        type="radio"
+                                                        name={`specialized-${key}`}
+                                                        checked={String(effectiveOption) === String(optKey)}
+                                                        onChange={() => toggleLayer("network", key, true, optKey)}
+                                                    />
+                                                    <i className="icon fa-solid fa-layer-group"></i>
+                                                    <span className="text">{typeof optCfg === "string" ? formatLabel(optKey) : optCfg.label}</span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {isGroup && isChecked && key !== "slum" && (
                                         <div className="sub-options-selector">
                                             {Object.entries(specCfg.options).map(([optKey, optCfg]) => (
                                                 <button
@@ -206,7 +321,7 @@ const Sidebar = ({
                                                     className={`sub-opt-btn ${String(activeOption) === String(optKey) ? "active" : ""}`}
                                                     onClick={() => toggleLayer("network", key, true, optKey)}
                                                 >
-                                                    {typeof optCfg === 'string' ? formatLabel(optKey) : optCfg.label}
+                                                    {typeof optCfg === "string" ? formatLabel(optKey) : optCfg.label}
                                                 </button>
                                             ))}
                                         </div>
@@ -214,31 +329,6 @@ const Sidebar = ({
                                 </div>
                             );
                         })}
-                    </form>
-                    <div className="section-divider"></div>
-                    <form>
-                        <label>
-                            <input
-                                type="radio"
-                                name="road-classification"
-                                checked={selectedClassification === "none"}
-                                onChange={() => toggleLayer("roadClassifications", "none", false)}
-                            />
-                            <i className="icon fa-solid fa-ban"></i>
-                            <span className="text">None</span>
-                        </label>
-                        {classifications.map((key) => (
-                            <label key={key}>
-                                <input
-                                    type="radio"
-                                    name="road-classification"
-                                    checked={selectedClassification === key}
-                                    onChange={() => toggleLayer("roadClassifications", key, true)}
-                                />
-                                <i className="icon fa-solid fa-layer-group"></i>
-                                <span className="text">{formatLabel(key)}</span>
-                            </label>
-                        ))}
                     </form>
                 </div>
             )}
@@ -265,6 +355,28 @@ const Sidebar = ({
                 </div>
             )}
 
+            {activeTab === "lclu" && (
+                <div className="sidebar-section">
+                    <form>
+                        {lcluClassifications.length > 0 ? (
+                            lcluClassifications.map((key) => (
+                                <label key={key}>
+                                    <input
+                                        type="checkbox"
+                                        checked={!!layerVisibility?.lclu?.[key]}
+                                        onChange={(e) => toggleLayer("lclu", key, e.target.checked)}
+                                    />
+                                    <i className="icon fa-solid fa-map"></i>
+                                    <span className="text">{getLcluLabel(key)}</span>
+                                </label>
+                            ))
+                        ) : (
+                            <div className="text">No LCLU layers available</div>
+                        )}
+                    </form>
+                </div>
+            )}
+
             {activeTab === "analysis" && (
                 <div className="sidebar-section">
                     <form>
@@ -275,7 +387,10 @@ const Sidebar = ({
                                     checked={!!layerVisibility?.analysis?.[option.id]}
                                     onChange={(e) => toggleLayer("analysis", option.id, e.target.checked)}
                                 />
-                                <i className={`icon fa-solid ${option.icon}`}></i>
+                                <i
+                                    className={`icon fa-solid ${option.icon}`}
+                                    style={option.color ? { color: option.color } : undefined}
+                                ></i>
                                 <span className="text">{option.label}</span>
                             </label>
                         ))}

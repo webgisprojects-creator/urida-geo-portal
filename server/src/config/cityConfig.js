@@ -85,3 +85,33 @@ export const getCityUtmEpsg = (city) => {
   if (!srid) throw new Error(`UTM SRID not mapped for ${city}`);
   return srid;
 };
+
+export const getCityOwnershipConfig = (city) => {
+  const c = String(city || "").toLowerCase().trim();
+
+  const municipalRegex =
+    "(nagar\\s*nigam|nagarnigam|nagar\\s*nigam\\s*nidhi|municipal\\s*corporation|municipal\\s*corp|\\mnn\\M|\\mn\\.?n\\.?\\M|\\m[a-z]{1,6}nn\\M)";
+  const municipalNormRegex = "^(ann|bnn|gkpnn|jnn|knn|lnn|mvnn|snn|nn)$";
+
+  const mapped = {
+    agra: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    aligarh: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    ayodhya: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    bareilly: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    firozabad: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    ghaziabad: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    gorakhpur: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    jhansi: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    kanpur: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    lucknow: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    mathura: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    meerut: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    moradabad: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    prayagraj: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    saharanpur: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    shahjahanpur: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+    varanasi: { mode: "regex", regex: municipalRegex, normRegex: municipalNormRegex },
+  };
+
+  return mapped[c] || null;
+};

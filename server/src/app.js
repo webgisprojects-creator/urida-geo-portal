@@ -1,16 +1,18 @@
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
-import bodyParser from 'body-parser';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import cityRoutes from './routes/cityRoutes.js';
 import authRoutes from './routes/authRoutes.js';
+// import chainageRoutes from './routes/chainage.js';
+import adminRoutes from './routes/adminRoutes.js';
 import roadNetworkRoutes from './roadNetwork.js';
-import { auditLogger } from './middleware/authMiddleware.js';
+import { auditLogger, tryVerifyToken } from './middleware/authMiddleware.js';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 
 // Use __dirname-relative path so this works regardless of which directory
@@ -21,11 +23,14 @@ dotenv.config({ path: path.resolve(__dirname_app, '../../server/.env') });
 
 const app = express();
 app.set('trust proxy', 1);
+app.disable('x-powered-by');
 
 app.use(compression()); // Compress all responses
 
 // Origins always allowed in production (and dev)
 const productionAllowedOrigins = [
+  'https://27.100.38.133',
+  'http://27.100.38.133',
   'http://uridageoportal.com',
   'https://uridageoportal.com',
   'http://www.uridageoportal.com',
@@ -45,6 +50,26 @@ const localhostPattern = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 const ngrokPattern    = /^https?:\/\/.+\.(ngrok\.io|ngrok-free\.app)$/;
 
 const isDev = (process.env.NODE_ENV || 'development') !== 'production';
+const cspConnectSources = [
+  "'self'",
+  'https://27.100.38.133',
+  'https://nominatim.openstreetmap.org',
+  'https://photon.komoot.io',
+  'https://overpass-api.de',
+  'https://maps.googleapis.com',
+  'https://geocode.arcgis.com',
+  'https://services.arcgisonline.com'
+];
+if (isDev) {
+  cspConnectSources.push(
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:8060',
+    'http://127.0.0.1:8060',
+    'http://localhost:8080',
+    'http://127.0.0.1:8080'
+  );
+}
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -79,46 +104,91 @@ app.use(
     target: process.env.GEOSERVER_PROXY_TARGET || 'http://localhost:8080',
     changeOrigin: true,
     onProxyRes: function (proxyRes, req, res) {
-      // Ensure CORS headers are present on the proxied response
-      proxyRes.headers['Access-Control-Allow-Origin'] = '*';
-      proxyRes.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, PATCH, DELETE';
+      const origin = String(req.headers.origin || '').replace(/\/$/, '');
+      if (origin && (allowedOrigins.includes(origin) || (isDev && localhostPattern.test(origin)) || ngrokPattern.test(origin))) {
+        proxyRes.headers['Access-Control-Allow-Origin'] = origin;
+        proxyRes.headers['Vary'] = 'Origin';
+      }
+      proxyRes.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS';
       proxyRes.headers['Access-Control-Allow-Headers'] = 'X-Requested-With,Content-Type,Authorization';
     },
     onError: (err, req, res) => {
       console.error('Proxy Error:', err);
-      res.status(502).send('Proxy Error');
+      res.status(502).send('Bad gateway');
     }
   })
 );
 
-app.use(bodyParser.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(helmet({
-  contentSecurityPolicy: false,
-  referrerPolicy: { policy: 'strict-origin-when-cross-origin' }
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      imgSrc: ["'self'", 'data:', 'https:'],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      connectSrc: cspConnectSources,
+      fontSrc: ["'self'", 'data:'],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      frameAncestors: ["'self'"],
+      upgradeInsecureRequests: isDev ? null : [],
+    },
+  },
+  frameguard: { action: 'sameorigin' },
+  noSniff: true,
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+  },
+  referrerPolicy: { policy: 'no-referrer-when-downgrade' }
 }));
+app.use((req, res, next) => {
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=(), usb=(), fullscreen=(self)');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  next();
+});
 app.use(auditLogger);
 
-const authLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
 // Routes
-app.use('/api', cityRoutes);
-app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api/road-networks', roadNetworkRoutes);
+app.use('/api', cityRoutes);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const clientBuildPath = path.resolve(__dirname, '../../client/build');
-app.use(express.static(clientBuildPath));
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api')) {
-    return next();
-  }
-  return res.sendFile(path.join(clientBuildPath, 'index.html'));
+const clientIndexPath = path.join(clientBuildPath, 'index.html');
+const hasClientBuild = fs.existsSync(clientIndexPath);
+
+app.get('/robots.txt', (req, res) => {
+  res.status(404).type('text/plain').send('Not found');
 });
+
+if (hasClientBuild) {
+  app.use(express.static(clientBuildPath));
+  ['/home', '/dashboard', '/dss', '/admin'].forEach((routePath) => {
+    app.get(routePath, tryVerifyToken, (req, res) => {
+      if (!req.user) return res.redirect('/');
+      return res.sendFile(clientIndexPath);
+    });
+  });
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    return res.sendFile(clientIndexPath);
+  });
+} else {
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    return res.status(404).send('Not found');
+  });
+}
 
 export default app;

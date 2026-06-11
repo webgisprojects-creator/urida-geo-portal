@@ -395,10 +395,49 @@ export const exportToPDF = async ({
   overlayVisibility,
   roadFilter,
   columnFilters, // ⭐ NEW
+  title,
+  mapTitle,
+  columns: overrideColumns,
 }) => {
   // ── 1. Capture map ──
   const mapCanvas = await captureMapCanvas(mapRef);
   await drawWatermark(mapCanvas, watermarkSrc);
+
+  const toLabel = (key) =>
+    String(key || "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  const hidden = new Set(["geometry", "geom", "the_geom", "bbox", "wkt"]);
+  const inferColumns = (inputRows) => {
+    const sample = Array.isArray(inputRows) ? inputRows.slice(0, 80) : [];
+    const keys = new Set();
+    sample.forEach((r) => {
+      if (!r || typeof r !== "object") return;
+      Object.keys(r).forEach((k) => {
+        const key = String(k || "");
+        if (!key) return;
+        if (hidden.has(key.toLowerCase())) return;
+        keys.add(k);
+      });
+    });
+    const list = Array.from(keys);
+    const hasRoadColumns = EXPORT_COLUMNS.every((c) => Object.prototype.hasOwnProperty.call(sample[0] || {}, c.key));
+    if (hasRoadColumns) {
+      return EXPORT_COLUMNS.map((c) => ({ header: c.label, dataKey: c.key }));
+    }
+    return list.map((k) => ({ header: toLabel(k), dataKey: k }));
+  };
+  const columns = Array.isArray(overrideColumns) && overrideColumns.length
+    ? overrideColumns
+    : inferColumns(rows);
+  const bodyRows = (Array.isArray(rows) ? rows : []).map((r) => {
+    const out = {};
+    columns.forEach((c) => {
+      const key = c.dataKey;
+      out[key] = formatVal(key, r?.[key]);
+    });
+    return out;
+  });
 
   // ── 2. Create PDF (landscape A4) ──
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
@@ -415,7 +454,7 @@ export const exportToPDF = async ({
   doc.setFontSize(13);
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
-  const cityTitle = `${String(city).toUpperCase()} — Road Network Map`;
+  const cityTitle = mapTitle || `${String(city).toUpperCase()} — ${title ? `${title} Map` : "Map"}`;
   doc.text(cityTitle, margin, 18);
 
   // Timestamp (right side of header)
@@ -520,14 +559,11 @@ export const exportToPDF = async ({
     doc.setFontSize(12);
     doc.setTextColor(255, 255, 255);
     doc.setFont("helvetica", "bold");
-    doc.text(`${String(city).toUpperCase()} — Road Attribute Table (${rows.length} records)`, margin, 18);
-
-    const columns = EXPORT_COLUMNS.map((c) => ({ header: c.label, dataKey: c.key }));
-    const tableRows = rows.map(cleanRow);
+    doc.text(`${String(city).toUpperCase()} — ${title || "Attribute Table"} (${rows.length} records)`, margin, 18);
 
     autoTable(doc, {
       columns,
-      body: tableRows,
+      body: bodyRows,
       startY: headerH + 8,
       margin: { left: margin, right: margin },
       styles: {
@@ -548,23 +584,23 @@ export const exportToPDF = async ({
       alternateRowStyles: {
         fillColor: [245, 247, 252],
       },
-      columnStyles: {
-        road_id:   { cellWidth: 38 },
+      columnStyles: columns.some((c) => c.dataKey === "road_id") ? {
+        road_id: { cellWidth: 38 },
         road_name: { cellWidth: 75 },
-        zone_no:   { cellWidth: 28 },
+        zone_no: { cellWidth: 28 },
         zone_name: { cellWidth: 60 },
-        ward_no:   { cellWidth: 28 },
+        ward_no: { cellWidth: 28 },
         ward_name: { cellWidth: 60 },
         ownership: { cellWidth: 55 },
         condition: { cellWidth: 40 },
-        category:  { cellWidth: 45 },
-        material:  { cellWidth: 40 },
-        yoc:       { cellWidth: 32 },
+        category: { cellWidth: 45 },
+        material: { cellWidth: 40 },
+        yoc: { cellWidth: 32 },
         cus_class: { cellWidth: 40 },
         row_meter: { cellWidth: 32 },
-        carriage_w:{ cellWidth: 38 },
+        carriage_w: { cellWidth: 38 },
         length_km: { cellWidth: 36 },
-      },
+      } : undefined,
       didDrawPage: (data) => {
         // Footer with page numbers
         doc.setFontSize(7.5);
@@ -585,7 +621,8 @@ export const exportToPDF = async ({
 
   // ── 5. Save ──
   const dateStr = new Date().toISOString().slice(0, 10);
-  doc.save(`road_report_${String(city).toLowerCase()}_${dateStr}.pdf`);
+  const safeTitle = String(title || "report").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  doc.save(`${safeTitle}_${String(city).toLowerCase()}_${dateStr}.pdf`);
 };
 
 // ─── MAIN: Export to Excel ────────────────────────────────────────────────────
@@ -595,24 +632,52 @@ export const exportToPDF = async ({
  * @param {object[]} rows  — data.data array from API
  * @param {string}   city  — city name
  */
-export const exportToExcel = (rows, city) => {
-  // Clean rows: only EXPORT_COLUMNS, raw numeric values (full DB precision)
-  const cleanedRows = rows.map(cleanRowForExcel);
+export const exportToExcel = (rows, city, opts = {}) => {
+  const toLabel = (key) =>
+    String(key || "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  const hidden = new Set(["geometry", "geom", "the_geom", "bbox", "wkt"]);
+  const safeTitle = String(opts?.title || "data").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 
-  // Build worksheet with header labels (not raw keys)
-  const headerMap = EXPORT_COLUMNS.map((c) => c.label);
+  const inputRows = Array.isArray(rows) ? rows : [];
+  const sample = inputRows.slice(0, 80);
+  const hasRoadColumns = EXPORT_COLUMNS.every((c) => Object.prototype.hasOwnProperty.call(sample[0] || {}, c.key));
+  const columns = Array.isArray(opts?.columns) && opts.columns.length
+    ? opts.columns
+    : (hasRoadColumns
+      ? EXPORT_COLUMNS.map((c) => ({ label: c.label, key: c.key }))
+      : (() => {
+        const keys = new Set();
+        sample.forEach((r) => {
+          if (!r || typeof r !== "object") return;
+          Object.keys(r).forEach((k) => {
+            const key = String(k || "");
+            if (!key) return;
+            if (hidden.has(key.toLowerCase())) return;
+            keys.add(k);
+          });
+        });
+        return Array.from(keys).map((k) => ({ label: toLabel(k), key: k }));
+      })());
+
   const wsData = [
-    headerMap,
-    ...cleanedRows.map((row) => EXPORT_COLUMNS.map((c) => row[c.key] ?? "")),
+    columns.map((c) => c.label),
+    ...inputRows.map((row) => columns.map((c) => {
+      const val = row?.[c.key];
+      if (val === null || val === undefined) return "";
+      const asNum = Number(val);
+      return Number.isFinite(asNum) && String(val).trim() !== "" ? asNum : val;
+    })),
   ];
 
   const ws = XLSX.utils.aoa_to_sheet(wsData);
 
   // Auto-column widths
-  const colWidths = EXPORT_COLUMNS.map((col) => {
+  const colWidths = columns.map((col) => {
     const maxLen = Math.max(
-      col.label.length,
-      ...rows.slice(0, 200).map((r) => String(r[col.key] ?? "").length)
+      String(col.label || "").length,
+      ...inputRows.slice(0, 200).map((r) => String(r?.[col.key] ?? "").length)
     );
     return { wch: Math.min(maxLen + 2, 40) };
   });
@@ -622,10 +687,10 @@ export const exportToExcel = (rows, city) => {
   ws["!freeze"] = { xSplit: 0, ySplit: 1 };
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Road Data");
+  XLSX.utils.book_append_sheet(wb, ws, opts?.sheetName || (hasRoadColumns ? "Road Data" : "Table Data"));
 
   const dateStr = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(wb, `road_data_${String(city).toLowerCase()}_${dateStr}.xlsx`);
+  XLSX.writeFile(wb, `${safeTitle}_${String(city).toLowerCase()}_${dateStr}.xlsx`);
 };
 
 // ─── Convert GeoJSON geometry to KML coords string ────────────────────────────

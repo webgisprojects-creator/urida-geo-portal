@@ -1,7 +1,7 @@
 // src/pages/Dashboard.jsx
 /* Dashboard feature hub: header/menu, sidebar layer toggles, map/toolbar, table, exports, summaries. */
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import { useLocation } from "react-router-dom";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { exportToPDF, exportToExcel, exportToKML, captureMapCanvas, drawWatermark } from "../utils/gisExport";
 import { saveAs } from "file-saver";
 
@@ -100,8 +100,9 @@ const RangeSlider = ({ col, min, max, value, onChange }) => {
   );
 };
 
-const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, city, baseFilter, columnFilters, onRangePreview }) => {
-  const isNumericCol = NUMERIC_COLS.includes(column.key);
+const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, city, baseFilter, columnFilters, onRangePreview, datasetKind, localRows }) => {
+  const isSpecialized = datasetKind === "specialized";
+  const isNumericCol = !isSpecialized && NUMERIC_COLS.includes(column.key);
   const [selected, setSelected] = useState(currentFilters || []);
   const [distinctValues, setDistinctValues] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -127,6 +128,25 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
     let active = true;
     setLoading(true);
     setError(null);
+
+    if (isSpecialized) {
+      const rows = Array.isArray(localRows) ? localRows : [];
+      const uniq = new Set();
+      for (const row of rows) {
+        if (!row || typeof row !== "object") continue;
+        const v = row[column.key];
+        if (v === null || v === undefined || v === "") continue;
+        uniq.add(String(v));
+      }
+      const values = sortDistinctValues(Array.from(uniq));
+      if (active) {
+        setDistinctValues(values);
+        setLoading(false);
+      }
+      return () => {
+        active = false;
+      };
+    }
 
     const otherFilters = { ...columnFilters };
     delete otherFilters[column.key];
@@ -184,7 +204,7 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
       });
 
     return () => { active = false; };
-  }, [column.key, city, baseFilter, columnFilters]);
+  }, [column.key, city, baseFilter, columnFilters, isSpecialized, localRows]);
 
   const filteredValues = isNumericCol ? [] : distinctValues.filter(val =>
     val.toLowerCase().includes(searchTerm.toLowerCase())
@@ -350,6 +370,7 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
 };
 
 const DashboardPage = () => {
+  const navigate = useNavigate();
   const location = useLocation();
   const queryParams = new URLSearchParams(location.search);
   const city = (queryParams.get("city") || "Lucknow").toLowerCase();
@@ -380,6 +401,7 @@ const DashboardPage = () => {
     network: {}, // Roads OFF by default per user request
     amenities: {},
     others: {},
+    lclu: {},
     roadClassifications: {},
     specializedOptions: {}, // e.g. { sewage: 'diameter' }
   });
@@ -390,7 +412,17 @@ const DashboardPage = () => {
   const [selectedRoadIds, setSelectedRoadIds] = useState([]);
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
 
+  const normalizeLayerName = (value) => String(value || "").replace(/\s*:\s*/g, ":").trim();
+
   // ⭐ NEW: table data state
+  const [tableDataset, setTableDataset] = useState({
+    kind: "roads",
+    title: "Road Network",
+    networkId: null,
+    option: null,
+    layerName: null,
+    columns: null,
+  });
   const [tableRows, setTableRows] = useState([]);
   const [globalTableMetrics, setGlobalTableMetrics] = useState({ total_roads: 0, total_length_km: 0 });
   const [liveTableMetrics, setLiveTableMetrics] = useState(null);
@@ -398,6 +430,8 @@ const DashboardPage = () => {
   const liveMetricsTimerRef = useRef(null);
   const [shouldFetchTable, setShouldFetchTable] = useState(true);
   const [columnFilters, setColumnFilters] = useState({});
+  const [specializedAllRows, setSpecializedAllRows] = useState([]);
+  const [specializedColumnFilters, setSpecializedColumnFilters] = useState({});
   const [isLoading, setIsLoading] = useState(false); // ⭐ NEW: Global loading state
   const [isDownloading, setIsDownloading] = useState(false); // ⭐ Download in progress
   const [activeFilterColumn, setActiveFilterColumn] = useState(null);
@@ -455,7 +489,7 @@ const DashboardPage = () => {
     return () => window.removeEventListener("click", handleClickOutside);
   }, []);
 
-  const tableColumns = [
+  const roadTableColumns = [
     { label: "Road Id", key: "road_id" },
     { label: "Zone No.", key: "zone_no", filterable: true },
     { label: "Zone Name", key: "zone_name" },
@@ -472,6 +506,54 @@ const DashboardPage = () => {
     { label: "Carriage Way", key: "carriage_w", filterable: true },
     { label: "Length (km)", key: "length_km", filterable: true },
   ];
+
+  const formatGenericColumnLabel = (value) =>
+    String(value || "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const genericTableColumns = useMemo(() => {
+    if (tableDataset.kind !== "specialized") return [];
+
+    const payloadColumns = Array.isArray(tableDataset.columns) ? tableDataset.columns : null;
+    const hidden = new Set(["geometry", "geom", "gid", "id"]);
+
+    const baseKeys = (payloadColumns && payloadColumns.length > 0)
+      ? payloadColumns.filter((k) => k && !hidden.has(String(k).toLowerCase()))
+      : (() => {
+        const keys = new Set();
+        (tableRows || []).slice(0, 50).forEach((row) => {
+          if (!row || typeof row !== "object") return;
+          Object.keys(row).forEach((k) => {
+            if (!k) return;
+            if (hidden.has(String(k).toLowerCase())) return;
+            keys.add(k);
+          });
+        });
+        return Array.from(keys);
+      })();
+
+    const order = Array.isArray(tableDataset.columnOrder) ? tableDataset.columnOrder : null;
+    const labelMap =
+      tableDataset.columnLabelMap && typeof tableDataset.columnLabelMap === "object"
+        ? tableDataset.columnLabelMap
+        : null;
+    if (order && order.length > 0) {
+      const present = new Set(baseKeys);
+      const ordered = order.filter((k) => present.has(k));
+      const remaining = baseKeys.filter((k) => !ordered.includes(k));
+      const finalKeys = [...ordered, ...remaining];
+      return finalKeys.map((key) => ({
+        label: (labelMap && labelMap[key]) ? labelMap[key] : formatGenericColumnLabel(key),
+        key,
+        filterable: true,
+      }));
+    }
+
+    return baseKeys.map((key) => ({ label: formatGenericColumnLabel(key), key, filterable: true }));
+  }, [tableDataset.kind, tableDataset.columns, tableDataset.columnOrder, tableDataset.columnLabelMap, tableRows]);
+
+  const tableColumns = tableDataset.kind === "specialized" ? genericTableColumns : roadTableColumns;
 
   // ⭐ NEW: Combine Base Filter + Column Filters
   useEffect(() => {
@@ -562,8 +644,120 @@ const DashboardPage = () => {
     if (liveMetricsRef.current.controller) liveMetricsRef.current.controller.abort();
   }, []);
 
+  const applySpecializedFilters = useCallback((rows, filters) => {
+    const src = Array.isArray(rows) ? rows : [];
+    const entries = Object.entries(filters || {}).filter(([, v]) => Array.isArray(v) && v.length > 0);
+    if (entries.length === 0) return src;
+
+    return src.filter((row) => {
+      if (!row || typeof row !== "object") return false;
+      for (const [colKey, vals] of entries) {
+        const cell = row[colKey];
+        const cellStr = cell === null || cell === undefined ? "" : String(cell);
+        if (!vals.map(String).includes(cellStr)) return false;
+      }
+      return true;
+    });
+  }, []);
+
+  const specializedLayerNameRef = useRef(null);
+  const buildSpecializedCqlFilter = useCallback((filters) => {
+    const entries = Object.entries(filters || {}).filter(([, v]) => Array.isArray(v) && v.length > 0);
+    if (!entries.length) return "";
+    const numericRe = /^-?\d+(?:\.\d+)?$/;
+    return entries
+      .map(([key, vals]) => {
+        const parts = vals.map((v) => String(v).trim()).filter(Boolean);
+        if (!parts.length) return null;
+        const isNumeric = parts.every((v) => numericRe.test(v));
+        if (isNumeric) return `${key} IN (${parts.join(",")})`;
+        const quoted = parts.map((v) => `'${v.replace(/'/g, "''")}'`).join(",");
+        return `${key} IN (${quoted})`;
+      })
+      .filter(Boolean)
+      .join(" AND ");
+  }, []);
+
+  useEffect(() => {
+    if (tableDataset.kind !== "specialized") {
+      const prevLayer = specializedLayerNameRef.current;
+      if (prevLayer) {
+        setLayerFilters((prev) => {
+          const next = { ...prev };
+          delete next[prevLayer];
+          return next;
+        });
+        specializedLayerNameRef.current = null;
+      }
+      return;
+    }
+
+    const layerName = normalizeLayerName(tableDataset.layerName);
+    if (!layerName) return;
+
+    const prevLayer = specializedLayerNameRef.current;
+    if (prevLayer && prevLayer !== layerName) {
+      setLayerFilters((prev) => {
+        const next = { ...prev };
+        delete next[prevLayer];
+        return next;
+      });
+    }
+    specializedLayerNameRef.current = layerName;
+
+    const cql = buildSpecializedCqlFilter(specializedColumnFilters);
+    setLayerFilters((prev) => {
+      const next = { ...prev };
+      if (cql) next[layerName] = cql;
+      else delete next[layerName];
+      return next;
+    });
+
+    const networkId = tableDataset.networkId;
+    if (networkId) {
+      setLayerVisibility((prev) => {
+        const next = { ...prev };
+        next.network = { ...(prev.network || {}), [networkId]: true };
+        if (tableDataset.option) {
+          next.specializedOptions = {
+            ...(prev.specializedOptions || {}),
+            [networkId]: tableDataset.option,
+          };
+        }
+        return next;
+      });
+    }
+  }, [
+    tableDataset.kind,
+    tableDataset.layerName,
+    tableDataset.networkId,
+    tableDataset.option,
+    specializedColumnFilters,
+    buildSpecializedCqlFilter,
+  ]);
+
   const handleColumnFilterChange = (key, selectedValues) => {
+    if (tableDataset.kind === "specialized") {
+      const newFilters = { ...specializedColumnFilters };
+      if (Array.isArray(selectedValues) && selectedValues.length > 0) {
+        newFilters[key] = selectedValues.map(String);
+      } else {
+        delete newFilters[key];
+      }
+      setSpecializedColumnFilters(newFilters);
+      const nextRows = applySpecializedFilters(specializedAllRows, newFilters);
+      setTableRows(nextRows);
+      setGlobalTableMetrics({ total_roads: nextRows.length, total_length_km: 0 });
+      setCurrentPage(1);
+      setActiveFilterColumn(null);
+      setFilterPosition(null);
+      setShouldFetchTable(true);
+      setIsTableMinimized(false);
+      return;
+    }
+
     lastFilterSourceRef.current = "table";
+    setTableDataset({ kind: "roads", title: "Road Network", networkId: null, option: null, layerName: null });
     const newFilters = { ...columnFilters };
     const isRangeFilter = typeof selectedValues === "string" && selectedValues.includes(">=");
     if (selectedValues && selectedValues.length > 0) {
@@ -620,22 +814,24 @@ const DashboardPage = () => {
 
   // ⭐ NEW: Effect to update tableRows when analysisResults change
   useEffect(() => {
+    if (tableDataset.kind === "specialized") return;
+
     const analysisRows = Object.values(analysisResults).flat();
 
     // Only update if we are NOT using a road filter (search mode)
     // If roadFilter is active, it takes precedence in the other effect
     if (!roadFilter) {
       if (analysisRows.length > 0) {
+        setTableDataset({ kind: "analysis", title: "Analysis", networkId: null, option: null, layerName: null });
         setTableRows(analysisRows);
         setCurrentPage(1);
-        // Automatically open table if it was closed/empty
-        // But respect minimized state if user minimized it?
-        // Let's just ensure it shows data.
       } else {
-        setTableRows([]);
+        if (tableDataset.kind === "analysis") {
+          setTableRows([]);
+        }
       }
     }
-  }, [analysisResults, roadFilter]);
+  }, [analysisResults, roadFilter, tableDataset.kind]);
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   // ⭐ NEW: Track Road Network Panel visibility
@@ -647,6 +843,86 @@ const DashboardPage = () => {
   const toggleSidebar = () => {
     setIsSidebarOpen((prev) => !prev);
   };
+
+  const loadSpecializedNetworkTable = useCallback(
+    async (networkId, optionKey) => {
+      const cityKey = String(city || "").toLowerCase();
+      const cfg = cityConfig[cityKey] || {};
+      const specCfg = cfg.specializedNetworks?.[networkId];
+      const isGroup = specCfg && typeof specCfg === "object" && specCfg.options;
+
+      if (!isGroup) return;
+
+      if (!optionKey || String(optionKey) === "none") {
+        if (tableDataset.kind === "specialized" && tableDataset.networkId === networkId) {
+          setTableRows([]);
+          setCurrentPage(1);
+          setTableDataset({ kind: "roads", title: "Road Network", networkId: null, option: null, layerName: null });
+        }
+        return;
+      }
+
+      const opt = specCfg.options?.[optionKey];
+      const layerName = normalizeLayerName(typeof opt === "string" ? opt : (opt?.layer || ""));
+      const optLabel = typeof opt === "string" ? optionKey : (opt?.label || optionKey);
+      if (!layerName) return;
+
+      setSelectedRoadId(null);
+      setSelectedRoadIds([]);
+      setIsMultiSelectMode(false);
+      setSelectedRoad("");
+      setActiveFilterColumn(null);
+      setFilterPosition(null);
+      setColumnFilters({});
+      setSpecializedColumnFilters({});
+      setSpecializedAllRows([]);
+      setTableRows([]);
+      setGlobalTableMetrics({ total_roads: 0, total_length_km: 0 });
+      setCurrentPage(1);
+      setTableDataset({
+        kind: "specialized",
+        title: `${specCfg.label || formatGenericColumnLabel(networkId)} (${optLabel})`,
+        networkId,
+        option: optionKey,
+        layerName,
+        columns: null,
+      });
+      setShouldFetchTable(true);
+      setIsTableMinimized(false);
+
+      setIsLoading(true);
+      try {
+        const url = `/api/road-networks/${cityKey}/specialized-details?network=${encodeURIComponent(
+          networkId
+        )}&option=${encodeURIComponent(optionKey)}&layer=${encodeURIComponent(layerName)}&page=1&limit=2000`;
+        const res = await fetch(url);
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload?.error || `HTTP ${res.status}`);
+
+        const rows = payload?.data || [];
+
+        setTableDataset({
+          kind: "specialized",
+          title: `${specCfg.label || formatGenericColumnLabel(networkId)} (${optLabel})`,
+          networkId,
+          option: optionKey,
+          layerName,
+          columns: payload?.columns || null,
+        });
+        setSpecializedAllRows(rows);
+        setTableRows(rows);
+        setGlobalTableMetrics({ total_roads: payload?.total || rows.length, total_length_km: 0 });
+        setCurrentPage(1);
+        setShouldFetchTable(true);
+        setIsTableMinimized(false);
+      } catch (err) {
+        console.error("Specialized network table load error:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [city, tableDataset.kind, tableDataset.networkId]
+  );
 
   const handleLayerToggle = (group, id, checked, option = null) => {
     console.log(
@@ -663,6 +939,29 @@ const DashboardPage = () => {
       option
     );
     if (group === "roadClassifications") {
+      if (id === "none") {
+        setLayerVisibility((prev) => ({
+          ...prev,
+          roadClassifications: { none: true },
+        }));
+        lastFilterSourceRef.current = null;
+        mapFilterActiveRef.current = false;
+        prevTableStateRef.current = null;
+        setBaseFilter("");
+        setColumnFilters({});
+        setRoadFilter("");
+        setZoomFilter("");
+        setSelectedRoad("");
+        setSelectedRoadId(null);
+        setSelectedRoadIds([]);
+        setIsMultiSelectMode(false);
+        setIsTableMinimized(true);
+        setCurrentPage(1);
+        setShowRoadNetworkPanel(false);
+        setShouldFetchTable(false);
+        return;
+      }
+
       setLayerVisibility((prev) => ({
         ...prev,
         roadClassifications: checked ? { [id]: true } : {},
@@ -703,17 +1002,25 @@ const DashboardPage = () => {
         // Set default option if turning on for the first time
         const cfg = cityConfig[city.toLowerCase()]?.specializedNetworks?.[id];
         if (cfg && cfg.options) {
+          const defaultOpt = id === "slum" ? "none" : Object.keys(cfg.options)[0];
           next.specializedOptions = {
             ...(prev.specializedOptions || {}),
-            [id]: Object.keys(cfg.options)[0],
+            [id]: defaultOpt,
           };
         }
       }
 
       return next;
     });
+    if (group === "network" && id === "slum" && checked) {
+      if (option) {
+        loadSpecializedNetworkTable(id, option);
+      }
+    }
+
     if (group === "network" && id === "roads") {
       if (checked) {
+        setTableDataset({ kind: "roads", title: "Road Network", networkId: null, option: null, layerName: null });
         // Road layer turned ON → restore table
         setIsTableMinimized(false);
         setShouldFetchTable(true);
@@ -777,6 +1084,8 @@ const DashboardPage = () => {
   }, [showRoadSearch, city]);
 
   useEffect(() => {
+    if (tableDataset.kind !== "roads") return;
+
     console.log("Table filter effect triggered. roadFilter:", roadFilter);
 
     if (!roadFilter || roadFilter.trim() === "") {
@@ -847,10 +1156,14 @@ const DashboardPage = () => {
     setCurrentPage((prev) => Math.min(prev + 1, totalPages));
 
   const getRowSelectionId = (row) =>
-    row?.road_id ?? null;
+    row?.road_id ??
+    row?.roadId ??
+    row?.roadid ??
+    row?.ROAD_ID ??
+    null;
 
   const handleRowClick = (row) => {
-    const rowId = row?.road_id ?? null;
+    const rowId = getRowSelectionId(row);
 
     // No-op if clicking the already-selected road in single-select mode
     if (!isMultiSelectMode && rowId != null && String(rowId) === String(selectedRoadId)) return;
@@ -867,12 +1180,14 @@ const DashboardPage = () => {
     }
 
     setSelectedRoadIds([]);
-    setSelectedRoadId(row.road_id);
-    setSelectedRoad(row.road_name);
+    setSelectedRoadId(rowId);
+    setSelectedRoad(row?.road_name ?? row?.roadName ?? row?.roadname ?? "");
 
     // Zoom map to the selected road
-    if (row.road_id) {
-      setZoomFilter(`road_id='${row.road_id}'`);
+    if (rowId != null && rowId !== "") {
+      const idStr = String(rowId);
+      const isNumeric = /^-?\d+(?:\.\d+)?$/.test(idStr);
+      setZoomFilter(isNumeric ? `road_id=${idStr}` : `road_id='${idStr.replace(/'/g, "''")}'`);
     }
 
     // The selected row is highlighted via CSS.
@@ -928,8 +1243,12 @@ const DashboardPage = () => {
   const buildSelectionFilter = useCallback((ids) => {
     if (!ids || ids.length === 0) return "";
     const column = "road_id";
-    const quoted = ids.map((id) => `'${String(id).replace(/'/g, "''")}'`).join(",");
-    return `${column} IN (${quoted})`;
+    const values = ids.map((id) => String(id).trim()).filter(Boolean);
+    const isNumeric = values.length > 0 && values.every((v) => /^-?\d+(?:\.\d+)?$/.test(v));
+    const list = isNumeric
+      ? values.join(",")
+      : values.map((v) => `'${v.replace(/'/g, "''")}'`).join(",");
+    return `${column} IN (${list})`;
   }, []);
 
   const applyMultiSelection = () => {
@@ -949,6 +1268,14 @@ const DashboardPage = () => {
   };
 
   const clearMultiSelection = () => {
+    if (
+      lastFilterSourceRef.current === "table" &&
+      /road_id\s+in\s*\(/i.test(String(baseFilter || ""))
+    ) {
+      if (restorePrevTableState()) return;
+      setBaseFilter(layerVisibility?.network?.roads ? "INCLUDE" : "");
+      setZoomFilter("");
+    }
     setSelectedRoadIds([]);
     if (isMultiSelectMode) {
       setSelectedRoadId(null);
@@ -957,6 +1284,7 @@ const DashboardPage = () => {
   };
 
   const toggleMultiSelectMode = () => {
+    if (tableDataset.kind !== "roads") return;
     setIsMultiSelectMode((prev) => {
       const next = !prev;
       if (next) {
@@ -983,6 +1311,7 @@ const DashboardPage = () => {
   };
 
   const handleRoadFilterChange = (filter, source) => {
+    setTableDataset({ kind: "roads", title: "Road Network", networkId: null, option: null, layerName: null });
     lastFilterSourceRef.current = source || null;
     if (mapRef.current?.applyRoadFilterImmediate) {
       mapRef.current.applyRoadFilterImmediate(filter);
@@ -1313,6 +1642,7 @@ const DashboardPage = () => {
       // Check if it's the road layer
       const cfg = cityConfig[city.toLowerCase()];
       if (cfg && queryData.layer === cfg.roadLayer) {
+        setTableDataset({ kind: "roads", title: "Road Network", networkId: null, option: null, layerName: null });
         setBaseFilter(queryData.filter);
         setQueryVersion((prev) => prev + 1);
         setShouldFetchTable(true);
@@ -1355,6 +1685,7 @@ const DashboardPage = () => {
     const isRoadLayer = drawMode && drawMode.layer === cfg.roadLayer;
 
     if (isRoadLayer) {
+      setTableDataset({ kind: "roads", title: "Road Network", networkId: null, option: null, layerName: null });
       // Normalize property keys to lowercase to avoid case-sensitivity issues (e.g., Length_km vs length_km)
       const rows = features.map(f => {
         const props = f.values_ || f.properties || {};
@@ -1366,6 +1697,7 @@ const DashboardPage = () => {
       });
       setTableRows(rows);
       setIsTableMinimized(false);
+      setShouldFetchTable(true);
     } else {
       alert(`Found ${features.length} features.`);
     }
@@ -1393,12 +1725,9 @@ const DashboardPage = () => {
     setIsDownloading(true);
     try {
       if (action === "print") {
-        // Print Map (PNG screenshot with legend overlay + RSAC watermark)
         try {
           const canvas = await captureMapCanvas(mapRef);
-          // Apply RSAC watermark (bottom-right, proportional)
           await drawWatermark(canvas, rsacBanner);
-          // City + date info label (bottom-left above legend area)
           const ctx = canvas.getContext("2d");
           const fontSize = Math.max(11, Math.round(canvas.width * 0.013));
           ctx.save();
@@ -1410,37 +1739,62 @@ const DashboardPage = () => {
           ctx.strokeText(label, 12, canvas.height - 10);
           ctx.fillText(label, 12, canvas.height - 10);
           ctx.restore();
-          const openedLayers = [
-            ...Object.entries(layerVisibility.amenities || {}).filter(([, v]) => v).map(([k]) => `amenity_${k}`),
-            ...Object.entries(layerVisibility.others || {}).filter(([, v]) => v).map(([k]) => `other_${k}`),
-            ...(overlayVisibility.zoneBoundary ? ["zoneBoundary"] : []),
-            ...(overlayVisibility.wardBoundary ? ["wardBoundary"] : []),
-          ];
-          const layerSuffix = openedLayers.length > 0 ? openedLayers.join("_") : "basemap";
-          const fileName = `sitemap_${new Date().toISOString().slice(0, 10)}_${layerSuffix}.png`;
-          await new Promise((resolve, reject) => {
-            canvas.toBlob((blob) => {
-              if (blob) { saveAs(blob, fileName); resolve(); }
-              else reject(new Error("Canvas to Blob failed"));
-            });
-          });
+          const dataUrl = canvas.toDataURL("image/png");
+          const w = window.open("", "_blank");
+          if (!w) {
+            throw new Error("Popup blocked. Please allow popups to print.");
+          }
+          w.document.open();
+          w.document.write(`
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Print Map</title>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      img { width: 100%; height: auto; display: block; }
+      @page { margin: 10mm; }
+    </style>
+  </head>
+  <body>
+    <img id="print-img" src="${dataUrl}" alt="Map" />
+    <script>
+      const img = document.getElementById('print-img');
+      img.onload = () => { window.focus(); window.print(); };
+      window.onafterprint = () => { window.close(); };
+    </script>
+  </body>
+</html>
+          `);
+          w.document.close();
         } catch (err) {
           console.error("Screenshot error:", err);
-          alert(`Failed to take screenshot: ${err.message}`);
+          alert(`Failed to print: ${err.message}`);
         }
 
       } else if (action === "excel") {
-        const result = await fetchExportData(false);
-        const rows = result?.data;
+        let rows = [];
+        if (tableDataset.kind === "roads") {
+          const result = await fetchExportData(false);
+          rows = result?.data || [];
+        } else {
+          rows = Array.isArray(tableRows) ? tableRows : [];
+        }
         if (!rows || rows.length === 0) {
           alert("No data to export. Please adjust your filter and try again.");
           return;
         }
-        exportToExcel(rows, city);
+        exportToExcel(rows, city, { title: tableDataset.title || "table_data" });
 
       } else if (action === "pdf") {
-        const result = await fetchExportData(false);
-        const rows = result?.data;
+        let rows = [];
+        if (tableDataset.kind === "roads") {
+          const result = await fetchExportData(false);
+          rows = result?.data || [];
+        } else {
+          rows = Array.isArray(tableRows) ? tableRows : [];
+        }
         if (!rows || rows.length === 0) {
           alert("No data to export. Please adjust your filter and try again.");
           return;
@@ -1452,8 +1806,9 @@ const DashboardPage = () => {
           watermarkSrc: rsacBanner,
           layerVisibility,
           overlayVisibility,
-          roadFilter,
-          columnFilters, // ⭐ NEW: Pass table filters to PDF
+          roadFilter: tableDataset.kind === "roads" ? roadFilter : "",
+          columnFilters: tableDataset.kind === "roads" ? columnFilters : specializedColumnFilters,
+          title: tableDataset.title || (tableDataset.kind === "roads" ? "Road Attribute Table" : "Table Export"),
         });
 
       } else if (action === "kml") {
@@ -1505,6 +1860,26 @@ const DashboardPage = () => {
           tableVisible={tableRows.length > 0 && !isTableMinimized}
           tableMinimized={isTableMinimized}
           tableHasRows={tableRows.length > 0}
+          drainageController={{
+            setLayerVisibility,
+            tableDataset,
+            setIsLoading,
+            setSelectedRoadId,
+            setSelectedRoadIds,
+            setIsMultiSelectMode,
+            setSelectedRoad,
+            setActiveFilterColumn,
+            setFilterPosition,
+            setColumnFilters,
+            setSpecializedColumnFilters,
+            setSpecializedAllRows,
+            setTableRows,
+            setGlobalTableMetrics,
+            setCurrentPage,
+            setTableDataset,
+            setShouldFetchTable,
+            setIsTableMinimized,
+          }}
         />
       )}
 
@@ -1557,6 +1932,7 @@ const DashboardPage = () => {
           onRoadNetworkToggle={(checked) => handleLayerToggle("network", "roads", checked)}
           streetViewVisible={streetViewVisible}
           onStreetViewToggle={setStreetViewVisible}
+          onDssRoad={() => navigate(`/dss?city=${encodeURIComponent(city)}`)}
           onRoadSelected={(road) => {
             console.log("Road selected:", road);
             setSelectedRoad(road);
@@ -1641,7 +2017,12 @@ const DashboardPage = () => {
       </div>
 
       {/* ⭐ NEW BOTTOM TABLE */}
-      {(shouldFetchTable && (baseFilter || Object.keys(columnFilters || {}).length > 0 || tableRows.length > 0)) && (
+      {(shouldFetchTable && (
+        tableDataset.kind === "specialized" ||
+        baseFilter ||
+        Object.keys(columnFilters || {}).length > 0 ||
+        tableRows.length > 0
+      )) && (
         <div
           className={`bottom-table ${isTableMinimized ? "minimized" : ""}`}
         >
@@ -1712,7 +2093,9 @@ const DashboardPage = () => {
                 <button
                   title="Export Excel"
                   disabled={isDownloading}
-                  onClick={() => handleDownloadAction("excel")}
+                  onClick={() => {
+                    handleDownloadAction("excel");
+                  }}
                   style={{ background: "#16a34a", color: "#fff", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}
                 >
                   {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-file-excel" style={{ fontSize: 11 }} />} Excel
@@ -1720,7 +2103,9 @@ const DashboardPage = () => {
                 <button
                   title="Export PDF with Map"
                   disabled={isDownloading}
-                  onClick={() => handleDownloadAction("pdf")}
+                  onClick={() => {
+                    handleDownloadAction("pdf");
+                  }}
                   style={{ background: "#dc2626", color: "#fff", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}
                 >
                   {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-file-pdf" style={{ fontSize: 11 }} />} PDF
@@ -1728,7 +2113,9 @@ const DashboardPage = () => {
                 <button
                   title="Export Map Image"
                   disabled={isDownloading}
-                  onClick={() => handleDownloadAction("print")}
+                  onClick={() => {
+                    handleDownloadAction("print");
+                  }}
                   style={{ background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}
                 >
                   {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-image" style={{ fontSize: 11 }} />} Print
@@ -1810,6 +2197,7 @@ const DashboardPage = () => {
                   setTableRows([]);
                   setCurrentPage(1);
                   setColumnFilters({});
+                  setSpecializedColumnFilters({});
                   setZoomFilter("");
                   setSelectedRoad("");
                   setSelectedRoadId(null);
@@ -1850,18 +2238,20 @@ const DashboardPage = () => {
                   {isMultiSelectMode && (
                     <th>Select</th>
                   )}
-                  {tableColumns.map((col) => (
-                    <th key={col.key}>
-                      <div
-                        className={`column-header ${col.filterable ? 'filterable' : ''}`}
-                        onClick={(e) => {
-                          if (!col.filterable) return;
-                          e.stopPropagation();
-                          if (activeFilterColumn === col.key) {
-                            setActiveFilterColumn(null);
-                            setFilterPosition(null);
-                          } else {
-                            const rect = e.currentTarget.getBoundingClientRect();
+                  {tableColumns.map((col) => {
+                    const activeFilters = tableDataset.kind === "specialized" ? specializedColumnFilters : columnFilters;
+                    return (
+                      <th key={col.key}>
+                        <div
+                          className={`column-header ${col.filterable ? 'filterable' : ''}`}
+                          onClick={(e) => {
+                            if (!col.filterable) return;
+                            e.stopPropagation();
+                            if (activeFilterColumn === col.key) {
+                              setActiveFilterColumn(null);
+                              setFilterPosition(null);
+                            } else {
+                              const rect = e.currentTarget.getBoundingClientRect();
                             const viewportHeight = window.innerHeight;
                             const spaceBelow = viewportHeight - rect.bottom;
                             const spaceAbove = rect.top;
@@ -1891,15 +2281,16 @@ const DashboardPage = () => {
                           }
                         }}
                       >
-                        {col.label}
-                        {col.filterable && (
-                          <span className={`filter-icon ${columnFilters[col.key] ? 'active' : ''}`}>
-                            ▼
-                          </span>
-                        )}
-                      </div>
-                    </th>
-                  ))}
+                          {col.label}
+                          {col.filterable && (
+                            <span className={`filter-icon ${activeFilters[col.key] ? 'active' : ''}`}>
+                              ▼
+                            </span>
+                          )}
+                        </div>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
@@ -1956,8 +2347,7 @@ const DashboardPage = () => {
       {activeFilterColumn && filterPosition && (
         <FilterDropdown
           column={tableColumns.find(c => c.key === activeFilterColumn)}
-          // data={tableRows} // Removed
-          currentFilters={columnFilters[activeFilterColumn]}
+          currentFilters={(tableDataset.kind === "specialized" ? specializedColumnFilters : columnFilters)[activeFilterColumn]}
           onApply={(vals) => handleColumnFilterChange(activeFilterColumn, vals)}
           onClose={() => {
             setActiveFilterColumn(null);
@@ -1965,9 +2355,11 @@ const DashboardPage = () => {
           }}
           position={filterPosition}
           city={city}
-          baseFilter={baseFilter}
-          columnFilters={columnFilters}
-          onRangePreview={requestLiveMetrics}
+          baseFilter={tableDataset.kind === "specialized" ? "" : baseFilter}
+          columnFilters={tableDataset.kind === "specialized" ? specializedColumnFilters : columnFilters}
+          onRangePreview={tableDataset.kind === "specialized" ? null : requestLiveMetrics}
+          datasetKind={tableDataset.kind}
+          localRows={tableDataset.kind === "specialized" ? specializedAllRows : null}
         />
       )}
       {/* 

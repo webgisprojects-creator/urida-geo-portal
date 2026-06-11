@@ -1,5 +1,11 @@
 /* Home landing with statewide map overview and per-city summary panels. */
-import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import React, {
+  useEffect,
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import styles from "./HomePage.Module.css";
 import "ol/ol.css";
 
@@ -19,20 +25,20 @@ import Overlay from "ol/Overlay";
 import { getCenter } from "ol/extent";
 import { fromLonLat, toLonLat } from "ol/proj";
 // removed proj4 usage to avoid dependency; relying on default projections
-import { defaults as defaultControls } from 'ol/control';
+import { defaults as defaultControls } from "ol/control";
 // Enable reprojection for WMS layers
-import 'ol/ol.css';
-import 'ol-layerswitcher/dist/ol-layerswitcher.css';
+import "ol/ol.css";
+import "ol-layerswitcher/dist/ol-layerswitcher.css";
 import { useNavigate } from "react-router-dom";
 import logo from "../../assets/NN_Logo/download.png";
 import HomeMapLegend from "../../components/HomeMapLegend";
-
 
 /* ====================== CONFIG ====================== */
 
 const GEOSERVER_BASE = process.env.REACT_APP_GEOSERVER_BASE || "/geoserver";
 // Phase 2 uses the same GeoServer; override with REACT_APP_PHASE2_GEOSERVER_BASE if it diverges.
-const PHASE2_GEOSERVER_BASE = process.env.REACT_APP_PHASE2_GEOSERVER_BASE || GEOSERVER_BASE;
+const PHASE2_GEOSERVER_BASE =
+  process.env.REACT_APP_PHASE2_GEOSERVER_BASE || GEOSERVER_BASE;
 
 /** City -> center fallback (when WFS is empty/unavailable) */
 const CITY_CENTER = {
@@ -78,7 +84,11 @@ const BOUNDARY_WFS = {
   moradabad: { ws: "Ward_38", layer: "All_Boundaries", name: "Moradabad" },
   prayagraj: { ws: "Ward_38", layer: "All_Boundaries", name: "Prayagraj" },
   saharanpur: { ws: "Ward_38", layer: "All_Boundaries", name: "Saharanpur" },
-  shahjahanpur: { ws: "Ward_38", layer: "All_Boundaries", name: "Shahjahanpur" },
+  shahjahanpur: {
+    ws: "Ward_38",
+    layer: "All_Boundaries",
+    name: "Shahjahanpur",
+  },
   varanasi: { ws: "Ward_38", layer: "All_Boundaries", name: "Varanasi" },
 };
 
@@ -105,14 +115,14 @@ const CITY_BOUNDARY_COLORS = {
 // GeoServer PostGIS data has typos in the Name field.
 // This map corrects WFS feature names → the app's city keys.
 const WFS_NAME_MAP = {
-  varansi: 'varanasi',    // typo in DB: missing 'a'
-  shaharanpur: 'saharanpur',  // typo in DB: 'Shah' should be 'Sah'
-  shahajahanpur: 'shahjahanpur', // typo in DB: extra 'ha'
+  varansi: "varanasi", // typo in DB: missing 'a'
+  shaharanpur: "saharanpur", // typo in DB: 'Shah' should be 'Sah'
+  shahajahanpur: "shahjahanpur", // typo in DB: extra 'ha'
 };
 
 /** Normalize a WFS feature Name to the app's lowercase city key */
 const normalizeWfsName = (raw) => {
-  const lower = (raw || '').toLowerCase();
+  const lower = (raw || "").toLowerCase();
   return WFS_NAME_MAP[lower] || lower;
 };
 
@@ -146,7 +156,10 @@ const getOverlayOffset = (city) => {
   const dy = cityCoord[1] - UP_CENTER[1];
   const mag = Math.hypot(dx, dy) || 1;
   const outward = 210;
-  const radial = [Math.round((dx / mag) * outward), Math.round((dy / mag) * outward)];
+  const radial = [
+    Math.round((dx / mag) * outward),
+    Math.round((dy / mag) * outward),
+  ];
   return [base[0] + radial[0], base[1] + radial[1]];
 };
 
@@ -158,7 +171,7 @@ const AMENITY_LABELS = {
   hotel: "Hotel",
   park: "Park",
   petrol_pump: "Petrol Pump",
-  post_office: "Post Office"
+  post_office: "Post Office",
 };
 
 const buildBoundarySld = (strokeColor, strokeWidth = 2.2) => `
@@ -410,7 +423,7 @@ export default function HomePage() {
   const profileBtnRef = useRef(null);
   const homeSummaryRef = useRef(null);
   const buildOverlayHtmlRef = useRef(null);
-  const selectedCityRef = useRef('');  // tracked in map handlers to suppress hover when a city is selected
+  const selectedCityRef = useRef(""); // tracked in map handlers to suppress hover when a city is selected
 
   const [selectedCity, setSelectedCity] = useState("");
   const [selectedPhase, setSelectedPhase] = useState("");
@@ -424,12 +437,16 @@ export default function HomePage() {
   // const [showCmGrid, setShowCmGrid] = useState(false);
   // const [showGpr, setShowGpr] = useState(false);
 
-
   const [cards, setCards] = useState(cityCardData.default);
   const [baseMap, setBaseMap] = useState("osm");
   const [controlsVisible, setControlsVisible] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
-  const [loggedInUser] = useState(() => localStorage.getItem("authUser") || "User");
+  const [loggedInUser] = useState(
+    () => localStorage.getItem("authUser") || "User",
+  );
+  const [loggedInRole] = useState(
+    () => String(localStorage.getItem("authRole") || "").toLowerCase(),
+  );
   const [homeSummary, setHomeSummary] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [layerVisibility, setLayerVisibility] = useState({
@@ -461,9 +478,9 @@ export default function HomePage() {
       entry.ws === "Phase_2" ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE;
     const layerName = `${entry.ws}:${entry.layer}`;
     return `${baseUrl}/${entry.ws}/wms?SERVICE=WMS&REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&LAYER=${encodeURIComponent(
-      layerName
+      layerName,
     )}&LEGEND_OPTIONS=forceLabels:on;fontName:Arial;fontSize:11&_=${encodeURIComponent(
-      `${selectedCity}-${selectedPhase}`
+      `${selectedCity}-${selectedPhase}`,
     )}`;
   }, [selectedCity, selectedPhase]);
 
@@ -533,7 +550,7 @@ export default function HomePage() {
         layer.setVisible(true);
         // Auto-turn on labels
         const labels = layers.find(
-          (l) => l.get("title") === "Labels (Esri Reference)"
+          (l) => l.get("title") === "Labels (Esri Reference)",
         );
         if (labels) labels.setVisible(true);
       } else if (
@@ -648,7 +665,7 @@ export default function HomePage() {
       controls: defaultControls({
         attribution: true,
         zoom: true,
-        rotate: true
+        rotate: true,
       }),
     });
 
@@ -675,35 +692,37 @@ export default function HomePage() {
      *  • imageSmoothing:false set on the layer (not source)
      * Using TileWMS splits the view into 256x256 cacheable chunks, eliminating freezing.
      */
-    const makeWmsSource = (url, layerName, extraParams = {}) => new TileWMS({
-      url,
-      params: {
-        LAYERS: layerName,
-        FORMAT: 'image/png',
-        VERSION: '1.3.0',
-        TRANSPARENT: true,
-        TILED: true,
-        FORMAT_OPTIONS: 'antiAlias:false;dpi:90',
-        STYLES: '',
-        ...extraParams,
-      },
-      serverType: 'geoserver',
-      crossOrigin: 'anonymous',
-      wrapX: false,
-    });
+    const makeWmsSource = (url, layerName, extraParams = {}) =>
+      new TileWMS({
+        url,
+        params: {
+          LAYERS: layerName,
+          FORMAT: "image/png",
+          VERSION: "1.3.0",
+          TRANSPARENT: true,
+          TILED: true,
+          FORMAT_OPTIONS: "antiAlias:false;dpi:90",
+          STYLES: "",
+          ...extraParams,
+        },
+        serverType: "geoserver",
+        crossOrigin: "anonymous",
+        wrapX: false,
+      });
 
     // Keep the old name as an alias so existing call-sites still compile
-    const createWMSSource = (url, layerName, extra) => makeWmsSource(url, layerName, extra);
+    const createWMSSource = (url, layerName, extra) =>
+      makeWmsSource(url, layerName, extra);
 
     // 4️⃣ UP District layer (visible by default)
     const upDistrictLayer = new TileLayer({
       title: "UP District Boundaries",
       source: createWMSSource(
         `${GEOSERVER_BASE}/Ward_38/wms`,
-        "Ward_38:Up_District"
+        "Ward_38:Up_District",
       ),
       visible: true,
-      opacity: 1.0,      // full opacity — GeoServer style controls the look
+      opacity: 1.0, // full opacity — GeoServer style controls the look
       imageSmoothing: false,
       zIndex: 10,
     });
@@ -711,17 +730,17 @@ export default function HomePage() {
     // 5️⃣  UP City Boundary — WFS VectorLayer (unique colors per city, hover-ready)
     const upBoundarySource = new VectorSource({
       url: `${GEOSERVER_BASE}/Ward_38/ows?service=WFS&version=2.0.0&request=GetFeature&typeName=Ward_38:All_Boundaries&outputFormat=application/json`,
-      format: new GeoJSON({ featureProjection: 'EPSG:3857' }),
+      format: new GeoJSON({ featureProjection: "EPSG:3857" }),
     });
 
     const upBoundaryLayer = new VectorLayer({
       title: "UP Nagar Nigam Boundary",
       source: upBoundarySource,
       style: (feature) => {
-        const name = normalizeWfsName(feature.get('Name'));
-        const color = CITY_BOUNDARY_COLORS[name] || '#2f6fd6';
+        const name = normalizeWfsName(feature.get("Name"));
+        const color = CITY_BOUNDARY_COLORS[name] || "#2f6fd6";
         return new Style({
-          fill: new Fill({ color: color + '18' }),   // ~10% fill — needed for interior hit detection
+          fill: new Fill({ color: color + "18" }), // ~10% fill — needed for interior hit detection
           stroke: new Stroke({ color, width: 2.5 }),
         });
       },
@@ -742,13 +761,14 @@ export default function HomePage() {
 
     // ✅ Desktop hover popup — reuses the same city-overlay popup as the dropdown selection
     if (!isMobileView) {
-      const hoverEl = document.createElement('div');
-      hoverEl.className = 'city-overlay';
-      hoverEl.style.cssText = 'display:none;pointer-events:none;min-width:200px;max-width:260px;max-height:70vh;overflow-y:auto;';
+      const hoverEl = document.createElement("div");
+      hoverEl.className = "city-overlay";
+      hoverEl.style.cssText =
+        "display:none;pointer-events:none;min-width:200px;max-width:260px;max-height:70vh;overflow-y:auto;";
 
       const hoverOl = new Overlay({
         element: hoverEl,
-        positioning: 'bottom-left',
+        positioning: "bottom-left",
         offset: [14, -14],
         autoPan: false,
         stopEvent: false,
@@ -758,12 +778,13 @@ export default function HomePage() {
       mapRef.current.hoverEl = hoverEl;
 
       // 6️⃣ Distinct Hover for Roads (Tooltip)
-      const roadHoverEl = document.createElement('div');
-      roadHoverEl.className = 'road-hover-tooltip';
-      roadHoverEl.style.cssText = 'display:none; pointer-events:none; padding:6px 10px; background:rgba(0,0,0,0.8); color:#fff; font-size:11px; border-radius:4px; white-space:nowrap; z-index:1000;';
+      const roadHoverEl = document.createElement("div");
+      roadHoverEl.className = "road-hover-tooltip";
+      roadHoverEl.style.cssText =
+        "display:none; pointer-events:none; padding:6px 10px; background:rgba(0,0,0,0.8); color:#fff; font-size:11px; border-radius:4px; white-space:nowrap; z-index:1000;";
       const roadHoverOl = new Overlay({
         element: roadHoverEl,
-        positioning: 'bottom-center',
+        positioning: "bottom-center",
         offset: [0, -10],
         autoPan: false,
         stopEvent: false,
@@ -782,7 +803,7 @@ export default function HomePage() {
         source: highlightSource,
         style: new Style({
           stroke: new Stroke({
-            color: '#ffcc33',
+            color: "#ffcc33",
             width: 5,
           }),
         }),
@@ -791,25 +812,34 @@ export default function HomePage() {
       map.addLayer(highlightLayer);
       mapRef.current.highlightLayer = highlightLayer;
 
-      map.on('pointermove', (evt) => {
+      map.on("pointermove", (evt) => {
         if (evt.dragging) return;
 
         // ⛔ Suppress city boundary hover popup when a city is already selected
         if (selectedCityRef.current) {
-          if (mapRef.current.hoverEl) mapRef.current.hoverEl.style.display = 'none';
+          if (mapRef.current.hoverEl)
+            mapRef.current.hoverEl.style.display = "none";
 
           // --- ADD WMS HOVER TOOLTIP FOR ROADS ---
           const candidates = [];
-          if (mapRef.current.above10mRef?.current && mapRef.current.above10mRef.current.getVisible()) {
+          if (
+            mapRef.current.above10mRef?.current &&
+            mapRef.current.above10mRef.current.getVisible()
+          ) {
             candidates.push(mapRef.current.above10mRef.current);
           }
-          if (mapRef.current.cmGridRef?.current && mapRef.current.cmGridRef.current.getVisible()) {
+          if (
+            mapRef.current.cmGridRef?.current &&
+            mapRef.current.cmGridRef.current.getVisible()
+          ) {
             candidates.push(mapRef.current.cmGridRef.current);
           }
 
           if (candidates.length === 0) {
-            if (mapRef.current.roadHoverEl) mapRef.current.roadHoverEl.style.display = 'none';
-            map.getTargetElement().style.cursor = '';
+            if (mapRef.current.roadHoverEl)
+              mapRef.current.roadHoverEl.style.display = "none";
+            const targetEl = map.getTargetElement?.();
+            if (targetEl?.style) targetEl.style.cursor = "";
             return;
           }
 
@@ -820,13 +850,13 @@ export default function HomePage() {
             let foundFeature = false;
             for (const layer of candidates) {
               const source = layer.getSource();
-              if (typeof source.getFeatureInfoUrl !== 'function') continue;
+              if (typeof source.getFeatureInfoUrl !== "function") continue;
 
               const url = source.getFeatureInfoUrl(
                 evt.coordinate,
                 map.getView().getResolution(),
                 map.getView().getProjection(),
-                { 'INFO_FORMAT': 'application/json', 'FEATURE_COUNT': 1 }
+                { INFO_FORMAT: "application/json", FEATURE_COUNT: 1 },
               );
 
               if (url) {
@@ -835,27 +865,40 @@ export default function HomePage() {
                   const data = await res.json();
                   if (data && data.features && data.features.length > 0) {
                     const props = data.features[0].properties;
-                    const nameKey = Object.keys(props).find(k => k.toLowerCase() === 'road_name');
-                    const conditionKey = Object.keys(props).find(k => k.toLowerCase() === 'condition');
+                    const nameKey = Object.keys(props).find(
+                      (k) => k.toLowerCase() === "road_name",
+                    );
+                    const conditionKey = Object.keys(props).find(
+                      (k) => k.toLowerCase() === "condition",
+                    );
 
-                    const roadName = nameKey ? props[nameKey] : 'Unnamed Road';
-                    const condition = conditionKey ? props[conditionKey] : 'Unknown Condition';
+                    const roadName = nameKey ? props[nameKey] : "Unnamed Road";
+                    const condition = conditionKey
+                      ? props[conditionKey]
+                      : "Unknown Condition";
 
                     if (mapRef.current.roadHoverEl) {
                       mapRef.current.roadHoverEl.innerHTML = `<strong>${roadName}</strong><br/><span style="color:#aaa;">Condition: <span style="color:#fff">${condition}</span></span>`;
-                      mapRef.current.roadHoverEl.style.display = '';
-                      mapRef.current.roadHoverOverlay.setPosition(evt.coordinate);
+                      mapRef.current.roadHoverEl.style.display = "";
+                      mapRef.current.roadHoverOverlay.setPosition(
+                        evt.coordinate,
+                      );
                     }
 
                     // --- ADDED: Highlight the road on hover ---
                     if (data.features[0].geometry) {
                       const geojsonFormat = new GeoJSON();
-                      const olFeature = geojsonFormat.readFeature(data.features[0]);
+                      const olFeature = geojsonFormat.readFeature(
+                        data.features[0],
+                      );
                       mapRef.current.highlightLayer?.getSource().clear(); // Clear previous hover highlight
-                      mapRef.current.highlightLayer?.getSource().addFeature(olFeature);
+                      mapRef.current.highlightLayer
+                        ?.getSource()
+                        .addFeature(olFeature);
                     }
 
-                    map.getTargetElement().style.cursor = 'pointer';
+                    const targetEl = map.getTargetElement?.();
+                    if (targetEl?.style) targetEl.style.cursor = "pointer";
                     foundFeature = true;
                     break;
                   }
@@ -866,10 +909,12 @@ export default function HomePage() {
             }
 
             if (!foundFeature) {
-              if (mapRef.current.roadHoverEl) mapRef.current.roadHoverEl.style.display = 'none';
+              if (mapRef.current.roadHoverEl)
+                mapRef.current.roadHoverEl.style.display = "none";
               // --- ADDED: Clear highlight when not hovering a road ---
               mapRef.current.highlightLayer?.getSource().clear();
-              map.getTargetElement().style.cursor = '';
+              const targetEl = map.getTargetElement?.();
+              if (targetEl?.style) targetEl.style.cursor = "";
             }
           }, 150); // fast hover timeout
 
@@ -882,10 +927,10 @@ export default function HomePage() {
           evt.pixel,
           (feature, layer) => {
             if (layer !== mapRef.current.upBoundaryLayer) return;
-            cityName = normalizeWfsName(feature.get('Name'));
+            cityName = normalizeWfsName(feature.get("Name"));
             return true;
           },
-          { layerFilter: (l) => l === mapRef.current.upBoundaryLayer }
+          { layerFilter: (l) => l === mapRef.current.upBoundaryLayer },
         );
 
         if (cityName) {
@@ -896,21 +941,21 @@ export default function HomePage() {
               const data = summary.perCity?.[cityName];
               if (data) {
                 hoverEl.innerHTML = buildHtml(cityName, data, false, true); // Pass true for isHover to keep it compact
-                hoverEl.style.display = '';
+                hoverEl.style.display = "";
                 lastHovered = cityName;
               }
             }
           }
 
           // Quadrant-aware positioning — flip popup so it never goes off-screen
-          if (hoverEl.style.display !== 'none') {
+          if (hoverEl.style.display !== "none") {
             const [mapW, mapH] = map.getSize();
             const [px, py] = evt.pixel;
             const nearRight = px > mapW * 0.55;
             const nearTop = py < mapH * 0.45;
 
             // positioning = which corner of the popup element anchors to the coordinate
-            const positioning = `${nearTop ? 'top' : 'bottom'}-${nearRight ? 'right' : 'left'}`;
+            const positioning = `${nearTop ? "top" : "bottom"}-${nearRight ? "right" : "left"}`;
             const offsetX = nearRight ? -16 : 16;
             const offsetY = nearTop ? 16 : -16;
 
@@ -919,17 +964,18 @@ export default function HomePage() {
             hoverOl.setPosition(evt.coordinate);
           }
         } else {
-          hoverEl.style.display = 'none';
+          hoverEl.style.display = "none";
           hoverOl.setPosition(undefined);
           lastHovered = null;
         }
 
-        map.getTargetElement().style.cursor = cityName ? 'pointer' : '';
+        const targetEl = map.getTargetElement?.();
+        if (targetEl?.style) targetEl.style.cursor = cityName ? "pointer" : "";
       });
     }
 
     // ✅ Click on city boundary → same as selecting from dropdown (desktop + mobile)
-    map.on('singleclick', async (evt) => {
+    map.on("singleclick", async (evt) => {
       let clickedCity = null;
 
       if (!selectedCityRef.current) {
@@ -937,16 +983,18 @@ export default function HomePage() {
           evt.pixel,
           (feature, layer) => {
             if (layer !== mapRef.current.upBoundaryLayer) return;
-            clickedCity = normalizeWfsName(feature.get('Name'));
+            clickedCity = normalizeWfsName(feature.get("Name"));
             return true;
           },
-          { layerFilter: (l) => l === mapRef.current.upBoundaryLayer }
+          { layerFilter: (l) => l === mapRef.current.upBoundaryLayer },
         );
 
         if (clickedCity && mapRef.current.handleCitySelectFn) {
           // Hide hover popups immediately
-          if (mapRef.current.hoverEl) mapRef.current.hoverEl.style.display = 'none';
-          if (mapRef.current.roadHoverEl) mapRef.current.roadHoverEl.style.display = 'none';
+          if (mapRef.current.hoverEl)
+            mapRef.current.hoverEl.style.display = "none";
+          if (mapRef.current.roadHoverEl)
+            mapRef.current.roadHoverEl.style.display = "none";
           mapRef.current.hoverOverlay?.setPosition(undefined);
           mapRef.current.roadHoverOverlay?.setPosition(undefined);
 
@@ -957,27 +1005,45 @@ export default function HomePage() {
 
       // If a city is selected, handle road clicking
       const candidates = [];
-      if (mapRef.current.above10mRef?.current && mapRef.current.above10mRef.current.getVisible()) {
-        candidates.push({ layer: mapRef.current.above10mRef.current, isPhase2: false });
+      if (
+        mapRef.current.above10mRef?.current &&
+        mapRef.current.above10mRef.current.getVisible()
+      ) {
+        candidates.push({
+          layer: mapRef.current.above10mRef.current,
+          isPhase2: false,
+        });
       }
-      if (mapRef.current.cmGridRef?.current && mapRef.current.cmGridRef.current.getVisible()) {
-        const sourceUrl = mapRef.current.cmGridRef.current.getSource().getUrls?.()?.[0] || mapRef.current.cmGridRef.current.getSource().getUrl?.() || '';
-        candidates.push({ layer: mapRef.current.cmGridRef.current, isPhase2: PHASE2_GEOSERVER_BASE !== GEOSERVER_BASE && sourceUrl.includes(PHASE2_GEOSERVER_BASE) });
+      if (
+        mapRef.current.cmGridRef?.current &&
+        mapRef.current.cmGridRef.current.getVisible()
+      ) {
+        const sourceUrl =
+          mapRef.current.cmGridRef.current.getSource().getUrls?.()?.[0] ||
+          mapRef.current.cmGridRef.current.getSource().getUrl?.() ||
+          "";
+        candidates.push({
+          layer: mapRef.current.cmGridRef.current,
+          isPhase2:
+            PHASE2_GEOSERVER_BASE !== GEOSERVER_BASE &&
+            sourceUrl.includes(PHASE2_GEOSERVER_BASE),
+        });
       }
 
       if (candidates.length === 0) return;
 
       // Hide road hover tooltip since we are displaying the huge click popup
-      if (mapRef.current.roadHoverEl) mapRef.current.roadHoverEl.style.display = 'none';
+      if (mapRef.current.roadHoverEl)
+        mapRef.current.roadHoverEl.style.display = "none";
 
       // Clear previous highlights
       mapRef.current.highlightLayer?.getSource().clear();
       // Reset opacity
-      candidates.forEach(c => c.layer.setOpacity(1));
+      candidates.forEach((c) => c.layer.setOpacity(1));
 
       for (const { layer, isPhase2 } of candidates) {
         const source = layer.getSource();
-        if (typeof source.getFeatureInfoUrl !== 'function') continue;
+        if (typeof source.getFeatureInfoUrl !== "function") continue;
 
         // Construct WFS GetFeature request using the WMS LAYERS parameter to identify the workspace:layer
         const params = source.getParams();
@@ -992,13 +1058,13 @@ export default function HomePage() {
         try {
           // Show loading state in popup
           if (mapRef.current.hoverEl) {
-            mapRef.current.hoverEl.innerHTML = `<div class="${styles['road-popup'] || ''}" style="padding:16px; font-size:13px; background:#fff; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.15); font-weight: 500; color: #334155;">
+            mapRef.current.hoverEl.innerHTML = `<div class="${styles["road-popup"] || ""}" style="padding:16px; font-size:13px; background:#fff; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.15); font-weight: 500; color: #334155;">
             <i class="fas fa-spinner fa-spin" style="margin-right:8px; color:#2f6fd6;"></i> Loading road details...
           </div>`;
-            mapRef.current.hoverEl.style.display = '';
+            mapRef.current.hoverEl.style.display = "";
             mapRef.current.hoverOverlay.setOptions({ autoPan: true });
             mapRef.current.hoverOverlay.setPosition(evt.coordinate);
-            mapRef.current.hoverOverlay.setPositioning('bottom-center');
+            mapRef.current.hoverOverlay.setPositioning("bottom-center");
             mapRef.current.hoverOverlay.setOffset([0, -15]);
           }
 
@@ -1012,8 +1078,8 @@ export default function HomePage() {
             // Read GeoJSON feature — geometry is in EPSG:4326, transform to map's EPSG:3857
             const geojsonFormat = new GeoJSON();
             const olFeature = geojsonFormat.readFeature(featureData, {
-              dataProjection: 'EPSG:4326',
-              featureProjection: 'EPSG:3857'
+              dataProjection: "EPSG:4326",
+              featureProjection: "EPSG:3857",
             });
 
             // 1. Highlight the road geometry
@@ -1021,44 +1087,73 @@ export default function HomePage() {
             mapRef.current.highlightLayer?.getSource().addFeature(olFeature);
 
             // 2. Dim active WMS layers
-            candidates.forEach(c => c.layer.setOpacity(0.4));
+            candidates.forEach((c) => c.layer.setOpacity(0.4));
 
             // 3. Pan and zoom to the road extent
             const geom = olFeature.getGeometry();
             if (geom) {
-              const padding = window.innerWidth < 768 ? [40, 40, 200, 40] : [80, 80, 80, 380];
-              map.getView().fit(geom.getExtent(), { padding, duration: 800, maxZoom: 18 });
+              const padding =
+                window.innerWidth < 768 ? [40, 40, 200, 40] : [80, 80, 80, 380];
+              map
+                .getView()
+                .fit(geom.getExtent(), { padding, duration: 800, maxZoom: 18 });
             }
 
             // 4. Fetch OSM name in parallel (fire-and-forget, then update popup)
-            let osmRoadName = 'Checking OpenStreetMap...';
-            fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lonLatClick[1]}&lon=${lonLatClick[0]}&zoom=18&addressdetails=1`, {
-              headers: { 'User-Agent': 'URIDA_GIS/1.0' }
-            }).then(r => r.json()).then(osmData => {
-              if (osmData?.address) {
-                osmRoadName = osmData.address.road || osmData.address.pedestrian || osmData.address.path || 'Name Not in OSM';
-              } else {
-                osmRoadName = 'Name Not in OSM';
-              }
-            }).catch(() => { osmRoadName = 'OSM Unavailable'; });
+            let osmRoadName = "Checking OpenStreetMap...";
+            fetch(
+              `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lonLatClick[1]}&lon=${lonLatClick[0]}&zoom=18&addressdetails=1`,
+              {
+                headers: { "User-Agent": "URIDA_GIS/1.0" },
+              },
+            )
+              .then((r) => r.json())
+              .then((osmData) => {
+                if (osmData?.address) {
+                  osmRoadName =
+                    osmData.address.road ||
+                    osmData.address.pedestrian ||
+                    osmData.address.path ||
+                    "Name Not in OSM";
+                } else {
+                  osmRoadName = "Name Not in OSM";
+                }
+              })
+              .catch(() => {
+                osmRoadName = "OSM Unavailable";
+              });
 
             // 5. DB road name from our own table
-            const dbRoadName = props.road_name || 'Unnamed in DB';
+            const dbRoadName = props.road_name || "Unnamed in DB";
 
             // 6. Build popup HTML
             const renderRow = (label, val) => {
-              if (val === null || val === '' || val === undefined) return '';
-              const cleanLabel = label.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+              if (val === null || val === "" || val === undefined) return "";
+              const cleanLabel = label
+                .replace(/_/g, " ")
+                .replace(/\b\w/g, (c) => c.toUpperCase());
               let display = val;
-              if (typeof val === 'number' && label.includes('length')) display = val.toFixed(3) + ' km';
+              if (typeof val === "number" && label.includes("length"))
+                display = val.toFixed(3) + " km";
               return `<div style="margin-bottom:7px; display:flex; justify-content:space-between; align-items:flex-start; gap:16px;">
               <span style="color:#64748b; font-size:11px; flex-shrink:0; padding-top:2px;">${cleanLabel}</span>
               <span style="color:#0f172a; text-align:right; font-weight:600; word-break:break-word; white-space:pre-wrap; font-size:12px;">${display}</span>
             </div>`;
             };
 
-            const priorityKeys = ['road_code', 'road_id', 'zone_name', 'ward_name', 'ownership', 'length_km', 'condition', 'row_meter', 'material', 'type'];
-            const skipKeys = ['fid', 'road_name'];
+            const priorityKeys = [
+              "road_code",
+              "road_id",
+              "zone_name",
+              "ward_name",
+              "ownership",
+              "length_km",
+              "condition",
+              "row_meter",
+              "material",
+              "type",
+            ];
+            const skipKeys = ["fid", "road_name"];
 
             let html = `<div style="padding:16px; font-size:12px; background:#fff; border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,0.25); max-width:340px; pointer-events:auto; position:relative;">
             <button onclick="document.dispatchEvent(new CustomEvent('closeRoadPopup'))" style="position:absolute; right:8px; top:8px; background:#e2e8f0; border:none; border-radius:50%; width:26px; height:26px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#475569; font-size:14px;">
@@ -1079,8 +1174,13 @@ export default function HomePage() {
               </div>
             </div>`;
 
-            priorityKeys.forEach(pk => {
-              if (props[pk] !== undefined && props[pk] !== null && props[pk] !== '') html += renderRow(pk, props[pk]);
+            priorityKeys.forEach((pk) => {
+              if (
+                props[pk] !== undefined &&
+                props[pk] !== null &&
+                props[pk] !== ""
+              )
+                html += renderRow(pk, props[pk]);
             });
             html += `<div style="height:1px; background:#f1f5f9; margin:8px 0;"></div>`;
             for (const [k, v] of Object.entries(props)) {
@@ -1091,27 +1191,30 @@ export default function HomePage() {
 
             if (mapRef.current.hoverEl) {
               mapRef.current.hoverEl.innerHTML = html;
-              const centerCoord = geom ? getCenter(geom.getExtent()) : evt.coordinate;
+              const centerCoord = geom
+                ? getCenter(geom.getExtent())
+                : evt.coordinate;
               mapRef.current.hoverOverlay.setPosition(centerCoord);
 
               // Update OSM name in popup after it resolves
               setTimeout(() => {
-                const osmEl = document.getElementById('road-popup-osm-name');
-                if (osmEl) osmEl.innerHTML = `<i class="fas fa-map-marker-alt" style="margin-right:6px;"></i>${osmRoadName || 'Checking...'}`;
+                const osmEl = document.getElementById("road-popup-osm-name");
+                if (osmEl)
+                  osmEl.innerHTML = `<i class="fas fa-map-marker-alt" style="margin-right:6px;"></i>${osmRoadName || "Checking..."}`;
               }, 3000);
             }
 
             return; // Stop after first match
           }
         } catch (e) {
-          console.error('Error fetching road from DB API:', e);
+          console.error("Error fetching road from DB API:", e);
         }
       }
 
       // If clicked empty space, clear everything
       mapRef.current.highlightLayer?.getSource().clear();
-      candidates.forEach(c => c.layer.setOpacity(1));
-      if (mapRef.current.hoverEl) mapRef.current.hoverEl.style.display = 'none';
+      candidates.forEach((c) => c.layer.setOpacity(1));
+      if (mapRef.current.hoverEl) mapRef.current.hoverEl.style.display = "none";
       mapRef.current.hoverOverlay?.setPosition(undefined);
     });
 
@@ -1185,31 +1288,31 @@ export default function HomePage() {
       }
       // 2. Clear hover display
       if (mapRef.current.hoverEl) {
-        mapRef.current.hoverEl.style.display = 'none';
+        mapRef.current.hoverEl.style.display = "none";
       }
       if (mapRef.current.hoverOverlay) {
         mapRef.current.hoverOverlay.setPosition(undefined);
       }
       // 3. Reset opacity on WMS layers
-      if (mapRef.current.above10mRef?.current) mapRef.current.above10mRef.current.setOpacity(1);
-      if (mapRef.current.cmGridRef?.current) mapRef.current.cmGridRef.current.setOpacity(1);
+      if (mapRef.current.above10mRef?.current)
+        mapRef.current.above10mRef.current.setOpacity(1);
+      if (mapRef.current.cmGridRef?.current)
+        mapRef.current.cmGridRef.current.setOpacity(1);
 
       // 4. Zoom map back to fit the current city bounds
       if (selectedCityRef.current && mapRef.current.fitViewToCityBoundaryFn) {
         mapRef.current.fitViewToCityBoundaryFn(selectedCityRef.current);
       }
     };
-    document.addEventListener('closeRoadPopup', handleCloseRoadPopup);
+    document.addEventListener("closeRoadPopup", handleCloseRoadPopup);
 
     // ✅ Cleanup
     return () => {
       window.removeEventListener("popstate", handlePopState);
-      document.removeEventListener('closeRoadPopup', handleCloseRoadPopup);
+      document.removeEventListener("closeRoadPopup", handleCloseRoadPopup);
       map.setTarget(undefined);
     };
   }, []);
-
-
 
   // removed debug panel and instrumentation code
 
@@ -1303,7 +1406,11 @@ export default function HomePage() {
         // Stale-while-revalidate: show cached data instantly, then fetch silently for updates
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (parsed?.ts && Date.now() - parsed.ts < HOME_SUMMARY_CACHE_TTL_MS && parsed?.data) {
+          if (
+            parsed?.ts &&
+            Date.now() - parsed.ts < HOME_SUMMARY_CACHE_TTL_MS &&
+            parsed?.data
+          ) {
             if (isMounted) {
               setHomeSummary(parsed.data);
               homeSummaryRef.current = parsed.data;
@@ -1319,7 +1426,10 @@ export default function HomePage() {
         const payload = JSON.stringify({ ts: Date.now(), data });
         localStorage.setItem(HOME_SUMMARY_CACHE_KEY, payload);
         sessionStorage.setItem(HOME_SUMMARY_CACHE_KEY, payload);
-        if (isMounted) { setHomeSummary(data); homeSummaryRef.current = data; }
+        if (isMounted) {
+          setHomeSummary(data);
+          homeSummaryRef.current = data;
+        }
       } catch (err) {
         if (isMounted) setHomeSummary(null);
       } finally {
@@ -1336,12 +1446,18 @@ export default function HomePage() {
     if (!homeSummary) return;
     const cityKey = selectedCity || null;
     console.log("Selected:", selectedCity);
-    const source = cityKey ? homeSummary.perCity?.[cityKey] : homeSummary.upTotals;
+    const source = cityKey
+      ? homeSummary.perCity?.[cityKey]
+      : homeSummary.upTotals;
     if (!source) return;
 
     // Helper: format number with locale separators
     const n = (v) => Number(v ?? 0).toLocaleString();
-    const km = (v) => Number(v ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const km = (v) =>
+      Number(v ?? 0).toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
 
     const nextCards = [
       {
@@ -1349,20 +1465,22 @@ export default function HomePage() {
         content: n(source.total_roads ?? source.totalRoads),
         subtitle: "All registered roads",
         icon: "fas fa-road",
-        color: "#FFFBEB",        // amber-50 pastel bg
-        textColor: "#78350F",   // amber-900 dark text
-        iconBg: "#F59E0B",      // amber-400
+        color: "#FFFBEB", // amber-50 pastel bg
+        textColor: "#78350F", // amber-900 dark text
+        iconBg: "#F59E0B", // amber-400
         iconColor: "#fff",
         accentColor: "#F59E0B",
       },
       {
         title: "Nagar Nigam Roads",
-        content: n(source.ownership_municipal_count ?? source.ownershipMunicipalCount),
+        content: n(
+          source.ownership_municipal_count ?? source.ownershipMunicipalCount,
+        ),
         subtitle: "Municipal corporation",
         icon: "fas fa-city",
-        color: "#FDF4FF",        // purple-50 pastel
-        textColor: "#6B21A8",   // purple-800
-        iconBg: "#A855F7",      // purple-400
+        color: "#FDF4FF", // purple-50 pastel
+        textColor: "#6B21A8", // purple-800
+        iconBg: "#A855F7", // purple-400
         iconColor: "#fff",
         accentColor: "#A855F7",
       },
@@ -1371,9 +1489,9 @@ export default function HomePage() {
         content: `${km(source.total_length_km ?? source.totalLengthKm)} km`,
         subtitle: "Combined road network",
         icon: "fas fa-ruler-horizontal",
-        color: "#FFF7ED",        // orange-50 pastel
-        textColor: "#9A3412",   // orange-800
-        iconBg: "#F97316",      // orange-400
+        color: "#FFF7ED", // orange-50 pastel
+        textColor: "#9A3412", // orange-800
+        iconBg: "#F97316", // orange-400
         iconColor: "#fff",
         accentColor: "#F97316",
       },
@@ -1382,9 +1500,9 @@ export default function HomePage() {
         content: `${km(source.ownership_municipal_length_km ?? source.ownershipMunicipalLengthKm)} km`,
         subtitle: "Municipal network length",
         icon: "fas fa-route",
-        color: "#FFF1F2",        // rose-50 pastel
-        textColor: "#9F1239",   // rose-800
-        iconBg: "#F43F5E",      // rose-400
+        color: "#FFF1F2", // rose-50 pastel
+        textColor: "#9F1239", // rose-800
+        iconBg: "#F43F5E", // rose-400
         iconColor: "#fff",
         accentColor: "#F43F5E",
       },
@@ -1393,9 +1511,9 @@ export default function HomePage() {
         content: n(source.above10m_count ?? source.above10mCount),
         subtitle: "Wide roads (ROW > 10m)",
         icon: "fas fa-align-justify",
-        color: "#ECFDF5",        // emerald-50 pastel
-        textColor: "#065F46",   // emerald-900
-        iconBg: "#10B981",      // emerald-400
+        color: "#ECFDF5", // emerald-50 pastel
+        textColor: "#065F46", // emerald-900
+        iconBg: "#10B981", // emerald-400
         iconColor: "#fff",
         accentColor: "#10B981",
       },
@@ -1404,9 +1522,9 @@ export default function HomePage() {
         content: `${km(source.above10m_length_km ?? source.above10mLengthKm)} km`,
         subtitle: "Wide road total length",
         icon: "fas fa-arrows-alt-h",
-        color: "#F0FDFA",        // teal-50 pastel
-        textColor: "#134E4A",   // teal-900
-        iconBg: "#14B8A6",      // teal-400
+        color: "#F0FDFA", // teal-50 pastel
+        textColor: "#134E4A", // teal-900
+        iconBg: "#14B8A6", // teal-400
         iconColor: "#fff",
         accentColor: "#14B8A6",
       },
@@ -1414,59 +1532,86 @@ export default function HomePage() {
     setCards(nextCards);
   }, [homeSummary, selectedCity]);
 
+  const formatNumber = useCallback(
+    (value, digits = 0) =>
+      Number(value || 0).toLocaleString(undefined, {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      }),
+    [],
+  );
 
-  const formatNumber = useCallback((value, digits = 0) =>
-    Number(value || 0).toLocaleString(undefined, {
-      minimumFractionDigits: digits,
-      maximumFractionDigits: digits
-    }), []);
+  const formatCityLabel = useCallback(
+    (cityKey) =>
+      cityKey ? cityKey.charAt(0).toUpperCase() + cityKey.slice(1) : "",
+    [],
+  );
 
-  const formatCityLabel = useCallback((cityKey) =>
-    cityKey ? cityKey.charAt(0).toUpperCase() + cityKey.slice(1) : "", []);
-
-  const buildOverlayHtml = useCallback((cityKey, data, includeClose = false, isHover = false) => {
-    const total = Number(data.total_roads || 0);
-    const lengthKm = Number(data.total_length_km || 0);
-    const good = Number(data.good_count || 0);
-    const moderate = Number(data.moderate_count || 0);
-    const poor = Number(data.poor_count || 0);
-    const known = good + moderate + poor;
-    const poorPct = known ? Math.round((poor / known) * 100) : 0;
-    const abovePct = total ? Math.round((Number(data.above10m_count || 0) / total) * 100) : 0;
-    const municipal = Number(data.ownership_municipal_count || 0);
-    const municipalLengthKm = Number(data.ownership_municipal_length_km || 0);
-    const pwd = Number(data.ownership_pwd_count || 0);
-    const ownershipKnown = municipal + pwd;
-    const muniPct = ownershipKnown ? Math.round((municipal / ownershipKnown) * 100) : 0;
-    const pwdPct = ownershipKnown ? Math.round((pwd / ownershipKnown) * 100) : 0;
-    const municipalGood = Number(data.municipal_good_count || 0);
-    const municipalModerate = Number(data.municipal_moderate_count || 0);
-    const municipalPoor = Number(data.municipal_poor_count || 0);
-    const municipalKnown = municipalGood + municipalModerate + municipalPoor;
-    const municipalGoodPct = municipalKnown ? Math.round((municipalGood / municipalKnown) * 100) : 0;
-    const municipalModeratePct = municipalKnown ? Math.round((municipalModerate / municipalKnown) * 100) : 0;
-    const municipalPoorPct = municipalKnown ? Math.max(0, 100 - municipalGoodPct - municipalModeratePct) : 0;
-    const municipalPie = municipalKnown
-      ? `conic-gradient(#2ecc71 0 ${municipalGoodPct}%, #f1c40f ${municipalGoodPct}% ${municipalGoodPct + municipalModeratePct}%, #e74c3c ${municipalGoodPct + municipalModeratePct}% 100%)`
-      : "conic-gradient(#dcdcdc 0 100%)";
-    const bitumen = Number(data.material_bitumen_count || 0);
-    const cc = Number(data.material_cc_count || 0);
-    const interlocking = Number(data.material_interlocking_count || 0);
-    const kachcha = Number(data.material_kachcha_count || 0);
-    const materialKnown = bitumen + cc + interlocking + kachcha;
-    const bitumenPct = materialKnown ? Math.round((bitumen / materialKnown) * 100) : 0;
-    const ccPct = materialKnown ? Math.round((cc / materialKnown) * 100) : 0;
-    const interlockingPct = materialKnown ? Math.round((interlocking / materialKnown) * 100) : 0;
-    const kachchaPct = materialKnown ? Math.round((kachcha / materialKnown) * 100) : 0;
-    const coveragePct = total ? Math.round((known / total) * 100) : 0;
-    const amenities = data.amenities || {};
-    const amenityHtml = Object.keys(AMENITY_LABELS)
-      .map((key) => `<div class="amenity-row"><span>${AMENITY_LABELS[key]}</span><span>${formatNumber(amenities[key] || 0)}</span></div>`)
-      .join("");
-    const closeHtml = includeClose
-      ? `<button class="city-overlay-close" type="button">Close</button>`
-      : "";
-    const summaryHtml = `
+  const buildOverlayHtml = useCallback(
+    (cityKey, data, includeClose = false, isHover = false) => {
+      const total = Number(data.total_roads || 0);
+      const lengthKm = Number(data.total_length_km || 0);
+      const good = Number(data.good_count || 0);
+      const moderate = Number(data.moderate_count || 0);
+      const poor = Number(data.poor_count || 0);
+      const known = good + moderate + poor;
+      const poorPct = known ? Math.round((poor / known) * 100) : 0;
+      const abovePct = total
+        ? Math.round((Number(data.above10m_count || 0) / total) * 100)
+        : 0;
+      const municipal = Number(data.ownership_municipal_count || 0);
+      const municipalLengthKm = Number(data.ownership_municipal_length_km || 0);
+      const pwd = Number(data.ownership_pwd_count || 0);
+      const ownershipKnown = municipal + pwd;
+      const muniPct = ownershipKnown
+        ? Math.round((municipal / ownershipKnown) * 100)
+        : 0;
+      const pwdPct = ownershipKnown
+        ? Math.round((pwd / ownershipKnown) * 100)
+        : 0;
+      const municipalGood = Number(data.municipal_good_count || 0);
+      const municipalModerate = Number(data.municipal_moderate_count || 0);
+      const municipalPoor = Number(data.municipal_poor_count || 0);
+      const municipalKnown = municipalGood + municipalModerate + municipalPoor;
+      const municipalGoodPct = municipalKnown
+        ? Math.round((municipalGood / municipalKnown) * 100)
+        : 0;
+      const municipalModeratePct = municipalKnown
+        ? Math.round((municipalModerate / municipalKnown) * 100)
+        : 0;
+      const municipalPoorPct = municipalKnown
+        ? Math.max(0, 100 - municipalGoodPct - municipalModeratePct)
+        : 0;
+      const municipalPie = municipalKnown
+        ? `conic-gradient(#2ecc71 0 ${municipalGoodPct}%, #f1c40f ${municipalGoodPct}% ${municipalGoodPct + municipalModeratePct}%, #e74c3c ${municipalGoodPct + municipalModeratePct}% 100%)`
+        : "conic-gradient(#dcdcdc 0 100%)";
+      const bitumen = Number(data.material_bitumen_count || 0);
+      const cc = Number(data.material_cc_count || 0);
+      const interlocking = Number(data.material_interlocking_count || 0);
+      const kachcha = Number(data.material_kachcha_count || 0);
+      const materialKnown = bitumen + cc + interlocking + kachcha;
+      const bitumenPct = materialKnown
+        ? Math.round((bitumen / materialKnown) * 100)
+        : 0;
+      const ccPct = materialKnown ? Math.round((cc / materialKnown) * 100) : 0;
+      const interlockingPct = materialKnown
+        ? Math.round((interlocking / materialKnown) * 100)
+        : 0;
+      const kachchaPct = materialKnown
+        ? Math.round((kachcha / materialKnown) * 100)
+        : 0;
+      const coveragePct = total ? Math.round((known / total) * 100) : 0;
+      const amenities = data.amenities || {};
+      const amenityHtml = Object.keys(AMENITY_LABELS)
+        .map(
+          (key) =>
+            `<div class="amenity-row"><span>${AMENITY_LABELS[key]}</span><span>${formatNumber(amenities[key] || 0)}</span></div>`,
+        )
+        .join("");
+      const closeHtml = includeClose
+        ? `<button class="city-overlay-close" type="button">Close</button>`
+        : "";
+      const summaryHtml = `
       ${closeHtml}
       <div class="city-overlay-title">${formatCityLabel(cityKey)}</div>
       <div class="city-overlay-metric">Roads: ${formatNumber(total)}</div>
@@ -1474,7 +1619,7 @@ export default function HomePage() {
       <div class="city-overlay-metric">Nagar Nigam: ${formatNumber(municipal)}</div>
       <div class="city-overlay-metric">Nagar Nigam Length: ${formatNumber(municipalLengthKm, 2)} km</div>
     `;
-    const detailHtml = `
+      const detailHtml = `
       <div class="city-overlay-bar">
         <div class="bar-label">Poor</div>
         <div class="bar-track"><div class="bar-fill bar-poor" style="width:${poorPct}%"></div></div>
@@ -1538,11 +1683,15 @@ export default function HomePage() {
       </div>
       <div class="city-overlay-coverage">Condition coverage: ${coveragePct}%</div>
     `;
-    return isHover ? summaryHtml : `${summaryHtml}${detailHtml}`;
-  }, [formatNumber, formatCityLabel]);
+      return isHover ? summaryHtml : `${summaryHtml}${detailHtml}`;
+    },
+    [formatNumber, formatCityLabel],
+  );
 
   // Keep build HTML in sync
-  useEffect(() => { buildOverlayHtmlRef.current = buildOverlayHtml; }, [buildOverlayHtml]);
+  useEffect(() => {
+    buildOverlayHtmlRef.current = buildOverlayHtml;
+  }, [buildOverlayHtml]);
   // Keep handleCitySelect and fit bounds in sync for WFS and click events
   useEffect(() => {
     if (mapRef.current) {
@@ -1554,12 +1703,16 @@ export default function HomePage() {
   });
 
   // Keep selectedCityRef in sync so hover handler never shows popup when a city is already active
-  useEffect(() => { selectedCityRef.current = selectedCity; });
-
+  useEffect(() => {
+    selectedCityRef.current = selectedCity;
+  });
 
   const mobileOverlayHtml = useMemo(() => {
     if (!homeSummary || !selectedCity) return "";
-    return buildOverlayHtml(selectedCity, homeSummary.perCity?.[selectedCity] || {});
+    return buildOverlayHtml(
+      selectedCity,
+      homeSummary.perCity?.[selectedCity] || {},
+    );
   }, [homeSummary, selectedCity, buildOverlayHtml]);
 
   useEffect(() => {
@@ -1589,7 +1742,7 @@ export default function HomePage() {
       position: CITY_CENTER[city],
       positioning: "center-center",
       offset: [offsetX, offsetY],
-      stopEvent: true
+      stopEvent: true,
     });
     const handleOverlayClick = (event) => {
       const target = event.target;
@@ -1628,11 +1781,19 @@ export default function HomePage() {
     element.addEventListener("pointerdown", handlePointerDown);
     element.addEventListener("click", handleOverlayClick);
     map.addOverlay(overlay);
-    cityOverlaysRef.current[city] = { overlay, element, handlePointerDown, handleOverlayClick };
+    cityOverlaysRef.current[city] = {
+      overlay,
+      element,
+      handlePointerDown,
+      handleOverlayClick,
+    };
     return () => {
       Object.values(cityOverlaysRef.current).forEach((item) => {
         if (item.element && item.handlePointerDown) {
-          item.element.removeEventListener("pointerdown", item.handlePointerDown);
+          item.element.removeEventListener(
+            "pointerdown",
+            item.handlePointerDown,
+          );
         }
         if (item.element && item.handleOverlayClick) {
           item.element.removeEventListener("click", item.handleOverlayClick);
@@ -1648,13 +1809,16 @@ export default function HomePage() {
     Object.entries(cityOverlaysRef.current).forEach(([city, item]) => {
       // Pin active city overlay to left edge, beneath zoom controls
       item.element.className = `city-overlay active`;
-      item.element.style.position = 'absolute';
-      item.element.style.top = '140px';
-      item.element.style.left = '20px';
-      item.element.style.right = 'auto'; // allow width to grow naturally
-      item.element.style.transform = 'none';
+      item.element.style.position = "absolute";
+      item.element.style.top = "140px";
+      item.element.style.left = "20px";
+      item.element.style.right = "auto"; // allow width to grow naturally
+      item.element.style.transform = "none";
 
-      item.element.innerHTML = buildOverlayHtml(city, homeSummary.perCity?.[city] || {});
+      item.element.innerHTML = buildOverlayHtml(
+        city,
+        homeSummary.perCity?.[city] || {},
+      );
     });
   }, [homeSummary, selectedCity, buildOverlayHtml]);
 
@@ -1686,38 +1850,43 @@ export default function HomePage() {
     }
   };
 
-  const fitViewToCityBoundary = useCallback(async (city) => {
-    const map =
-      mapRef.current?.instance || mapRef.current?.map || mapRef.current;
-    if (!map || !city) return;
-    const entry = BOUNDARY_WFS[city];
-    const view = map.getView();
-    
-    // Attempt to get extent from already loaded WFS features
-    if (mapRef.current?.upBoundaryLayer && entry) {
-      const source = mapRef.current.upBoundaryLayer.getSource();
-      if (source && typeof source.getFeatures === 'function') {
-        const features = source.getFeatures();
-        const feat = features.find(f => normalizeWfsName(f.get('Name')) === city);
-        if (feat) {
-          const extent = feat.getGeometry().getExtent();
-          view.fit(extent, {
-            padding: mapPadding,
-            duration: 800,
-            maxZoom: cityMaxZoom,
-          });
-          return;
+  const fitViewToCityBoundary = useCallback(
+    async (city) => {
+      const map =
+        mapRef.current?.instance || mapRef.current?.map || mapRef.current;
+      if (!map || !city) return;
+      const entry = BOUNDARY_WFS[city];
+      const view = map.getView();
+
+      // Attempt to get extent from already loaded WFS features
+      if (mapRef.current?.upBoundaryLayer && entry) {
+        const source = mapRef.current.upBoundaryLayer.getSource();
+        if (source && typeof source.getFeatures === "function") {
+          const features = source.getFeatures();
+          const feat = features.find(
+            (f) => normalizeWfsName(f.get("Name")) === city,
+          );
+          if (feat) {
+            const extent = feat.getGeometry().getExtent();
+            view.fit(extent, {
+              padding: mapPadding,
+              duration: 800,
+              maxZoom: cityMaxZoom,
+            });
+            return;
+          }
         }
       }
-    }
-    
-    const cityCenter = CITY_CENTER[city] || fromLonLat([80.8, 26.8]);
-    view.animate({
-      center: cityCenter,
-      zoom: isMobileView ? 10 : 11,
-      duration: 800,
-    });
-  }, [isMobileView, mapPadding, cityMaxZoom]);
+
+      const cityCenter = CITY_CENTER[city] || fromLonLat([80.8, 26.8]);
+      view.animate({
+        center: cityCenter,
+        zoom: isMobileView ? 10 : 11,
+        duration: 800,
+      });
+    },
+    [isMobileView, mapPadding, cityMaxZoom],
+  );
 
   /* ----------------- LAYERS ----------------- */
 
@@ -1748,9 +1917,11 @@ export default function HomePage() {
     if (mapRef.current.cmGridRef) removeLayer(mapRef.current.cmGridRef);
 
     // Hide popups
-    if (mapRef.current.hoverEl) mapRef.current.hoverEl.style.display = 'none';
-    if (mapRef.current.hoverOverlay) mapRef.current.hoverOverlay.setPosition(undefined);
-    if (mapRef.current.highlightLayer) mapRef.current.highlightLayer.getSource().clear();
+    if (mapRef.current.hoverEl) mapRef.current.hoverEl.style.display = "none";
+    if (mapRef.current.hoverOverlay)
+      mapRef.current.hoverOverlay.setPosition(undefined);
+    if (mapRef.current.highlightLayer)
+      mapRef.current.highlightLayer.getSource().clear();
 
     if (city) {
       const entry = BOUNDARY_WFS[city];
@@ -1764,12 +1935,14 @@ export default function HomePage() {
             params: {
               LAYERS: `${entry.ws}:${entry.layer}`,
               CQL_FILTER: `Name='${entry.name}'`,
-              FORMAT: 'image/png',
-              VERSION: '1.3.0',
+              FORMAT: "image/png",
+              VERSION: "1.3.0",
               TRANSPARENT: true,
               TILED: true,
-              FORMAT_OPTIONS: 'antiAlias:false',
-              ...(highlightStyle ? { STYLES: highlightStyle } : { SLD_BODY: buildBoundarySld(highlightColor, 5) }),
+              FORMAT_OPTIONS: "antiAlias:false",
+              ...(highlightStyle
+                ? { STYLES: highlightStyle }
+                : { SLD_BODY: buildBoundarySld(highlightColor, 5) }),
             },
             serverType: "geoserver",
             crossOrigin: "anonymous",
@@ -1811,19 +1984,19 @@ export default function HomePage() {
 
     const layer = new TileLayer({
       title: `${city.toUpperCase()} Above 10m`,
-      opacity: 0,   // start transparent for graceful fade-in
+      opacity: 0, // start transparent for graceful fade-in
       source: new TileWMS({
         url: `${GEOSERVER_BASE}/${ABOVE10M_WS}/wms`,
         params: {
           LAYERS: `${ABOVE10M_WS}:${layerName}`,
-          FORMAT: 'image/png',
-          VERSION: '1.3.0',
+          FORMAT: "image/png",
+          VERSION: "1.3.0",
           TRANSPARENT: true,
           TILED: true,
-          FORMAT_OPTIONS: 'antiAlias:false',
+          FORMAT_OPTIONS: "antiAlias:false",
         },
-        serverType: 'geoserver',
-        crossOrigin: 'anonymous',
+        serverType: "geoserver",
+        crossOrigin: "anonymous",
         wrapX: false,
       }),
       visible: true,
@@ -1833,11 +2006,12 @@ export default function HomePage() {
 
     setLayerVisibility((prev) => ({ ...prev, above10m: true }));
 
-    const map = mapRef.current?.instance || mapRef.current?.map || mapRef.current;
-    if (map && typeof map.addLayer === 'function') {
+    const map =
+      mapRef.current?.instance || mapRef.current?.map || mapRef.current;
+    if (map && typeof map.addLayer === "function") {
       map.addLayer(layer);
       // Graceful fade-in once the first tile arrives
-      layer.once('postrender', () => {
+      layer.once("postrender", () => {
         let op = 0;
         const step = () => {
           op = Math.min(1, op + 0.08);
@@ -1856,23 +2030,24 @@ export default function HomePage() {
     const entry = CM_GRID_WMS[city]?.[phase];
     if (!entry) return;
 
-    const baseUrl = entry.ws === 'Phase_2' ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE;
+    const baseUrl =
+      entry.ws === "Phase_2" ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE;
     const layer = new TileLayer({
       title: `${city.toUpperCase()} ${phase}`,
-      opacity: 0,   // graceful fade-in
+      opacity: 0, // graceful fade-in
       zIndex: 600,
       source: new TileWMS({
         url: `${baseUrl}/${entry.ws}/wms`,
         params: {
           LAYERS: `${entry.ws}:${entry.layer}`,
-          FORMAT: 'image/png',
-          VERSION: '1.3.0',
+          FORMAT: "image/png",
+          VERSION: "1.3.0",
           TRANSPARENT: true,
           TILED: true,
-          FORMAT_OPTIONS: 'antiAlias:false',
+          FORMAT_OPTIONS: "antiAlias:false",
         },
-        serverType: 'geoserver',
-        crossOrigin: 'anonymous',
+        serverType: "geoserver",
+        crossOrigin: "anonymous",
         wrapX: false,
       }),
       visible: true,
@@ -1881,12 +2056,17 @@ export default function HomePage() {
 
     setLayerVisibility((prev) => ({ ...prev, cmGrid: true }));
 
-    const map = mapRef.current?.instance || mapRef.current?.map || mapRef.current;
-    if (map && typeof map.addLayer === 'function') {
+    const map =
+      mapRef.current?.instance || mapRef.current?.map || mapRef.current;
+    if (map && typeof map.addLayer === "function") {
       map.addLayer(layer);
-      layer.once('postrender', () => {
+      layer.once("postrender", () => {
         let op = 0;
-        const step = () => { op = Math.min(1, op + 0.08); layer.setOpacity(op); if (op < 1) requestAnimationFrame(step); };
+        const step = () => {
+          op = Math.min(1, op + 0.08);
+          layer.setOpacity(op);
+          if (op < 1) requestAnimationFrame(step);
+        };
         requestAnimationFrame(step);
       });
     }
@@ -1956,12 +2136,11 @@ export default function HomePage() {
     }
   };
 
-
   const handleDashboardClick = () => {
     const c = selectedCity;
-    console.log('Dashboard clicked, selected city:', c);
+    console.log("Dashboard clicked, selected city:", c);
     if (!c) {
-      console.log('No city selected, cannot navigate to dashboard');
+      console.log("No city selected, cannot navigate to dashboard");
       return;
     }
 
@@ -1973,31 +2152,15 @@ export default function HomePage() {
     localStorage.removeItem("selectedCity");
   };
 
-  const handleProgressClick = () => {
-    const iframe = document.getElementById("progress_graph");
-    const closeBtn = document.getElementById("progress_close");
-    const isOpen = iframe.style.display === "block";
-    iframe.style.display = isOpen ? "none" : "block";
-    if (closeBtn) {
-      closeBtn.style.display = isOpen ? "none" : "block";
-    }
-  };
-
-  const handleProgressClose = () => {
-    const iframe = document.getElementById("progress_graph");
-    const closeBtn = document.getElementById("progress_close");
-    iframe.style.display = "none";
-    if (closeBtn) {
-      closeBtn.style.display = "none";
-    }
-  };
+  const handleAdminBack = useCallback(() => {
+    navigate("/admin");
+  }, [navigate]);
 
   const handleLogout = () => {
-    const token = localStorage.getItem("authToken");
-    if (token) {
-      fetch("/api/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => { });
-    }
-    localStorage.removeItem("authToken");
+    fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
+    localStorage.removeItem("authUser");
+    localStorage.removeItem("authRole");
+    localStorage.removeItem("authCity");
     window.location.href = "/";
   };
   // ✅ Return to HomePage without logging out
@@ -2005,20 +2168,12 @@ export default function HomePage() {
     window.location.href = "/home"; // stays logged in
   };
 
-  // ✅ Auth Check
-  useEffect(() => {
-    const token = localStorage.getItem("authToken");
-    if (!token) {
-      window.location.href = "/";
-    }
-  }, []);
-
   const activeLegendLayers = useMemo(() => {
     const arr = [];
     if (layerVisibility.upDistrict) {
       arr.push({
         layerName: "Ward_38:Up_District",
-        label: "UP District Boundary"
+        label: "UP District Boundary",
       });
     }
     if (layerVisibility.upBoundary) {
@@ -2026,32 +2181,38 @@ export default function HomePage() {
         const manualItems = Object.keys(BOUNDARY_WFS).map((city) => ({
           label: `${city.charAt(0).toUpperCase() + city.slice(1)} Nagar Nigam`,
           color: CITY_BOUNDARY_COLORS[city] || "#2f6fd6",
-          name: city
+          name: city,
         }));
         arr.push({
           layerName: "manual_up_boundaries",
           label: "UP Nagar Nigam Boundary",
           isManual: true,
-          items: manualItems
+          items: manualItems,
         });
       } else if (BOUNDARY_WFS[selectedCity]) {
         arr.push({
           layerName: `manual_${selectedCity}_boundary`,
           label: `${selectedCity.charAt(0).toUpperCase() + selectedCity.slice(1)} Nagar Nigam Boundary`,
           isManual: true,
-          items: [{
-            label: `${selectedCity.charAt(0).toUpperCase() + selectedCity.slice(1)} Nagar Nigam`,
-            color: CITY_BOUNDARY_COLORS[selectedCity] || "#2f6fd6",
-            name: selectedCity
-          }]
+          items: [
+            {
+              label: `${selectedCity.charAt(0).toUpperCase() + selectedCity.slice(1)} Nagar Nigam`,
+              color: CITY_BOUNDARY_COLORS[selectedCity] || "#2f6fd6",
+              name: selectedCity,
+            },
+          ],
         });
       }
     }
-    if (layerVisibility.above10m && selectedCity && ABOVE10M_LAYER[selectedCity]) {
+    if (
+      layerVisibility.above10m &&
+      selectedCity &&
+      ABOVE10M_LAYER[selectedCity]
+    ) {
       arr.push({
         layerName: `${ABOVE10M_WS}:${ABOVE10M_LAYER[selectedCity]}`,
         label: "Roads > 10m ROW",
-        baseUrl: GEOSERVER_BASE
+        baseUrl: GEOSERVER_BASE,
       });
     }
     if (layerVisibility.cmGrid && selectedPhase) {
@@ -2060,14 +2221,16 @@ export default function HomePage() {
         arr.push({
           layerName: `${entry.ws}:${entry.layer}`,
           label: "GPR Priority",
-          baseUrl: entry.ws === 'Phase_2' ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE
+          baseUrl:
+            entry.ws === "Phase_2" ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE,
         });
       } else if (CM_GRID_WMS[selectedCity]?.[selectedPhase]) {
         const entry = CM_GRID_WMS[selectedCity][selectedPhase];
         arr.push({
           layerName: `${entry.ws}:${entry.layer}`,
           label: `${selectedPhase} Progress`,
-          baseUrl: entry.ws === 'Phase_2' ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE
+          baseUrl:
+            entry.ws === "Phase_2" ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE,
         });
       }
     }
@@ -2113,70 +2276,98 @@ export default function HomePage() {
               : "UP State Statistics"}
           </div>
           <div className="cards-container">
-            {summaryLoading ? (
-              [0, 1, 2, 3, 4, 5].map(i => (
-                <div className="stat-card stat-card--skeleton" key={i}>
-                  <div className="stat-card__icon-wrap skeleton-pulse" />
-                  <div className="stat-card__value skeleton-pulse" style={{ height: 22, marginTop: 6, borderRadius: 4 }} />
-                  <div className="stat-card__label skeleton-pulse" style={{ height: 13, marginTop: 6, width: '70%', borderRadius: 3 }} />
-                </div>
-              ))
-            ) : (
-              cards.map((card, idx) => (
-                <div
-                  className="stat-card"
-                  key={idx}
-                  style={{
-                    background: card.color || '#f9f9f9',
-                    color: card.textColor || '#1a1a1a',
-                    '--card-accent': card.accentColor || '#999',
-                  }}
-                >
-                  <div
-                    className="stat-card__icon-wrap"
-                    style={{ background: card.iconBg || card.accentColor || '#999', color: card.iconColor || '#fff' }}
-                  >
-                    <i className={card.icon || 'fas fa-chart-bar'} />
+            {summaryLoading
+              ? [0, 1, 2, 3, 4, 5].map((i) => (
+                  <div className="stat-card stat-card--skeleton" key={i}>
+                    <div className="stat-card__icon-wrap skeleton-pulse" />
+                    <div
+                      className="stat-card__value skeleton-pulse"
+                      style={{ height: 22, marginTop: 6, borderRadius: 4 }}
+                    />
+                    <div
+                      className="stat-card__label skeleton-pulse"
+                      style={{
+                        height: 13,
+                        marginTop: 6,
+                        width: "70%",
+                        borderRadius: 3,
+                      }}
+                    />
                   </div>
-                  <div className="stat-card__value">{card.content}</div>
-                  <div className="stat-card__label">{card.title}</div>
-                  {card.subtitle && <div className="stat-card__subtitle">{card.subtitle}</div>}
-                </div>
-              ))
-            )}
+                ))
+              : cards.map((card, idx) => (
+                  <div
+                    className="stat-card"
+                    key={idx}
+                    style={{
+                      background: card.color || "#f9f9f9",
+                      color: card.textColor || "#1a1a1a",
+                      "--card-accent": card.accentColor || "#999",
+                    }}
+                  >
+                    <div
+                      className="stat-card__icon-wrap"
+                      style={{
+                        background: card.iconBg || card.accentColor || "#999",
+                        color: card.iconColor || "#fff",
+                      }}
+                    >
+                      <i className={card.icon || "fas fa-chart-bar"} />
+                    </div>
+                    <div
+                      className={`stat-card__value ${card.title.includes("Length") ? "stat-card__value--length" : ""}`}
+                    >
+                      {card.content}
+                    </div>
+                    <div className="stat-card__label">{card.title}</div>
+                    {card.subtitle && (
+                      <div className="stat-card__subtitle">{card.subtitle}</div>
+                    )}
+                  </div>
+                ))}
           </div>
         </div>
 
-        <div className="button-container" id="buttonContainer">
-          {!selectedCity ? (
-            <button
-              className="action-button progress"
-              onClick={handleProgressClick}
-            >
-              Progress Report
+        {loggedInRole === "admin" && !selectedCity && (
+          <div className="sidebar-item sidebar-item--admin-back">
+            <button className="admin-back-button" onClick={handleAdminBack}>
+              <i className="fas fa-arrow-left" /> Back to Admin Panel
             </button>
-          ) : (
-            <div className="button-and-select-container">
-              <button className="action-button" onClick={handleDashboardClick}>
-                Dashboard
-              </button>
+          </div>
+        )}
 
-              <select
-                id="roadSelector"
-                className="select-field select-year"
-                value={selectedPhase}
-                onChange={handlePhaseChange}
-              >
-                <option value="">CM-Grid Roads</option>
-                <option value="Phase1">Phase 1</option>
-                <option value="Phase2">Phase 2</option>
+        <div className="button-container" id="buttonContainer">
+          {selectedCity && (
+            <>
+              <div className="button-and-select-container">
+                <button className="action-button" onClick={handleDashboardClick}>
+                  Dashboard
+                </button>
 
-                {/* Show GPR only for Lucknow */}
-                {selectedCity === "lucknow" && (
-                  <option value="GPR">GPR Layer</option>
-                )}
-              </select>
-            </div>
+                <select
+                  id="roadSelector"
+                  className="select-field select-year"
+                  value={selectedPhase}
+                  onChange={handlePhaseChange}
+                >
+                  <option value="">CM-Grid Roads</option>
+                  <option value="Phase1">Phase 1</option>
+                  <option value="Phase2">Phase 2</option>
+
+                  {selectedCity === "lucknow" && (
+                    <option value="GPR">GPR Layer</option>
+                  )}
+                </select>
+              </div>
+
+              {loggedInRole === "admin" && (
+                <div style={{ width: "100%", display: "flex", justifyContent: "center" }}>
+                  <button className="admin-back-button" onClick={handleAdminBack}>
+                    <i className="fas fa-arrow-left" /> Back to Admin Panel
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -2186,14 +2377,16 @@ export default function HomePage() {
         id="map"
         className={[
           showCityOverlays ? "map-overlay-visible" : "map-overlay-hidden",
-          selectedCity ? "city-selected" : ""
-        ].join(' ').trim()}
+          selectedCity ? "city-selected" : "",
+        ]
+          .join(" ")
+          .trim()}
       />
 
       {/* Back to State button */}
       {selectedCity && (
         <button
-          className={styles["map-reset-btn"] || 'map-reset-btn'}
+          className={styles["map-reset-btn"] || "map-reset-btn"}
           onClick={() => {
             setSelectedCity("");
             localStorage.removeItem("selectedCity");
@@ -2202,17 +2395,21 @@ export default function HomePage() {
               removeLayer(boundaryRef);
               removeLayer(above10mRef);
               removeLayer(cmGridRef);
-              if (mapRef.current.hoverEl) mapRef.current.hoverEl.style.display = 'none';
-              if (mapRef.current.highlightLayer) mapRef.current.highlightLayer.getSource().clear();
+              if (mapRef.current.hoverEl)
+                mapRef.current.hoverEl.style.display = "none";
+              if (mapRef.current.highlightLayer)
+                mapRef.current.highlightLayer.getSource().clear();
 
               const upExtent = [77.0, 23.5, 84.5, 31.0];
               const minCoord = fromLonLat([upExtent[0], upExtent[1]]);
               const maxCoord = fromLonLat([upExtent[2], upExtent[3]]);
-              mapRef.current.instance.getView().fit([minCoord[0], minCoord[1], maxCoord[0], maxCoord[1]], {
-                padding: [50, 50, 50, 50],
-                duration: 800,
-                maxZoom: 8,
-              });
+              mapRef.current.instance
+                .getView()
+                .fit([minCoord[0], minCoord[1], maxCoord[0], maxCoord[1]], {
+                  padding: [50, 50, 50, 50],
+                  duration: 800,
+                  maxZoom: 8,
+                });
             }
           }}
         >
@@ -2235,33 +2432,6 @@ export default function HomePage() {
         </button>
       )}
 
-      {/* LOOKER (hidden until Progress Report) */}
-      <iframe
-        id="progress_graph"
-        title="Progress Report"
-        style={{
-          display: "none",
-          position: "fixed",
-          left: "380px",
-          top: "0",
-          width: "calc(100% - 380px)",
-          height: "98vh",
-          border: "3px solid #9E9B9B",
-          boxShadow: "2px 0 5px #9E9B9B",
-          zIndex: 999,
-        }}
-        src="https://lookerstudio.google.com/embed/reporting/3a0e91e4-d24e-4979-902a-00b449935191/page/XCwDE?rm=minimal&embedded=true"
-        allowFullScreen
-      />
-      <button
-        id="progress_close"
-        className="progress-close"
-        onClick={handleProgressClose}
-        style={{ display: "none" }}
-      >
-        ×
-      </button>
-
       {/* Elegant Layer Legend Panel - Visible statewide or citywide when layers are active */}
       <HomeMapLegend layers={activeLegendLayers} />
 
@@ -2273,7 +2443,10 @@ export default function HomePage() {
             className="map-btn profile-btn"
             title="Profile / Logout"
             ref={profileBtnRef}
-            onClick={() => { setProfileMenuOpen((open) => !open); setControlsVisible(false); }}
+            onClick={() => {
+              setProfileMenuOpen((open) => !open);
+              setControlsVisible(false);
+            }}
           >
             <i className="fas fa-user-circle" />
           </button>
@@ -2284,8 +2457,19 @@ export default function HomePage() {
               className="profile-dropdown"
             >
               <div className="profile-dropdown-header">
-                <i className="fas fa-user-circle" style={{ fontSize: 28, color: "#3b82f6" }} />
-                <span style={{ fontWeight: 700, fontSize: 13, textTransform: "capitalize" }}>{loggedInUser}</span>
+                <i
+                  className="fas fa-user-circle"
+                  style={{ fontSize: 28, color: "#3b82f6" }}
+                />
+                <span
+                  style={{
+                    fontWeight: 700,
+                    fontSize: 13,
+                    textTransform: "capitalize",
+                  }}
+                >
+                  {loggedInUser}
+                </span>
               </div>
               <div className="profile-dropdown-item" onClick={handleLogout}>
                 <i className="fas fa-sign-out-alt" />
@@ -2299,7 +2483,10 @@ export default function HomePage() {
         <div style={{ position: "relative" }}>
           <button
             className="map-btn"
-            onClick={() => { setControlsVisible((v) => !v); setProfileMenuOpen(false); }}
+            onClick={() => {
+              setControlsVisible((v) => !v);
+              setProfileMenuOpen(false);
+            }}
             title="Basemap &amp; Layers"
           >
             <i className="fas fa-layer-group" />
@@ -2307,17 +2494,45 @@ export default function HomePage() {
           {controlsVisible && (
             <div className="controls-panel">
               <div className="controls-panel-header">
-                <i className="fas fa-map" style={{ color: "#3b82f6", marginRight: 6 }} />
+                <i
+                  className="fas fa-map"
+                  style={{ color: "#3b82f6", marginRight: 6 }}
+                />
                 Base Maps
               </div>
               {/* Modern basemap card grid */}
               <div className="basemap-card-grid">
                 {[
-                  { value: "osm", label: "OSM", icon: "fas fa-map", color: "#e8f5e9" },
-                  { value: "satellite", label: "Satellite", icon: "fas fa-satellite", color: "#e3f2fd" },
-                  { value: "positron", label: "Positron", icon: "fas fa-circle", color: "#fce4ec" },
-                  { value: "topo", label: "Topo", icon: "fas fa-mountain", color: "#fff3e0" },
-                  { value: "toner", label: "Toner", icon: "fas fa-adjust", color: "#f3e5f5" },
+                  {
+                    value: "osm",
+                    label: "OSM",
+                    icon: "fas fa-map",
+                    color: "#e8f5e9",
+                  },
+                  {
+                    value: "satellite",
+                    label: "Satellite",
+                    icon: "fas fa-satellite",
+                    color: "#e3f2fd",
+                  },
+                  {
+                    value: "positron",
+                    label: "Positron",
+                    icon: "fas fa-circle",
+                    color: "#fce4ec",
+                  },
+                  {
+                    value: "topo",
+                    label: "Topo",
+                    icon: "fas fa-mountain",
+                    color: "#fff3e0",
+                  },
+                  {
+                    value: "toner",
+                    label: "Toner",
+                    icon: "fas fa-adjust",
+                    color: "#f3e5f5",
+                  },
                 ].map(({ value, label, icon, color }) => (
                   <button
                     key={value}
@@ -2325,28 +2540,63 @@ export default function HomePage() {
                     style={{ "--bm-color": color }}
                     onClick={() => handleBaseMapChange(value)}
                   >
-                    <span className="basemap-card__icon"><i className={icon} /></span>
+                    <span className="basemap-card__icon">
+                      <i className={icon} />
+                    </span>
                     <span className="basemap-card__label">{label}</span>
-                    {baseMap === value && <span className="basemap-card__check"><i className="fas fa-check-circle" /></span>}
+                    {baseMap === value && (
+                      <span className="basemap-card__check">
+                        <i className="fas fa-check-circle" />
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
 
               <div className="controls-panel-divider" />
 
-              <div className="controls-panel-header" style={{ marginBottom: 8 }}>
-                <i className="fas fa-layer-group" style={{ color: "#3b82f6", marginRight: 6 }} />
+              <div
+                className="controls-panel-header"
+                style={{ marginBottom: 8 }}
+              >
+                <i
+                  className="fas fa-layer-group"
+                  style={{ color: "#3b82f6", marginRight: 6 }}
+                />
                 Overlay Layers
               </div>
               <div className="layer-controls">
                 {[
                   { key: "upDistrict", label: "UP District", alwaysShow: true },
-                  { key: "upBoundary", label: "UP Nagar Nigam Boundary", alwaysShow: true },
-                  { key: "cityBoundary", label: `${selectedCity ? selectedCity.charAt(0).toUpperCase() + selectedCity.slice(1) + " Boundary" : ""}`, alwaysShow: false, show: !!selectedCity, disabled: !mapRef.current?.boundaryLayer },
-                  { key: "above10m", label: "Above 10m Roads", alwaysShow: false, show: !!selectedCity, disabled: !above10mRef.current },
-                  { key: "cmGrid", label: selectedPhase === "GPR" ? "GPR Data" : "CM-Grid Roads", alwaysShow: false, show: !!selectedPhase, disabled: !cmGridRef.current },
+                  {
+                    key: "upBoundary",
+                    label: "UP Nagar Nigam Boundary",
+                    alwaysShow: true,
+                  },
+                  {
+                    key: "cityBoundary",
+                    label: `${selectedCity ? selectedCity.charAt(0).toUpperCase() + selectedCity.slice(1) + " Boundary" : ""}`,
+                    alwaysShow: false,
+                    show: !!selectedCity,
+                    disabled: !mapRef.current?.boundaryLayer,
+                  },
+                  {
+                    key: "above10m",
+                    label: "Above 10m Roads",
+                    alwaysShow: false,
+                    show: !!selectedCity,
+                    disabled: !above10mRef.current,
+                  },
+                  {
+                    key: "cmGrid",
+                    label:
+                      selectedPhase === "GPR" ? "GPR Data" : "CM-Grid Roads",
+                    alwaysShow: false,
+                    show: !!selectedPhase,
+                    disabled: !cmGridRef.current,
+                  },
                 ]
-                  .filter(l => l.alwaysShow || l.show)
+                  .filter((l) => l.alwaysShow || l.show)
                   .map(({ key, label, disabled }) => (
                     <label key={key} className="layer-toggle-row">
                       <span className="layer-toggle-label">{label}</span>
@@ -2364,7 +2614,7 @@ export default function HomePage() {
             </div>
           )}
         </div>
-      </div >
+      </div>
 
       <footer className="footer">
         © 2024 UP Remote Sensing Application Centre. All rights reserved.
