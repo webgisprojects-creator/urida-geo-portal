@@ -3,7 +3,10 @@ import express from 'express';
 import { getZoneSummary, getWardSummary } from '../controllers/cityController.js';
 import { pool } from '../config/db.js';
 import { citySchemaMap } from '../config/cityConfig.js';
+import { verifyToken } from '../middleware/authMiddleware.js';
 const router = express.Router();
+
+router.use(verifyToken);
 
 const amenityTables = [
   'atm_bank',
@@ -689,7 +692,7 @@ router.get('/:city/roads/above10m/geojson', async (req, res) => {
     res.json({ type: 'FeatureCollection', features });
   } catch (err) {
     console.error(`roads/above10m/geojson error for ${req.params.city}:`, err.message);
-    res.status(500).json({ error: 'Failed to fetch road data', detail: err.message });
+    res.status(500).json({ error: 'Failed to fetch road data' });
   }
 });
 
@@ -756,7 +759,7 @@ router.get('/:city/roads/click', async (req, res) => {
     res.json({ type: 'FeatureCollection', features: [feature] });
   } catch (err) {
     console.error(`roads/click error for ${req.params.city}:`, err.message);
-    res.status(500).json({ error: 'Failed to fetch road at click point', detail: err.message });
+    res.status(500).json({ error: 'Failed to fetch road at click point' });
   }
 });
 

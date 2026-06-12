@@ -21,10 +21,18 @@ export default function LoginPage_v2() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem("authToken");
-    if (token) {
-      window.location.href = "/home";
-    }
+    fetch(`${API_BASE_URL}/profile`, { credentials: "include" })
+      .then(async (res) => {
+        if (!res.ok) return null;
+        const data = await res.json().catch(() => null);
+        return data?.success ? data : null;
+      })
+      .then((data) => {
+        if (!data?.user) return;
+        const role = String(data.user?.role || "").toLowerCase();
+        window.location.href = role === "admin" ? "/admin" : "/home";
+      })
+      .catch(() => {});
   }, []);
 
   const handleLogin = async (e) => {
@@ -36,19 +44,30 @@ export default function LoginPage_v2() {
       const response = await fetch(`${API_BASE_URL}/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ username, password }),
       });
 
-      const data = await response.json();
-      if (data.success) {
-        localStorage.setItem("authToken", data.token);
-        setMessage("Login successful! Redirecting...");
-        setTimeout(() => {
-          window.location.href = "/home";
-        }, 1000);
-      } else {
+      if (!response.ok) {
         setMessage("Invalid username or password");
+        return;
       }
+
+      const profileRes = await fetch(`${API_BASE_URL}/profile`, { credentials: "include" });
+      const profile = await profileRes.json().catch(() => ({}));
+      if (!profileRes.ok || !profile?.success || !profile?.user) {
+        setMessage("Login failed");
+        return;
+      }
+
+      localStorage.setItem("authUser", String(profile.user.username || username || ""));
+      if (profile.user.role != null) localStorage.setItem("authRole", String(profile.user.role));
+      if (profile.user.city != null) localStorage.setItem("authCity", String(profile.user.city));
+      const role = String(profile.user?.role || "").toLowerCase();
+      setMessage("Login successful! Redirecting...");
+      setTimeout(() => {
+        window.location.href = role === "admin" ? "/admin" : "/home";
+      }, 300);
     } catch (error) {
       console.error(error);
       setMessage("Server not reachable.");

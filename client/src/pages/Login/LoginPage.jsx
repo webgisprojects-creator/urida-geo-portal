@@ -17,39 +17,56 @@ const rsacBanner = require("../../assets/Login/rsac_banner.png");
 
 const API_BASE_URL = "/api/auth";
 
-/*
- * LEGACY DIAGNOSTIC â€” disabled.
- *
- * This old raw-IP HTTPS check was useful only when https://LOAD_BALANCER_IP
- * used a self-signed certificate.
- *
- * Current production uses a trusted Let's Encrypt IP certificate, so this logic
- * must not run. Public users should use only:
- * https://LOAD_BALANCER_IP
- *
- * Do not tell users to open :8060 directly in production.
- *
- * Old idea kept only for future troubleshooting:
- * const currentHostname = window.location.hostname;
- * const directIpPattern = /^(\\d{1,3}\\.){3}\\d{1,3}$/;
- * const isDirectIpHttps =
- *   window.location.protocol === "https:" && directIpPattern.test(currentHostname);
- * const directHttpUrl = `http://${currentHostname}:8060`;
- */
-
-
 export default function LoginPage() {
   const [showLogin, setShowLogin] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [captcha, setCaptcha] = useState("");
+  const [captchaImage, setCaptchaImage] = useState("");
+  const [captchaLoading, setCaptchaLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    const token = localStorage.getItem("authToken");
-    if (token) {
-      window.location.href = "/home";
+  const handleCaptchaAudio = () => {
+    setMessage("Please enter the characters shown in the CAPTCHA image.");
+    if (!("speechSynthesis" in window) || !captchaImage) return;
+    const utterance = new SpeechSynthesisUtterance(
+      "Please enter the characters shown in the captcha image."
+    );
+    utterance.rate = 0.9;
+    utterance.pitch = 1;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const loadCaptcha = async () => {
+    setCaptchaLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/captcha`, { credentials: "include" });
+      const data = await response.json().catch(() => ({}));
+      setCaptchaImage(String(data?.captcha?.image || ""));
+      setCaptcha("");
+    } catch {
+      setCaptchaImage("");
+    } finally {
+      setCaptchaLoading(false);
     }
+  };
+
+  useEffect(() => {
+    const push = () => {
+      window.history.pushState({ portal_lock: true }, "", window.location.href);
+    };
+
+    push();
+    const onPopState = () => {
+      push();
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
   }, []);
 
   useEffect(() => {
@@ -68,6 +85,12 @@ export default function LoginPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (showLogin) {
+      loadCaptcha();
+    }
+  }, [showLogin]);
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -77,23 +100,40 @@ export default function LoginPage() {
       const response = await fetch(`${API_BASE_URL}/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        credentials: "include",
+        body: JSON.stringify({ username, password, captcha }),
       });
 
-      const data = await response.json();
-      if (data.success) {
-        localStorage.setItem("authToken", data.token);
-        localStorage.setItem("authUser", username);
-        setMessage("âœ… Login successful! Redirecting...");
-        setTimeout(() => {
-          window.location.href = "/home"; // Redirect if needed
-        }, 1000);
-      } else {
-        setMessage("âŒ Invalid username or password");
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setMessage(String(data?.message || "Invalid login details."));
+        await loadCaptcha();
+        return;
       }
+
+      const profileRes = await fetch(`${API_BASE_URL}/profile`, { credentials: "include" });
+      const profile = await profileRes.json().catch(() => ({}));
+      if (!profileRes.ok || !profile?.success || !profile?.user) {
+        setMessage("Login failed.");
+        await loadCaptcha();
+        return;
+      }
+
+      localStorage.setItem("authUser", String(profile.user.username || username || ""));
+      if (profile.user.role != null) localStorage.setItem("authRole", String(profile.user.role));
+      if (profile.user.city != null) localStorage.setItem("authCity", String(profile.user.city));
+
+      const role = String(profile.user.role || "").toLowerCase();
+      const target = role === "admin" ? "/admin" : "/home";
+
+      setMessage("Login successful. Redirecting...");
+      setTimeout(() => {
+        window.location.href = target;
+      }, 300);
     } catch (error) {
       console.error(error);
-      setMessage("âš ï¸ Server not reachable. Please check API connection.");
+      setMessage("Server not reachable. Please try again.");
+      await loadCaptcha();
     } finally {
       setLoading(false);
     }
@@ -218,7 +258,7 @@ export default function LoginPage() {
               className="close-btn"
               onClick={() => setShowLogin(false)}
             >
-              âœ•
+            
             </button>
             <h2 className="form__title">Login</h2>
             {message && <div className="form__message">{message}</div>}
@@ -239,6 +279,55 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="form__input"
+                />
+              </div>
+              <div className="form__input-group">
+                <div className="captcha-panel">
+                  <div className="captcha-visual">
+                    {captchaImage ? (
+                      <img
+                        src={captchaImage}
+                        alt="CAPTCHA challenge"
+                        className="captcha-image"
+                      />
+                    ) : (
+                      <div className="captcha-placeholder">
+                        {captchaLoading ? "Loading CAPTCHA..." : "CAPTCHA unavailable"}
+                      </div>
+                    )}
+                  </div>
+                  <div className="captcha-actions">
+                    <button
+                      type="button"
+                      className="captcha-action-btn"
+                      onClick={handleCaptchaAudio}
+                      disabled={captchaLoading || loading}
+                      aria-label="CAPTCHA instructions"
+                      title="CAPTCHA instructions"
+                    >
+                      <i className="fa-solid fa-volume-high" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="captcha-action-btn"
+                      onClick={loadCaptcha}
+                      disabled={captchaLoading || loading}
+                      aria-label="Refresh CAPTCHA"
+                      title="Refresh CAPTCHA"
+                    >
+                      <i className="fa-solid fa-rotate-right" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="form__input-group">
+                <input
+                  type="text"
+                  placeholder="Enter CAPTCHA"
+                  value={captcha}
+                  onChange={(e) => setCaptcha(e.target.value)}
+                  className="form__input"
+                  autoComplete="off"
                 />
               </div>
               <button type="submit" className="form__button" disabled={loading}>

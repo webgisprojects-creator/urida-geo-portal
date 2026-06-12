@@ -63,11 +63,46 @@ body {
   word-break: break-word;
   text-align: center;
   line-height: 1.2;
+  user-select: none;
+  cursor: default;
 }
 
 
 .sidebar-item {
   padding: 10px;
+}
+
+.sidebar-item--admin-back {
+  padding: 12px 10px 4px;
+}
+
+.admin-back-button {
+  width: 68%;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.22);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.admin-back-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.3);
+  background: linear-gradient(135deg, #1e40af, #2563eb);
+}
+
+.admin-back-button i {
+  font-size: 13px;
 }
 
 .select-field {
@@ -169,6 +204,14 @@ body {
   line-height: 1;
   margin-bottom: 3px;
   letter-spacing: -0.3px;
+  width: 100%;
+  text-align: center;
+}
+
+.stat-card__value--length {
+  font-size: 13px;
+  letter-spacing: -0.4px;
+  white-space: nowrap;
 }
 
 .stat-card__label {
@@ -228,6 +271,11 @@ body {
     font-size: 22px;
     letter-spacing: -0.5px;
     margin-bottom: 4px;
+  }
+
+  .stat-card__value--length {
+    font-size: 18px;
+    letter-spacing: -0.6px;
   }
 
   .stat-card__label {
@@ -1406,17 +1454,6 @@ body {
     transform: none;
   }
 
-  #progress_graph {
-    left: 0 !important;
-    top: 110px !important;
-    width: 100% !important;
-    height: calc(100vh - 110px) !important;
-    border: 0 !important;
-    box-shadow: none !important;
-    border-radius: 0 !important;
-    background: #ffffff !important;
-  }
-
   .footer {
     position: fixed;
     bottom: 0;
@@ -1457,11 +1494,6 @@ body {
 
   .sidebar-item {
     top: 64px;
-  }
-
-  #progress_graph {
-    top: 100px !important;
-    height: calc(100vh - 100px) !important;
   }
 
   .sidebar {
@@ -1612,52 +1644,6 @@ body {
   align-items: center;
   gap: 8px;
 } */
-
-#progress_graph {
-  transition: opacity 0 0.3s ease;
-  opacity: 0;
-}
-
-#progress_graph[style*="display: block"] {
-  opacity: 1;
-}
-
-#progress_graph[style*="display: block"]~.map-controls-container .map-btn,
-#progress_graph[style*="display: block"]~.map-controls-container .controls-panel {
-  display: none;
-}
-
-#progress_graph[style*="display: block"]~.map-controls-container .profile-btn {
-  display: flex;
-}
-
-.progress-close {
-  position: fixed;
-  top: 12px;
-  right: 12px;
-  z-index: 1001;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  border: 1px solid #c7c7c7;
-  background: #ffffff;
-  color: #333;
-  font-size: 20px;
-  line-height: 30px;
-  cursor: pointer;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-}
-
-.progress-close:hover {
-  background: #f2f2f2;
-}
-
-@media (max-width: 767px) {
-  .progress-close {
-    top: 120px;
-    right: 10px;
-  }
-}
 
 .basemap-controls {
   display: flex;

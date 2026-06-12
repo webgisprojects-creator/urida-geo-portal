@@ -43,6 +43,9 @@ body {
   box-shadow: 2px 0 5px rgba(0, 0, 0, 0.2);
   position: relative;
   z-index: 1000;
+  cursor: default;
+  user-select: none;
+  caret-color: transparent;
 }
 
 /* --- Sleek Hamburger Icon --- */
@@ -330,6 +333,11 @@ body {
 .analysis-icon {
   color: #f87171;
   /* soft red */
+}
+
+.lclu-icon {
+  color: #a78bfa;
+  /* violet */
 }
 
 /* === Checkbox and Icons === */
@@ -1100,7 +1108,7 @@ right-btn {
   padding: 0 20px;
   font-size: 13px;
   box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.25);
-  z-index: 1000;
+  z-index: 2501;
   text-align: center;
 }
 
@@ -2537,6 +2545,20 @@ right-btn {
     padding: 2px;
     background: rgba(0, 0, 0, 0.05);
     border-radius: 4px;
+}
+
+.sub-options-radio {
+    display: flex;
+    flex-direction: column;
+    margin-top: 6px;
+    margin-left: 24px;
+    padding: 6px 8px;
+    background: rgba(0, 0, 0, 0.05);
+    border-radius: 6px;
+}
+
+.sub-options-radio label {
+    margin: 4px 0;
 }
 
 .sub-opt-btn {

@@ -267,13 +267,15 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
                 alt={lItem.label}
                 style={{ width: '20px', height: '20px', objectFit: 'contain' }}
                 onError={(e) => {
-                  // Hide the broken image
-                  e.target.style.display = 'none';
+                  const img = e.currentTarget;
+                  if (!img) return;
+                  img.style.display = "none";
 
-                  // Check if we already appended a fallback (to prevent duplicates)
-                  if (e.target.parentNode.querySelector('.fallback-color-box')) return;
+                  const parent = img.parentNode;
+                  if (!parent) return;
 
-                  // Fallback to color box
+                  if (parent.querySelector('.fallback-color-box')) return;
+
                   const span = document.createElement('span');
                   span.className = 'fallback-color-box';
                   span.style.width = '20px';
@@ -281,8 +283,7 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
                   span.style.backgroundColor = lItem.color || '#ccc';
                   span.style.display = 'inline-block';
                   span.style.borderRadius = '2px';
-                  // Insert before the hidden image
-                  e.target.parentNode.insertBefore(span, e.target);
+                  parent.insertBefore(span, img);
                 }}
               />
             ) : (
@@ -361,7 +362,8 @@ const BoundaryLegendItem = ({ item }) => {
           alt={item.label}
           style={{ width: '18px', height: '18px', objectFit: 'contain' }}
           onError={(e) => {
-            e.target.style.display = 'none';
+            const img = e.currentTarget;
+            if (img) img.style.display = 'none';
           }}
         />
       ) : (
@@ -381,7 +383,7 @@ const BoundaryLegendItem = ({ item }) => {
   );
 };
 
-const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCounts, otherCounts }) => {
+const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCounts, otherCounts, dssLegend }) => {
   // Draggable & Minimized State
   const [position, setPosition] = useState(null); // {x, y} or null
   const [isDragging, setIsDragging] = useState(false);
@@ -501,12 +503,38 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
       });
     }
 
+    // 2A. LCLU
+    if (layerVisibility?.lclu) {
+      const cityPrefix = String(cfg.name || "").replace(/\s+/g, "_");
+      const prefix = cityPrefix ? `${cityPrefix}_` : "";
+      Object.entries(layerVisibility.lclu).forEach(([key, visible]) => {
+        if (visible && Object.prototype.hasOwnProperty.call(cfg.LCLUClassifications || {}, key)) {
+          const shortKey = prefix && String(key).startsWith(prefix) ? String(key).slice(prefix.length) : key;
+          items.push({
+            id: key,
+            label: formatAmenityLabel(shortKey),
+            layer: cfg.LCLUClassifications[key] || "",
+            group: "lclu",
+          });
+        }
+      });
+    }
+
     // 3. Network Layers (Specialized)
     if (layerVisibility?.network) {
       Object.entries(cfg.specializedNetworks || {}).forEach(([id, specCfg]) => {
         if (layerVisibility.network[id]) {
           const isGroup = specCfg && typeof specCfg === "object" && specCfg.options;
           const activeOption = layerVisibility?.specializedOptions?.[id];
+          const defaultNoneGroup = id === "drainage" || id === "slum";
+
+          if (
+            isGroup &&
+            (String(activeOption) === "none" ||
+              (defaultNoneGroup && (activeOption === undefined || activeOption === null)))
+          ) {
+            return;
+          }
 
           let layerName = "";
           let label = specCfg.label || id.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
@@ -514,11 +542,11 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
           if (isGroup) {
             const optKey = activeOption || Object.keys(specCfg.options)[0];
             const opt = specCfg.options[optKey];
-            layerName = typeof opt === 'string' ? opt : (opt.layer || "");
-            const optLabel = typeof opt === 'string' ? optKey : opt.label;
+            layerName = typeof opt === "string" ? opt : (opt?.layer || "");
+            const optLabel = typeof opt === "string" ? optKey : (opt?.label || optKey);
             label = `${label} (${optLabel})`;
           } else {
-            layerName = typeof specCfg === 'string' ? specCfg : (specCfg.layer || "");
+            layerName = typeof specCfg === "string" ? specCfg : (specCfg.layer || "");
           }
 
           if (layerName) {
@@ -545,11 +573,15 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
               key
             )
           ) {
+            const rcfg = cfg.roadClassifications?.[key];
+            const layerName = rcfg && typeof rcfg === "object" ? rcfg.layer : "";
+            const styleName = rcfg && typeof rcfg === "object" ? (rcfg.style || "") : "";
+            if (!layerName) return;
             items.push({
               id: `road_${key}`,
               label: `Road ${key.charAt(0).toUpperCase() + key.slice(1)}`,
-              layer: cfg.roadClassifications[key].layer,
-              style: cfg.roadClassifications[key].style,
+              layer: layerName,
+              style: styleName,
               isDynamic: true,
               attribute: ATTRIBUTE_MAPPING[key] || key,
               onApply: (filterExpr) => {
@@ -609,13 +641,17 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
         const alreadyToggled =
           !!layerVisibility?.roadClassifications?.[activeKey];
         if (!alreadyToggled) {
+          const rcfg = cfg.roadClassifications?.[activeKey];
+          const layerName = rcfg && typeof rcfg === "object" ? rcfg.layer : "";
+          const styleName = rcfg && typeof rcfg === "object" ? (rcfg.style || "") : "";
+          if (!layerName) return;
           items.push({
             id: `road_${activeKey}`,
             label: `Road by ${activeKey.charAt(0).toUpperCase() + activeKey.slice(1)}`,
-            layer: cfg.roadClassifications[activeKey].layer,
-            style: cfg.roadClassifications[activeKey].style,
-            isDynamic: true, // ⭐ Enable dynamic filtering
-            attribute: ATTRIBUTE_MAPPING[activeKey] || activeKey, // Map to DB column
+            layer: layerName,
+            style: styleName,
+            isDynamic: true,
+            attribute: ATTRIBUTE_MAPPING[activeKey] || activeKey,
             onApply: (filterExpr) => {
               if (!onApplyFilter) return;
 
@@ -663,12 +699,14 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
 
   const headerTitle = legendItems.length === 1 ? legendItems[0].label : "Legend";
   const hideItemLabel = legendItems.length === 1;
-  const boundaryItems = legendItems.filter((item) => item.boundary);
-  const amenityItems = legendItems.filter((item) => item.group === "amenities");
-  const otherItems = legendItems.filter((item) => item.group === "others");
-  const remainingItems = legendItems.filter(
+  const safeItems = (legendItems || []).filter(Boolean);
+  const boundaryItems = safeItems.filter((item) => item.boundary);
+  const amenityItems = safeItems.filter((item) => item.group === "amenities");
+  const otherItems = safeItems.filter((item) => item.group === "others");
+  const remainingItems = safeItems.filter(
     (item) => !item.boundary && item.group !== "amenities" && item.group !== "others"
   );
+  const dssGroups = Array.isArray(dssLegend) ? dssLegend.filter(Boolean) : [];
 
   return (
     <div
@@ -754,6 +792,63 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
                 <BoundaryLegendItem item={item} />
               </div>
             ))}
+            {dssGroups.length > 0 && (
+              <div>
+                <div
+                  style={{
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    marginBottom: "6px",
+                    color: "#1e2b3a",
+                    letterSpacing: "0.15px",
+                  }}
+                >
+                  DSS
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {dssGroups.map((group) => (
+                    <div key={group.id}>
+                      <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "6px", color: "#1e2b3a" }}>
+                        {group.title}
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        {(group.rows || []).filter(Boolean).map((row, idx) => (
+                          <div
+                            key={`${group.id}-${idx}`}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              background: "rgba(255,255,255,0.88)",
+                              borderRadius: "6px",
+                              padding: "4px 6px",
+                              border: "1px solid rgba(0,0,0,0.08)",
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: "12px",
+                                height: "12px",
+                                borderRadius: "3px",
+                                background: row.color || "#94a3b8",
+                                border: "1px solid rgba(0,0,0,0.12)",
+                                flex: "0 0 auto",
+                              }}
+                            />
+                            <div style={{ display: "flex", justifyContent: "space-between", flex: 1, fontSize: "12px", color: "#1e2b3a" }}>
+                              <span>{row.label}</span>
+                              <span style={{ fontWeight: 600 }}>
+                                {typeof row.count === "number" ? row.count : "—"}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {amenityItems.length > 0 && (
               <div>
                 <div
@@ -769,6 +864,7 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                   {amenityItems.map((item) => {
+                    if (!item) return null;
                     const icon = AMENITY_ICON_MAP[item.id];
                     const count = typeof amenityCounts?.[item.id] === "number" ? amenityCounts[item.id] : null;
                     const legendUrl = item.layer
@@ -801,7 +897,8 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
                             alt={item.label}
                             style={{ width: "16px", height: "16px", objectFit: "contain" }}
                             onError={(e) => {
-                              e.target.style.display = "none";
+                              const img = e.currentTarget;
+                              if (img) img.style.display = "none";
                             }}
                           />
                         ) : null}
@@ -830,6 +927,7 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                   {otherItems.map((item) => {
+                    if (!item) return null;
                     const icon = OTHER_ICON_MAP[item.id];
                     const count = typeof otherCounts?.[item.id] === "number" ? otherCounts[item.id] : null;
                     const legendUrl = item.layer
@@ -862,7 +960,8 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
                             alt={item.label}
                             style={{ width: "16px", height: "16px", objectFit: "contain" }}
                             onError={(e) => {
-                              e.target.style.display = "none";
+                              const img = e.currentTarget;
+                              if (img) img.style.display = "none";
                             }}
                           />
                         ) : null}
@@ -876,7 +975,7 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
                 </div>
               </div>
             )}
-            {remainingItems.map((item) => (
+            {remainingItems.filter(Boolean).map((item) => (
               <div key={item.id}>
                 {!hideItemLabel && !item.boundary && (
                   <div
@@ -908,7 +1007,8 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
                       border: "1px solid rgba(0,0,0,0.08)",
                     }}
                     onError={(e) => {
-                      e.target.style.display = "none";
+                      const img = e.currentTarget;
+                      if (img) img.style.display = "none";
                     }}
                   />
                 )}

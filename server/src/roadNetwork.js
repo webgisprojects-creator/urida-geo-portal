@@ -3,9 +3,23 @@ import { pool } from "./config/db.js";
 import express from "express";
 import NodeCache from "node-cache";
 import { getRoadTable, citySchemaMap, getAmenityTable, getCityUtmEpsg } from "./config/cityConfig.js";
+import { verifyToken } from "./middleware/authMiddleware.js";
+import {
+  refreshUnderdevelopedAnalysis,
+  getUnderdevelopedAnalysis,
+  getUnderdevelopedAnalysisCounts,
+  getStreetLightGeojson,
+  getStreetLightCounts,
+  refreshEncroachmentSummary,
+  getEncroachmentGeojson,
+  getEncroachmentSummary,
+  getDssHealth,
+} from "./controllers/dssController.js";
 
 const router = express.Router();
 const queryCache = new NodeCache({ stdTTL: 300, checkperiod: 60 }); // Cache for 5 minutes
+
+router.use(verifyToken);
 
 /*
  |-------------------------------------------------------------|
@@ -281,6 +295,157 @@ function parseQualified(qualified) {
   return { schema, table };
 }
 
+function isSafeIdent(value) {
+  return /^[A-Za-z0-9_]+$/.test(String(value || ""));
+}
+
+function extractLayerBaseName(layerName) {
+  const raw = String(layerName || "").trim();
+  if (!raw) return "";
+  const parts = raw.split(":");
+  return (parts[parts.length - 1] || "").trim();
+}
+
+function normalizeRelname(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+async function resolveRelationForLayer(schema, cityCode, layerName) {
+  const base = extractLayerBaseName(layerName);
+  const guess = normalizeRelname(base);
+  if (!guess) return null;
+  if (!isSafeIdent(schema)) return null;
+
+  const city = String(cityCode || "").toLowerCase();
+  const candidates = [];
+  if (guess) candidates.push(guess);
+  if (city && guess.startsWith(`${city}_`)) {
+    candidates.push(guess.slice(city.length + 1));
+  }
+
+  const exactSql = `
+    SELECT c.relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = $1
+      AND c.relkind IN ('r','v','m')
+      AND c.relname = ANY($2)
+    LIMIT 1
+  `;
+  const exact = await pool.query(exactSql, [schema, candidates]);
+  if (exact.rows[0]?.relname) return exact.rows[0].relname;
+
+  const tokens = Array.from(
+    new Set(
+      guess
+        .split("_")
+        .map((t) => t.trim())
+        .filter(Boolean)
+    )
+  );
+  if (tokens.length === 0) return null;
+
+  const buildTokenSql = (includeCity) => {
+    const filtered = includeCity ? tokens : tokens.filter((t) => t !== city);
+    if (filtered.length === 0) return null;
+    const conditions = filtered
+      .map((_, i) => `lower(c.relname) LIKE ${i + 2}`)
+      .join(" AND ");
+    return {
+      text: `
+        SELECT c.relname
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1
+          AND c.relkind IN ('r','v','m')
+          AND ${conditions}
+        ORDER BY length(c.relname) ASC
+        LIMIT 1
+      `,
+      values: [schema, ...filtered.map((t) => `%${t.toLowerCase()}%`)],
+    };
+  };
+
+  const strictQuery = buildTokenSql(true);
+  if (strictQuery) {
+    const strict = await pool.query(strictQuery.text, strictQuery.values);
+    if (strict.rows[0]?.relname) return strict.rows[0].relname;
+  }
+
+  const relaxedQuery = buildTokenSql(false);
+  if (relaxedQuery) {
+    const relaxed = await pool.query(relaxedQuery.text, relaxedQuery.values);
+    if (relaxed.rows[0]?.relname) return relaxed.rows[0].relname;
+  }
+
+  return null;
+}
+
+async function getNonGeometryColumns(schema, table) {
+  const sql = `
+    SELECT column_name, udt_name
+    FROM information_schema.columns
+    WHERE table_schema = $1
+      AND table_name = $2
+    ORDER BY ordinal_position ASC
+  `;
+  const r = await pool.query(sql, [schema, table]);
+  const cols = (r.rows || [])
+    .filter((c) => String(c.udt_name || "").toLowerCase() !== "geometry")
+    .map((c) => c.column_name)
+    .filter((name) => isSafeIdent(name));
+  return cols;
+}
+
+async function resolveRelationInSchemas(schemas, relname) {
+  const list = (schemas || [])
+    .map((s) => String(s || "").trim())
+    .filter((s) => s && isSafeIdent(s));
+  const rel = String(relname || "").trim();
+  if (!rel || !isSafeIdent(rel) || list.length === 0) return null;
+
+  const sql = `
+    SELECT n.nspname AS schema, c.relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = ANY($1)
+      AND c.relkind IN ('r','v','m')
+      AND c.relname = $2
+    LIMIT 1
+  `;
+  const r = await pool.query(sql, [list, rel]);
+  return r.rows[0] || null;
+}
+
+async function resolveRelationAnySchema(relname, preferredSchemas = []) {
+  const rel = String(relname || "").trim();
+  if (!rel || !isSafeIdent(rel)) return null;
+
+  const preferred = (preferredSchemas || [])
+    .map((s) => String(s || "").trim())
+    .filter((s) => s && isSafeIdent(s));
+
+  const sql = `
+    SELECT n.nspname AS schema, c.relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relkind IN ('r','v','m','p','f')
+      AND c.relname = $1
+      AND n.nspname NOT IN ('pg_catalog','information_schema')
+    ORDER BY
+      CASE WHEN n.nspname::text = ANY($2::text[]) THEN 0 ELSE 1 END,
+      length(n.nspname) ASC
+    LIMIT 1
+  `;
+  const r = await pool.query(sql, [rel, preferred]);
+  return r.rows[0] || null;
+}
+
 function normalizeAmenityType(type) {
   const t = String(type || "").toLowerCase();
   const map = {
@@ -462,6 +627,150 @@ router.get("/:cityCode/distinct/:column", async (req, res) => {
   }
 });
 
+router.get("/:cityCode/specialized-details", async (req, res) => {
+  try {
+    const { cityCode } = req.params;
+    const layer = String(req.query.layer || "").trim();
+    const network = String(req.query.network || "").trim();
+    const option = String(req.query.option || "").trim();
+    const limitRaw = Number(req.query.limit);
+    const pageRaw = Number(req.query.page);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 5000) : 2000;
+    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 1;
+    const offset = (page - 1) * limit;
+
+    if (!layer && !network) {
+      return res.status(400).json({ error: "Missing layer or network" });
+    }
+
+    const cityKey = String(cityCode || "").toLowerCase();
+    const citySchema = citySchemaMap[cityKey];
+    if (!citySchema) {
+      return res.status(400).json({ error: `Invalid city: ${cityCode}` });
+    }
+
+    let schema = citySchema;
+    let relname = null;
+
+    if (network) {
+      const n = network.toLowerCase();
+      const o = option.toLowerCase();
+
+      if (!o || o === "none") {
+        return res.json({
+          relation: null,
+          layer,
+          network: n,
+          option: o || null,
+          columns: [],
+          page,
+          limit,
+          total: 0,
+          data: [],
+        });
+      }
+
+      const fixed =
+        n === "drainage"
+          ? "ann_drain"
+          : n === "slum"
+            ? (o === "roads" ? "ann_slum_roads" : (o === "boundary" ? "ann_slum_boundary" : null))
+            : null;
+
+      if (fixed) {
+        const preferredSchemas = [citySchema, "public"];
+
+        const sql = `
+          SELECT n.nspname AS schema, c.relname
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname::text = ANY($1::text[])
+            AND c.relkind IN ('r','v','m','p','f')
+            AND c.relname = $2
+          ORDER BY CASE WHEN n.nspname::text = $3 THEN 0 ELSE 1 END
+          LIMIT 1
+        `;
+        const r = await pool.query(sql, [preferredSchemas, fixed, citySchema]);
+        const found = r.rows[0] || null;
+
+        if (!found) {
+          return res.status(404).json({ error: `Table not found: ${fixed}` });
+        }
+
+        schema = found.schema;
+        relname = found.relname;
+      } else {
+        if (layer) {
+          const relInCity = await resolveRelationForLayer(citySchema, cityKey, layer);
+          if (relInCity) {
+            relname = relInCity;
+            schema = citySchema;
+          } else {
+            const relInPublic = await resolveRelationForLayer("public", cityKey, layer);
+            if (relInPublic) {
+              relname = relInPublic;
+              schema = "public";
+            }
+          }
+        }
+
+        if (!relname) {
+          return res.status(400).json({ error: "Unsupported specialized dataset" });
+        }
+      }
+    } else {
+      const relInCity = await resolveRelationForLayer(citySchema, cityKey, layer);
+      if (relInCity) {
+        relname = relInCity;
+        schema = citySchema;
+      } else {
+        const relInPublic = await resolveRelationForLayer("public", cityKey, layer);
+        if (relInPublic) {
+          relname = relInPublic;
+          schema = "public";
+        }
+      }
+
+      if (!relname) {
+        return res.status(404).json({ error: "No matching table found for layer" });
+      }
+    }
+
+    if (!isSafeIdent(schema) || !isSafeIdent(relname)) {
+      return res.status(400).json({ error: "Unsafe identifier" });
+    }
+
+    const columns = await getNonGeometryColumns(schema, relname);
+    if (!columns.length) {
+      return res.status(404).json({ error: "No readable columns found" });
+    }
+
+    const identCols = columns.map((c) => `"${c}"`).join(", ");
+    const dataSql = `SELECT ${identCols} FROM "${schema}"."${relname}" LIMIT $1 OFFSET $2`;
+    const countSql = `SELECT COUNT(1)::int AS total FROM "${schema}"."${relname}"`;
+
+    const [dataRes, countRes] = await Promise.all([
+      pool.query(dataSql, [limit, offset]),
+      pool.query(countSql),
+    ]);
+
+    res.json({
+      relation: `${schema}.${relname}`,
+      layer,
+      network: network ? network.toLowerCase() : null,
+      option: option ? option.toLowerCase() : null,
+      columns,
+      page,
+      limit,
+      total: countRes.rows[0]?.total || 0,
+      data: dataRes.rows || [],
+    });
+  } catch (err) {
+    console.error("Error fetching specialized details:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 router.get("/:cityCode/road-analysis/:amenityType", async (req, res) => {
   try {
     const city = req.params.cityCode;
@@ -545,7 +854,7 @@ router.get("/:cityCode/road-analysis/:amenityType", async (req, res) => {
         console.log(`[road-analysis] MV created: ${mvName}`);
       } catch (e) {
         console.error("Failed to create materialized view:", e);
-        return res.status(500).json({ error: "Failed to create materialized view", detail: e.message });
+        return res.status(500).json({ error: "Failed to create materialized view" });
       }
       const indexSql = `
         CREATE INDEX IF NOT EXISTS ${indexName} ON ${mvName} USING GIST(geom)
@@ -631,6 +940,18 @@ router.get("/:cityCode/wards", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+router.get("/:cityCode/street-light", getStreetLightGeojson);
+router.get("/:cityCode/street-light/counts", getStreetLightCounts);
+
+router.post("/:cityCode/underdeveloped-analysis/refresh", refreshUnderdevelopedAnalysis);
+router.get("/:cityCode/underdeveloped-analysis", getUnderdevelopedAnalysis);
+router.get("/:cityCode/underdeveloped-analysis/counts", getUnderdevelopedAnalysisCounts);
+
+router.post("/:cityCode/encroachment-analysis/refresh", refreshEncroachmentSummary);
+router.get("/:cityCode/encroachment-analysis", getEncroachmentGeojson);
+router.get("/:cityCode/encroachment-analysis/summary", getEncroachmentSummary);
+router.get("/:cityCode/dss/health", getDssHealth);
 
 // 2️⃣ GET ZONES (generic)
 router.get("/:cityCode", async (req, res) => {
