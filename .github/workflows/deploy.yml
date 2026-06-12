@@ -60,13 +60,14 @@ jobs:
             npm --prefix client install --omit=dev
             REACT_APP_GEOSERVER_BASE=/geoserver npm --prefix client run build
 
-            echo "==> Restarting backend..."
-            pm2 restart urida-backend --update-env
+            echo "==> Restarting backend as uridaapp..."
+            sudo -iu uridaapp bash -lc "cd /srv/urida/current/server && pm2 restart urida-backend --update-env && pm2 save"
 
             echo "==> Health checks..."
             sleep 3
             curl -sf http://localhost:8060/api/test-db > /dev/null && echo "DB OK"
             curl -sf http://localhost:8060/api/home/summary > /dev/null && echo "API OK"
+            curl -sf http://127.0.0.1:8060/api/auth/captcha > /dev/null && echo "CAPTCHA OK"
 
             echo "==> Deploy complete."
-            pm2 logs urida-backend --lines 20 --nostream
+            sudo -iu uridaapp pm2 logs urida-backend --lines 20 --nostream
