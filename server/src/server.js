@@ -12,7 +12,7 @@ dotenv.config({
 });
 
 const PORT = Number(process.env.PORT) || 8060;
-const HOST = process.env.HOST || (process.env.NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0');
+const HOST = process.env.HOST || '0.0.0.0';
 
 app.listen(PORT, HOST, () => {
   console.log(`✅ Server running on ${HOST}:${PORT}`);
