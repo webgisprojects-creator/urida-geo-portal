@@ -122,14 +122,32 @@ export default function LoginPage() {
       localStorage.setItem("authUser", String(profile.user.username || username || ""));
       if (profile.user.role != null) localStorage.setItem("authRole", String(profile.user.role));
       if (profile.user.city != null) localStorage.setItem("authCity", String(profile.user.city));
+//new
+      // const role = String(profile.user.role || "").toLowerCase();
+      // const target = role === "admin" ? "/admin" : "/home";
 
+      // setMessage("Login successful. Redirecting...");
+      // setTimeout(() => {
+      //   window.location.href = target;
+      // }, 300);
       const role = String(profile.user.role || "").toLowerCase();
-      const target = role === "admin" ? "/admin" : "/home";
 
-      setMessage("Login successful. Redirecting...");
-      setTimeout(() => {
-        window.location.href = target;
-      }, 300);
+const params = new URLSearchParams(window.location.search);
+const redirect = params.get("redirect");
+
+const safeRedirect =
+  redirect &&
+  redirect.startsWith("/") &&
+  !redirect.startsWith("//")
+    ? redirect
+    : null;
+
+const target = safeRedirect || (role === "admin" ? "/admin" : "/home");
+
+setMessage("Login successful. Redirecting...");
+setTimeout(() => {
+  window.location.href = target;
+}, 300);
     } catch (error) {
       console.error(error);
       setMessage("Server not reachable. Please try again.");

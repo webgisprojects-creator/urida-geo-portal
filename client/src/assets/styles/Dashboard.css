@@ -2583,3 +2583,2153 @@ right-btn {
 .sub-opt-btn:hover:not(.active) {
     background: rgba(0, 0, 0, 0.1);
 }
+
+
+/* chainage */
+
+
+
+
+
+
+.chainage-btn {
+  position:absolute;
+  width: 45px;
+  height: 45px;
+  border-radius: 50%;
+  background: linear-gradient(to bottom, #0f172a, #1e3a8a);
+  border: 1px solid #3b82f6;
+  color: white;
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 16px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  transition: background 0.2s ease, transform 0.2s ease;
+  padding: 4px 4px;
+  font-size: 14px;
+  cursor: pointer;
+  margin-left: 10px;
+  left: 10px;
+  width: 45px;
+  height: 40px;
+  bottom: 350px;
+  z-index: 100000000;
+}
+
+.chainage-btn:hover {
+  background: #084298;
+}
+
+/*chainage*/
+.road-panel {
+  /* position: absolute;
+  left: 20px;
+  top: 7%;
+  width: 300px; */
+
+  position: absolute;
+  left: 16px;
+  top: 3%;
+  width: clamp(220px, 28vw, 300px); /* responsive width */
+  max-width: 90vw;
+  z-index: 1000;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(14px);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 12px 30px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  color: #fff;
+  color: #e5e7eb;
+  font-family: system-ui, sans-serif;
+  animation: slideIn 0.25s ease;
+  transition: all 0.3s ease;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(-20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.road-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 9px;
+  border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+  color: #e5e7eb;
+  font-family: system-ui, sans-serif;
+}
+
+.road-panel-header h3 {
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: #93c5fd;
+  margin: 0;
+}
+
+.road-panel-close {
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.road-panel-actions button {
+  margin-left: 6px;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0px 4px;
+}
+
+
+
+.road-panel-close:hover {
+  color: #ef4444;
+}
+
+.road-panel-body {
+  padding: 5px 10px;
+  transition: max-height 0.3s ease, opacity 0.2s ease;  /* 🔥 ADD */
+  opacity: 1;
+}
+.road-panel.minimized .road-panel-body {
+  max-height: 0;
+  opacity: 0;
+}
+.road-panel.minimized {
+  transform: scale(0.98);
+}
+
+.road-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+}
+
+.road-item span:first-child {
+  color: #9ca3af;
+}
+
+/* BADGES */
+.badge {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #1e3a8a;
+  color: #bfdbfe;
+}
+
+/* CONDITION COLORS */
+.badge.good {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+}
+
+.badge.poor {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.badge.average {
+  background: rgba(234, 179, 8, 0.2);
+  color: #eab308;
+}
+
+
+.basemap-wrapper {
+  position: absolute;
+  top: 20px;
+  right: 60px;
+  z-index: 1000;
+}
+
+
+
+.chainage-selection {
+  margin-top: 15px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chainage-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.chainage-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.5px;
+}
+
+.chainage-group select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: linear-gradient(to bottom, #0f172a, #020617);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.chainage-group select:hover {
+  border-color: #3b82f6;
+}
+
+.chainage-group select:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 1px #2563eb;
+}
+
+.chainage-group option {
+  background: #020617;
+  color: white;
+}
+
+
+/* ACTION CONTAINER */
+.road-panel-actions {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(59, 130, 246, 0.2);
+  display: flex;
+  justify-content: center;
+}
+
+.chainage-create-btn {
+  /* width: 70px; */
+  width: 100%;
+  margin-left: 0;
+  margin-top: 10px;
+  padding: 10px 0;
+  /* margin-left: 40%; */
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  border-radius: 8px;
+  border: 1px solid rgba(59, 130, 246, 0.6);
+  background: linear-gradient(
+    135deg,
+    rgba(37, 99, 235, 0.9),
+    rgba(30, 64, 175, 0.9)
+  );
+  color: #ffffff;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+/* HOVER */
+.chainage-create-btn:hover {
+  background: linear-gradient(
+    135deg,
+    rgb(59, 255, 118),
+    rgba(13, 185, 28, 0.884)
+  );
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+  transform: scale(1.01);
+  font-size: 10px;
+  border: 1px solid rgb(0, 172, 114);
+}
+
+/* ACTIVE */
+.chainage-create-btn:active {
+  transform: scale(0.96);
+}
+
+/* DISABLED */
+.chainage-create-btn:disabled {
+  background: rgba(148, 163, 184, 0.15);
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #64748b;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.patch-panel {
+  margin-top: 4px;
+  padding: 10px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.patch-text {
+  text-align: center;
+  font-size: 12px;
+  color: #93c5fd;
+}
+
+.patch-actions {
+  display: flex;
+  gap: 8px;
+}
+/* PATCH BUTTON BASE */
+.patch-btn {
+  flex: 1;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+/* YES */
+.patch-btn.yes {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+/* NO */
+.patch-btn.no {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+/* ACTIVE STATE (🔥 key improvement) */
+.patch-btn.active {
+  border: 1px solid #3b82f6;
+  background: rgba(59, 130, 246, 0.25);
+  color: #ffffff;
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.5);
+}
+
+/* HOVER */
+.patch-btn:hover {
+  transform: scale(1.03);
+}
+
+.patch-list-panel {
+  margin-top: 5px;
+  overflow: auto;
+  max-height: 75px;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.patch-list-title {
+  font-size: 11px;
+  color: #93c5fd;
+  text-align: center;
+  margin-bottom: 6px;
+  letter-spacing: 1px;
+}
+
+.patch-list-body {
+  max-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* checkbox row */
+.patch-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #e5e7eb;
+  cursor: pointer;
+}
+
+/* checkbox styling */
+.patch-checkbox input {
+  accent-color: #3b82f6;
+  cursor: pointer;
+}
+
+.patch-table-container {
+  position: fixed;
+  bottom: 25px;
+  /* width:100vw ; */
+  width: 100%;
+  left: 0;
+  right: 0;
+  max-height: 35vh;
+  background: rgba(15, 23, 42, 0.95);
+  border-radius: 0px;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  overflow: visible;
+  z-index: 1000;
+  transition: all 0.3s ease;
+}
+
+/* .patch-table-header h2 {
+  padding: 10px;
+  font-size: 12px;
+  color: #93c5fd;
+  text-align: center;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+} */
+/* .patch-table-header{
+
+  font-size: 13px;
+  color: #93c5fd;
+  text-align: end;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+} */
+.patch-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;   /* center everything */
+  position: relative;        /* needed for button positioning */
+  padding: 6px 10px;
+}
+
+/* center text */
+.patch-table-header h4 {
+  margin: 0;
+  padding: 4px;
+  text-align: center;
+  width: 100%;
+  color: whitesmoke;
+}
+
+/* .patch-table-header button{
+  position: absolute;
+  background: transparent;
+  border: none;
+  text-align: end;
+  color: #9ca3af;
+  font-size: 12px;
+  margin-right: 15px;
+  margin:0;
+  cursor: pointer;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.patch-table-header button:hover{
+  background-color: #07223f;
+  color: white;
+} */
+.patch-table-actions {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+
+  transform: translateY(-50%);
+
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.patch-table-actions button {
+  background: transparent;
+  border: none;
+
+  color: #9ca3af;
+  font-size: 12px;
+
+  cursor: pointer;
+
+  padding: 4px 6px;
+  border-radius: 4px;
+
+  transition: all 0.2s ease;
+}
+
+.patch-table-actions button:hover {
+  background-color: #07223f;
+  color: white;
+}
+
+/* print button special */
+.patch-print-btn {
+  font-size: 13px;
+}
+
+.patch-print-btn {
+  margin-left: 8px;
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.patch-print-btn:hover {
+  color: white;
+}
+
+/* PRINT ONLY MAP */
+@media print {
+  body.print-map-only * {
+    visibility: hidden !important;
+  }
+
+  body.print-map-only #ol-map,
+  body.print-map-only #ol-map * {
+    visibility: visible !important;
+  }
+
+  body.print-map-only #ol-map {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+
+    width: 100vw !important;
+    height: 100vh !important;
+
+    z-index: 999999 !important;
+  }
+
+  @page {
+    margin: 0;
+  }
+}
+/* .patch-table-actions {
+  position: relative;
+  background: transparent;
+  border: none;
+  text-align: end;
+
+  color: #9ca3af;
+  font-size: 14px;
+  cursor: pointer;
+  margin-left: 6px;
+} */
+
+.patch-table-body {
+  max-height: calc(35vh - 140px);
+  overflow: auto;
+  padding: 0px 6px;
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+  opacity: 0.7;
+}
+
+.patch-table-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  color: white;
+}
+
+.patch-table-body th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: rgba(30, 58, 138, 0.95); /* make it solid */
+  padding: 6px;
+  text-align: left;
+}
+
+.patch-table-body td {
+  padding: 6px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.patch-table-body tr:hover {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.patch-table-container.minimized {
+  height: auto;
+}
+
+.patch-table-container.minimized .patch-table-body {
+  max-height: 0;
+  opacity: 0;
+}
+
+
+
+/* ============================= */
+/* SEARCH WRAPPER */
+/* ============================= */
+.chainage-search-wrapper {
+  position: absolute;
+  top: 260px;
+  right: 10px;
+  z-index: 2000;
+}
+
+/* ============================= */
+/* FLOAT BUTTON */
+/* ============================= */
+.chainage-search-toggle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  background: linear-gradient(to bottom, #0f172a, #1e3a8a);
+  color: #e5e7eb;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  transition: all 0.25s ease;
+}
+
+.chainage-search-toggle:hover {
+  background: #2563eb;
+  transform: scale(1.05);
+}
+
+
+.chainage-search-expand {
+  position: absolute;
+  top: 55px;
+  right: 5px;
+  width: 0;
+  opacity: 0;
+  overflow: visible;
+  transform: translateY(-10px);
+  transition: all 0.25s ease;
+}
+
+.chainage-search-expand.open {
+  /* width: 320px; */
+  width: clamp(220px, 80vw, 300px);
+  opacity: 1;
+  transform: translateY(0);
+}
+
+
+.chainage-search-panel {
+  width: 90%;
+  background: linear-gradient(to bottom, #020617, #0f172a);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 12px;
+opacity: 0.96;
+  padding: 10px;
+  box-shadow: 0 8px 25px rgba(0,0,0,0.6);
+  font-family: system-ui, sans-serif;
+}
+
+
+.chainage-search-panel input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: #020617;
+  color: #fff;
+  font-size: 13px;
+  opacity: 0.8;
+  outline: none;
+}
+
+.chainage-search-panel input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1px #3b82f6;
+}
+
+
+.search-dropdown {
+  margin-top: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(59,130,246,0.2);
+  opacity: 0.8;
+  background: #020617;
+}
+
+/* SCROLLBAR */
+.search-dropdown::-webkit-scrollbar {
+  width: 6px;
+}
+
+.search-dropdown::-webkit-scrollbar-thumb {
+  background: #1e40af;
+  border-radius: 4px;
+}
+
+
+.search-item {
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: #e5e7eb;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  transition: all 0.2s ease;
+}
+
+/* HOVER */
+.search-item:hover {
+  background: rgba(48, 109, 206, 0.568);
+  font-weight: bold;
+
+}
+
+/* ROAD NAME */
+.search-item b {
+  color: #93c5fd;
+  font-weight: 600;
+}
+
+/* ROAD ID */
+.search-item span {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+/* LEFT SIDE (road name + ward) */
+.search-item-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ROAD NAME */
+.search-item-left b {
+  font-size: 13px;
+  color: #93c5fd;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+
+.search-item-left small {
+  font-size: 11px;
+  color: #9ca3af;
+  letter-spacing: 0.3px;
+}
+
+/* RIGHT SIDE (road id) */
+.search-item span {
+  font-size: 11px;
+  color: #6b7280;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.search-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+
+.chainage-basemap-wrapper {
+  position: absolute;
+  top: 110px;
+  right: 10px;
+  z-index: 2000;
+}
+
+
+.chainage-basemap-toggle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0f172a, #1e3a8a);
+  border: 1px solid rgba(59,130,246,0.5);
+  color: #e0f2fe;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.6);
+  transition: all 0.25s ease;
+}
+
+.chainage-basemap-toggle:hover {
+  transform: scale(1.08);
+  box-shadow: 0 8px 22px rgba(59,130,246,0.4);
+}
+
+
+.chainage-basemap-panel {
+  position: absolute;
+  top: 60px;
+  right: 0;
+  width: 180px;
+  background: linear-gradient(to bottom, #020617, #0f172a);
+  border: 1px solid rgba(59,130,246,0.25);
+  border-radius: 12px;
+  padding: 6px;
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  transform: translateY(-12px) scale(0.98);
+  pointer-events: none;
+  transition: all 0.25s ease;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.7);
+}
+
+/* OPEN STATE */
+.chainage-basemap-panel.open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.basemap-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #cbd5f5;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  transition: all 0.2s ease;
+}
+
+/* HOVER */
+.basemap-item:hover {
+  background: rgba(59,130,246,0.15);
+  color: #e0f2fe;
+}
+
+/* ACTIVE */
+.basemap-item.active {
+  background: linear-gradient(
+    to right,
+    rgba(59,130,246,0.35),
+    rgba(37,99,235,0.15)
+  );
+  border: 1px solid rgba(59,130,246,0.5);
+  color: #fff;
+  font-weight: 600;
+}
+
+.basemap-item.active::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3b82f6;
+  box-shadow: 0 0 6px #3b82f6;
+}
+
+
+.basemap-item i {
+  transition: transform 0.3s ease;
+}
+
+.basemap-item.active i {
+  transform: rotate(360deg);
+}
+
+
+.chainage-submit-btn {
+  position: absolute;
+
+  /* remove fixed top positioning */
+  top: auto !important;
+
+  /* default position when patch table is not visible */
+  bottom: 26px;
+
+  left: clamp(18px, 6vw, 32px);
+  z-index: 2500;
+
+  padding: 10px 18px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #2563eb, #1e40af);
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35);
+  transition: all 0.25s ease;
+}
+
+/* When patch table is visible, keep submit button above table */
+.patch-table-container ~ .chainage-submit-btn {
+  bottom: calc(30vh + 32px);
+}
+
+/* When table is minimized, keep button just above minimized header */
+.patch-table-container.minimized ~ .chainage-submit-btn {
+  bottom: 72px;
+}
+
+.chainage-submit-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.45);
+}
+
+.chainage-submit-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.chainage-submit-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.45);
+}
+
+.chainage-submit-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* ---------- Tablet ---------- */
+@media (max-width: 1024px) {
+  .patch-table-container {
+    height: 30vh;
+    max-height: 30vh;
+  }
+
+  .patch-table-body {
+    height: calc(28vh - 42px);
+    max-height: calc(28vh - 42px);
+  }
+
+  .patch-table-body table {
+    min-width: 700px;
+    font-size: 11px;
+  }
+
+  .patch-table-body th,
+  .patch-table-body td {
+    padding: 5px;
+  }
+   .chainage-submit-btn {
+    left: 34px;
+    bottom: 28px;
+    padding: 10px 18px;
+    font-size: 13px;
+    border-radius: 10px;
+  }
+
+  .patch-table-container ~ .chainage-submit-btn {
+    bottom: calc(30vh + 38px);
+  }
+
+  .patch-table-container.minimized ~ .chainage-submit-btn {
+    bottom: 74px;
+  }
+}
+
+/* ---------- Mobile ---------- */
+@media (max-width: 600px) {
+  .patch-table-container {
+    height: 30vh;
+    max-height: 30vh;
+    bottom:20px;
+    border-left: none;
+    border-right: none;
+  }
+
+  .patch-table-header {
+    height: 40px;
+    min-height: 40px;
+
+    padding: 5px 8px;
+  }
+
+  .patch-table-header h4 {
+    font-size: 12px;
+    padding-right: 42px;
+  }
+
+  .patch-table-header button {
+    right: 6px;
+    font-size: 11px;
+  }
+
+  .patch-table-body {
+    height: calc(30vh - 40px);
+    max-height: calc(30vh - 40px);
+
+    padding: 0 4px;
+  }
+
+  .patch-table-body table {
+    min-width: 650px;
+    font-size: 10.5px;
+  }
+
+  .patch-table-body th,
+  .patch-table-body td {
+    padding: 5px 4px;
+  }
+  .chainage-submit-btn {
+    left: 28px;
+    bottom: 26px;
+    padding: 9px 18px;
+    font-size: 12px;
+    border-radius: 9px;
+  }
+
+  .patch-table-container ~ .chainage-submit-btn {
+    bottom: calc(30vh + 30px);
+  }
+
+  .patch-table-container.minimized ~ .chainage-submit-btn {
+    bottom: 70px;
+  }
+}
+
+
+
+/* ---------- Small phones ---------- */
+@media (max-width: 380px) {
+  .patch-table-container {
+    height: 30vh;
+    bottom:20px;
+    max-height: 30vh;
+  }
+
+  .patch-table-body {
+    height: calc(30vh - 40px);
+    max-height: calc(30vh - 40px);
+  }
+
+  .patch-table-body table {
+    min-width: 600px;
+    font-size: 10px;
+  }
+
+  .chainage-submit-btn {
+    left: 24px;
+    padding: 8px 16px;
+    font-size: 11.5px;
+  }
+
+  .patch-table-container ~ .chainage-submit-btn {
+    bottom: calc(30vh + 28px);
+  }
+}
+
+
+/* =========================================================
+  FIX: keep patch-panel visible on tablet/mobile
+  Desktop unchanged
+========================================================= */
+
+/* Tablet */
+@media (max-width: 1024px) {
+  .road-panel {
+    display: flex;
+    flex-direction: column;
+
+    left: 10px !important;
+    top: 66px !important;
+
+    width: 300px !important;
+    max-width: 42vw !important;
+
+    max-height: 50vh !important;
+    overflow: hidden !important;
+  }
+
+  .road-panel-header {
+    flex: 0 0 auto;
+  }
+
+  .road-panel-body {
+    flex: 1 1 auto;
+
+    max-height: none !important;
+    min-height: 0;
+
+    overflow-y: auto !important;
+    padding: 10px 12px;
+  }
+
+  .patch-panel {
+    flex: 0 0 auto;
+
+    margin: 6px 8px 8px;
+    padding: 8px;
+
+    max-height: 150px;
+    overflow: hidden;
+  }
+
+  .patch-list-panel {
+    max-height: 82px;
+    overflow:hidden;
+  }
+
+  .patch-list-body {
+    max-height: 50px;
+    overflow-y: auto;
+  }
+}
+
+/* Mobile */
+@media (max-width: 600px) {
+  .road-panel {
+    display: flex;
+    flex-direction: column;
+
+    left: 8px !important;
+    top: 70px !important;
+
+    width: 230px !important;
+    max-width: calc(100vw - 16px) !important;
+
+    max-height: 50vh !important;
+    overflow: hidden !important;
+
+    border-radius: 12px !important;
+  }
+
+  .road-panel-header {
+    flex: 0 0 auto;
+    padding: 7px 8px;
+  }
+
+  .road-panel-body {
+    flex: 1 1 auto;
+
+    max-height: none !important;
+    min-height: 0;
+
+    overflow-y: auto !important;
+    padding: 8px;
+  }
+
+  .road-item {
+    font-size: 11px;
+    padding: 5px 0;
+  }
+
+  .patch-panel {
+    flex: 0 0 auto;
+
+    margin: 5px 7px 7px;
+    padding: 7px;
+
+    border-radius: 10px;
+
+    max-height: 145px;
+    overflow: hidden;
+  }
+
+  .patch-text {
+    font-size: 10.5px;
+  }
+
+  .patch-actions {
+    gap: 5px;
+  }
+
+  .patch-btn {
+    font-size: 10.5px;
+    padding: 5px 4px;
+  }
+
+  .patch-list-panel {
+    max-height: 78px;
+    padding: 6px;
+    overflow:hidden;
+  }
+
+  .patch-list-body {
+    max-height: 40px;
+    overflow-y: auto;
+  }
+
+  .patch-checkbox {
+    font-size: 10.5px;
+    gap: 5px;
+  }
+}
+
+/* Very small phones */
+@media (max-width: 380px) {
+  .road-panel {
+    top: 10px !important;
+    width: 200px !important;
+    left: 6px !important;
+    max-height: 49vh !important;
+  }
+
+  .patch-panel {
+    max-height: 143px;
+  }
+
+  .patch-list-panel {
+    max-height: 70px;
+  }
+
+  .patch-list-body {
+    max-height: 33px;
+  }
+}
+
+/* =====================================================
+CHAINAGE SUBMIT CONFIRMATION POPUP - FINAL CSS
+===================================================== */
+
+.submit-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background:
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.22), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(34, 197, 94, 0.18), transparent 34%),
+    rgba(2, 6, 23, 0.76);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+/* Main popup box */
+.submit-confirm-box {
+  width: 640px;
+  max-width: 94vw;
+  max-height: 88vh;
+  background: #ffffff;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.38),
+    0 0 0 1px rgba(255, 255, 255, 0.5);
+  animation: chainagePopupOpen 0.22s ease-out;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header */
+.submit-confirm-box h3 {
+  margin: 0;
+  padding: 16px 20px;
+  background:
+    linear-gradient(135deg, #0f172a, #1d4ed8);
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 0.2px;
+  text-align: center;
+}
+
+.submit-confirm-box h3::before {
+  content: "🗺️";
+  margin-right: 8px;
+}
+
+.submit-confirm-box h3::after {
+  content: "Review selected road, patches and map before final submission";
+
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: bold;
+  color: rgba(255, 255, 255, 0.78);
+  letter-spacing: 0;
+}
+
+/* Info section */
+.submit-info {
+  margin: 14px 16px 12px;
+  padding: 10px;
+  background: linear-gradient(180deg, #f8fafc, #eef2ff);
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.submit-info p {
+  margin: 0;
+  padding: 10px 12px 10px 14px;
+  min-height: 54px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.35;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.05);
+  position: relative;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.submit-info p::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 11px;
+  bottom: 11px;
+  width: 4px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #2563eb, #22c55e);
+}
+
+.submit-info b {
+  display: block;
+  margin-bottom: 5px;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.45px;
+}
+
+/* Map preview */
+.submit-map-preview {
+  height: 260px;
+  margin: 0 16px 12px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #e0f2fe, #eef2ff 48%, #dcfce7);
+  border: 1px solid #cbd5e1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7),
+    0 10px 22px rgba(15, 23, 42, 0.1);
+}
+
+.submit-map-preview::before {
+  content: "Current Map Extent";
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  padding: 6px 10px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #ffffff;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  backdrop-filter: blur(6px);
+}
+
+.submit-map-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #f1f5f9;
+}
+
+.submit-map-preview p {
+  max-width: 380px;
+  margin: 0;
+  padding: 14px 16px;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: center;
+}
+
+/* Button area */
+.submit-confirm-actions {
+  padding: 14px 16px 16px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  border-top: 1px solid #e2e8f0;
+}
+
+/* Buttons */
+.cancel-btn,
+.final-submit-btn {
+  min-width: 120px;
+  border: none;
+  border-radius: 12px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.16s ease,
+    background 0.16s ease;
+}
+
+.cancel-btn {
+  background: #f1f5f9;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+}
+
+.cancel-btn:hover {
+  background: #e2e8f0;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+}
+
+.final-submit-btn {
+  color: #ffffff;
+  background: linear-gradient(135deg, #22c55e, #15803d);
+  box-shadow: 0 10px 22px rgba(22, 163, 74, 0.3);
+}
+
+.final-submit-btn:hover {
+  background: linear-gradient(135deg, #16a34a, #166534);
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(22, 163, 74, 0.36);
+}
+
+.final-submit-btn::before {
+  content: "✓ ";
+}
+
+.cancel-btn::before {
+  content: "← ";
+}
+
+.cancel-btn:active,
+.final-submit-btn:active {
+  transform: translateY(0);
+}
+
+/* Animation */
+@keyframes chainagePopupOpen {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* =====================================================
+RESPONSIVE DESIGN
+===================================================== */
+
+/* Large desktop */
+@media (min-width: 1440px) {
+  .submit-confirm-box {
+    width: 680px;
+  }
+
+  .submit-map-preview {
+    height: 280px;
+  }
+}
+
+/* Normal laptop */
+@media (max-width: 1200px) {
+  .submit-confirm-box {
+    width: 620px;
+  }
+
+  .submit-map-preview {
+    height: 250px;
+  }
+}
+
+/* Small laptop / tablet landscape */
+@media (max-width: 992px) {
+  .submit-confirm-box {
+    width: 600px;
+    max-height: 88vh;
+  }
+
+  .submit-info {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .submit-map-preview {
+    height: 240px;
+  }
+}
+
+/* Tablet portrait */
+@media (max-width: 768px) {
+  .submit-confirm-overlay {
+    padding: 12px;
+  }
+
+  .submit-confirm-box {
+    width: 94vw;
+    max-height: 90vh;
+    border-radius: 16px;
+  }
+
+  .submit-confirm-box h3 {
+    padding: 14px 16px;
+    font-size: 16px;
+  }
+
+  .submit-confirm-box h3::after {
+    font-size: 10px;
+  }
+
+  .submit-info {
+    margin: 12px;
+    padding: 8px;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .submit-info p {
+    min-height: auto;
+    font-size: 12.5px;
+    padding: 9px 11px 9px 13px;
+  }
+
+  .submit-map-preview {
+    height: 230px;
+    margin: 0 12px 12px;
+    border-radius: 14px;
+  }
+
+  .submit-confirm-actions {
+    padding: 12px;
+    flex-direction: row;
+    justify-content: center;
+    gap: 10px;
+  }
+
+  .cancel-btn,
+  .final-submit-btn {
+    min-width: 110px;
+    padding: 9px 15px;
+    font-size: 12.5px;
+  }
+  .chainage-submit-btn {
+    left: 30px;
+    bottom: 26px;
+    padding: 9px 17px;
+    font-size: 12.5px;
+    border-radius: 9px;
+  }
+
+  .patch-table-container ~ .chainage-submit-btn {
+    bottom: calc(30vh + 36px);
+  }
+
+  .patch-table-container.minimized ~ .chainage-submit-btn {
+    bottom: 72px;
+  }
+}
+
+/* Mobile */
+@media (max-width: 480px) {
+  .submit-confirm-overlay {
+    padding: 8px;
+    align-items: center;
+  }
+
+  .submit-confirm-box {
+    width: 96vw;
+    max-height: 92vh;
+    border-radius: 14px;
+  }
+
+  .submit-confirm-box h3 {
+    padding: 13px 14px;
+    font-size: 15px;
+  }
+
+  .submit-info {
+    margin: 10px;
+    padding: 7px;
+  }
+
+  .submit-info b {
+    font-size: 9.5px;
+  }
+
+  .submit-info p {
+    font-size: 12px;
+  }
+
+  .submit-map-preview {
+    height: 200px;
+    margin: 0 10px 10px;
+  }
+
+  .submit-map-preview::before {
+    font-size: 10px;
+    padding: 5px 8px;
+  }
+
+  .submit-map-preview p {
+    font-size: 12px;
+    padding: 12px;
+  }
+
+  .submit-confirm-actions {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .cancel-btn,
+  .final-submit-btn {
+    min-width: 100px;
+    padding: 9px 12px;
+    font-size: 12px;
+    border-radius: 10px;
+  }
+}
+
+/* Very small mobile */
+@media (max-width: 360px) {
+  .submit-confirm-box {
+    width: 98vw;
+  }
+
+  .submit-map-preview {
+    height: 180px;
+  }
+
+  .submit-confirm-actions {
+    flex-direction: column-reverse;
+  }
+
+  .cancel-btn,
+  .final-submit-btn {
+    width: 100%;
+  }
+}
+
+/* Short height screens */
+@media (max-height: 700px) {
+  .submit-confirm-box {
+    max-height: 94vh;
+  }
+
+  .submit-map-preview {
+    height: 200px;
+  }
+
+  .submit-info p {
+    min-height: 46px;
+  }
+}
+
+@media (max-height: 560px) {
+  .submit-confirm-overlay {
+    align-items: flex-start;
+    overflow-y: auto;
+  }
+
+  .submit-confirm-box {
+    margin: 10px 0;
+  }
+
+  .submit-map-preview {
+    height: 160px;
+  }
+}
+.road-group-row td {
+  background: linear-gradient(135deg, #0f172a, #1d4ed8) !important;
+  color: #ffffff !important;
+  font-weight: 800;
+  font-size: 13px;
+  padding: 9px 12px !important;
+  text-align: left;
+  letter-spacing: 0.3px;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* =====================================================
+  LARGE DESKTOP / MONITOR FIXES
+===================================================== */
+
+@media (min-width: 1440px) {
+  .road-panel {
+    left: 24px;
+    top: 72px;
+    width: 320px;
+    max-width: 320px;
+  }
+
+  .chainage-submit-btn {
+    left: 42px;
+    bottom: 34px;
+    padding: 11px 20px;
+    font-size: 13.5px;
+  }
+
+  .patch-table-container ~ .chainage-submit-btn {
+    bottom: calc(35vh + 40px);
+  }
+
+  .patch-table-container.minimized ~ .chainage-submit-btn {
+    bottom: 82px;
+  }
+
+  .chainage-search-wrapper {
+    right: 22px;
+  }
+
+  .chainage-basemap-wrapper {
+    right: 22px;
+  }
+}
+
+/* =====================================================
+  FULL HD / VERY LARGE MONITOR
+===================================================== */
+
+@media (min-width: 1920px) {
+  .road-panel {
+    left: 32px;
+    top: 78px;
+    width: 340px;
+    max-width: 340px;
+  }
+
+  .road-panel-header h3 {
+    font-size: 14px;
+  }
+
+  .road-item {
+    font-size: 13.5px;
+  }
+
+  .chainage-group label {
+    font-size: 12.5px;
+  }
+
+  .chainage-group select {
+    font-size: 13.5px;
+    padding: 9px 11px;
+  }
+
+  .chainage-submit-btn {
+    left: 50px;
+    bottom: 38px;
+    padding: 12px 22px;
+    font-size: 14px;
+  }
+
+  .patch-table-container ~ .chainage-submit-btn {
+    bottom: calc(35vh + 48px);
+  }
+
+  .patch-table-container.minimized ~ .chainage-submit-btn {
+    bottom: 90px;
+  }
+
+  .patch-table-body table {
+    font-size: 13px;
+  }
+}
+
+
+/* =====================================================
+  SHORT HEIGHT SCREEN FIXES
+  For laptops, dev tools, mobile landscape
+===================================================== */
+
+@media (max-height: 700px) {
+  .road-panel {
+    top: 58px !important;
+    max-height: 48vh !important;
+  }
+
+  .road-panel-body {
+    overflow-y: auto !important;
+  }
+
+  .patch-panel {
+    max-height: 130px;
+  }
+
+  .patch-list-panel {
+    max-height: 62px;
+  }
+
+  .patch-list-body {
+    max-height: 34px;
+  }
+
+  .patch-table-container {
+    height: 28vh;
+    max-height: 28vh;
+  }
+
+  .patch-table-body {
+    height: calc(28vh - 40px);
+    max-height: calc(28vh - 40px);
+  }
+
+  .patch-table-container ~ .chainage-submit-btn {
+    bottom: calc(28vh + 26px);
+  }
+
+  .chainage-submit-btn {
+    padding: 8px 15px;
+    font-size: 12px;
+  }
+}
+
+@media (max-height: 560px) {
+  .road-panel {
+    top: 50px !important;
+    max-height: 44vh !important;
+  }
+
+  .patch-panel {
+    max-height: 110px;
+  }
+
+  .patch-list-panel {
+    max-height: 54px;
+  }
+
+  .patch-list-body {
+    max-height: 28px;
+  }
+
+  .patch-table-container {
+    height: 26vh;
+    max-height: 26vh;
+  }
+
+  .patch-table-body {
+    height: calc(26vh - 38px);
+    max-height: calc(26vh - 38px);
+  }
+
+  .patch-table-container ~ .chainage-submit-btn {
+    bottom: calc(26vh + 18px);
+  }
+
+  .chainage-submit-btn {
+    padding: 7px 13px;
+    font-size: 11.5px;
+  }
+
+  .chainage-search-wrapper {
+    top: 210px;
+  }
+
+  .chainage-basemap-wrapper {
+    top: 96px;
+  }
+}
+
+
+
+/* =====================================================
+FINAL: PATCH TABLE HEADER WITH SUBMIT BUTTON
+Works on mobile, tablet, laptop, monitor, large monitor
+===================================================== */
+
+.patch-table-header {
+  display: grid !important;
+  grid-template-columns: auto minmax(120px, 1fr) auto;
+  align-items: center;
+
+  min-height: clamp(38px, 4.5vh, 50px);
+  padding: clamp(5px, 0.7vw, 10px) clamp(6px, 1vw, 16px);
+
+  column-gap: clamp(5px, 1vw, 16px);
+  position: relative;
+}
+
+/* LEFT SIDE: Submit button */
+.patch-header-submit-btn {
+  justify-self: start;
+
+  padding: clamp(5px, 0.55vw, 8px) clamp(8px, 1vw, 18px);
+  border-radius: clamp(7px, 0.6vw, 10px);
+
+  background: linear-gradient(135deg, #2563eb, #1e40af);
+  color: #ffffff;
+
+  border: none;
+  cursor: pointer;
+
+  font-size: clamp(10.5px, 0.8vw, 14px);
+  font-weight: 800;
+  letter-spacing: 0.3px;
+
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
+  transition: all 0.2s ease;
+
+  white-space: nowrap;
+}
+
+.patch-header-submit-btn:hover:not(:disabled) {
+  transform: scale(1.03);
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.45);
+}
+
+.patch-header-submit-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* CENTER: Patch Information title */
+.patch-table-header h4 {
+  margin: 0 !important;
+  padding: 0 !important;
+
+  text-align: center;
+  justify-self: center;
+
+  color: whitesmoke;
+  font-size: clamp(10.5px, 0.9vw, 15px);
+  font-weight: 900;
+  letter-spacing: 0.3px;
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* RIGHT SIDE: print/minimize/close buttons */
+.patch-table-actions {
+  position: static !important;
+  transform: none !important;
+
+  justify-self: end;
+
+  display: flex;
+  align-items: center;
+  gap: clamp(3px, 0.5vw, 8px);
+}
+
+.patch-table-actions button {
+  padding: clamp(3px, 0.4vw, 6px) clamp(3px, 0.5vw, 8px);
+  font-size: clamp(10px, 0.8vw, 14px);
+}
+
+
+
+/* =====================================================
+VERY LARGE MONITORS: 1920px and above
+===================================================== */
+
+@media (min-width: 1920px) {
+  .patch-table-header {
+    min-height: 52px;
+    padding: 8px 18px;
+    column-gap: 18px;
+  }
+
+  .patch-header-submit-btn {
+    padding: 8px 20px;
+    font-size: 14px;
+    border-radius: 10px;
+  }
+
+  .patch-table-header h4 {
+    font-size: 15px;
+  }
+
+  .patch-table-actions button {
+    font-size: 14px;
+    padding: 5px 8px;
+  }
+}
+
+
+/* =====================================================
+BIG MONITORS / LARGE LAPTOPS: 1440px to 1919px
+===================================================== */
+
+@media (min-width: 1440px) and (max-width: 1919px) {
+  .patch-table-header {
+    min-height: 48px;
+    padding: 7px 16px;
+    column-gap: 14px;
+  }
+
+  .patch-header-submit-btn {
+    padding: 7px 18px;
+    font-size: 13.5px;
+  }
+
+  .patch-table-header h4 {
+    font-size: 14px;
+  }
+}
+
+
+/* =====================================================
+NORMAL LAPTOPS: 1025px to 1439px
+===================================================== */
+
+@media (min-width: 1025px) and (max-width: 1439px) {
+  .patch-table-header {
+    min-height: 44px;
+    padding: 6px 12px;
+    column-gap: 10px;
+  }
+
+  .patch-header-submit-btn {
+    padding: 6px 15px;
+    font-size: 12.5px;
+  }
+
+  .patch-table-header h4 {
+    font-size: 13px;
+  }
+}
+
+
+/* =====================================================
+TABLETS / SMALL LAPTOPS: up to 1024px
+===================================================== */
+
+@media (max-width: 1024px) {
+  .patch-table-header {
+    min-height: 42px;
+    padding: 6px 8px;
+    column-gap: 8px;
+  }
+
+  .patch-header-submit-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+
+  .patch-table-header h4 {
+    font-size: 12.5px;
+  }
+
+  .patch-table-actions {
+    gap: 5px;
+  }
+
+  .patch-table-actions button {
+    padding: 4px 5px;
+    font-size: 12px;
+  }
+}
+
+
+/* =====================================================
+MOBILES: up to 600px
+===================================================== */
+
+@media (max-width: 600px) {
+  .patch-table-header {
+    grid-template-columns: auto minmax(80px, 1fr) auto;
+
+    min-height: 40px;
+    padding: 5px 6px;
+    column-gap: 6px;
+  }
+
+  .patch-header-submit-btn {
+    padding: 5px 9px;
+    font-size: 11px;
+    border-radius: 7px;
+  }
+
+  .patch-table-header h4 {
+    font-size: 11.5px;
+    letter-spacing: 0;
+  }
+
+  .patch-table-actions {
+    gap: 3px;
+  }
+
+  .patch-table-actions button {
+    padding: 3px 4px;
+    font-size: 11px;
+  }
+}
+
+
+/* =====================================================
+VERY SMALL MOBILES: up to 380px
+===================================================== */
+
+@media (max-width: 380px) {
+  .patch-table-header {
+    grid-template-columns: auto minmax(60px, 1fr) auto;
+
+    min-height: 38px;
+    padding: 5px 5px;
+    column-gap: 4px;
+  }
+
+  .patch-header-submit-btn {
+    padding: 5px 7px;
+    font-size: 10.5px;
+  }
+
+  .patch-table-header h4 {
+    font-size: 10.5px;
+  }
+
+  .patch-table-actions button {
+    padding: 3px;
+    font-size: 10.5px;
+  }
+}

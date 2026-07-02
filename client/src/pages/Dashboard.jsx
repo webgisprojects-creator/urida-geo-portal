@@ -383,6 +383,7 @@ const DashboardPage = () => {
   const [zoomFilter, setZoomFilter] = useState(""); // ⭐ FILTER FOR AUTO-ZOOM
   const [baseFilter, setBaseFilter] = useState(""); // ⭐ NEW: Base filter from Sidebar/Search
   const [queryVersion, setQueryVersion] = useState(0);
+  const [showChainage, setShowChainage] = useState(false); //chainage
 
   // ⭐ NEW: Generic Layer Filters (for Attribute Query)
   const [layerFilters, setLayerFilters] = useState({});
@@ -1917,6 +1918,7 @@ const DashboardPage = () => {
           onRoadSelected={handleRoadSelectedFromMap}
           onPopupClosed={handlePopupClosed}
           onMapLoadingChange={setIsLoading} // ⭐ NEW: Map loading prop
+          showChainage={showChainage} //chainage
         />
 
         {/* ⭐ TOOLBAR — updated */}
@@ -1985,6 +1987,8 @@ const DashboardPage = () => {
           onQuery={handleQuery}
           onSummary={() => setShowChartPanel((prev) => !prev)} // Re-routed to new consolidated ChartPanel
         />
+
+
         {showChartPanel && (
           <ChartPanel
             city={city}
@@ -2362,7 +2366,7 @@ const DashboardPage = () => {
           localRows={tableDataset.kind === "specialized" ? specializedAllRows : null}
         />
       )}
-      {/* 
+      {/*
       // ROLLBACK OPTION: Kept old SummaryTable intact per user request. Uncomment to restore legacy view.
       showSummary && (
         <SummaryTable

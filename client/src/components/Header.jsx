@@ -49,6 +49,8 @@ const Header = ({
   city,
   onMenuClick,
   backTarget,
+  hideBack = false,
+
 
   // ⭐ NEW PROPS for dynamic road search
   showRoadSearch,       // boolean → Dashboard se aata hai
@@ -85,6 +87,7 @@ const Header = ({
 
   return (
     <header className="lucknow-header">
+      {!hideBack && (
       <div
         className="back-button"
         onClick={() => navigate(backTarget || "/home")}
@@ -101,6 +104,7 @@ const Header = ({
       >
         <i className="fa-solid fa-arrow-left"></i>
       </div>
+      )}
 
       <div className="menu-toggle" onClick={toggleSidebar}>
         <div className={`bar ${isSidebarOpen ? "open" : ""}`}></div>

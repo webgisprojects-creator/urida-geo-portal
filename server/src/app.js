@@ -14,6 +14,7 @@ import adminRoutes from './routes/adminRoutes.js';
 import roadNetworkRoutes from './roadNetwork.js';
 import { auditLogger, tryVerifyToken } from './middleware/authMiddleware.js';
 import { createProxyMiddleware } from 'http-proxy-middleware';
+import chainageRoutes from "./routes/chainage.js";//chainage
 
 // Use __dirname-relative path so this works regardless of which directory
 // the process is started from (project root, server/, or anywhere else).
@@ -53,6 +54,7 @@ const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 const cspConnectSources = [
   "'self'",
   'https://27.100.38.133',
+  'https://kmc.igilesolutions.com',
   'https://nominatim.openstreetmap.org',
   'https://photon.komoot.io',
   'https://overpass-api.de',
@@ -156,6 +158,7 @@ app.use(auditLogger);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/road-networks', roadNetworkRoutes);
+app.use(chainageRoutes);//chainage
 app.use('/api', cityRoutes);
 
 const __filename = fileURLToPath(import.meta.url);

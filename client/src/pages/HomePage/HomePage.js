@@ -2617,7 +2617,7 @@ export default function HomePage() {
       </div>
 
       <footer className="footer">
-        © 2024 UP Remote Sensing Application Centre. All rights reserved.
+        © 2024 UP Remote Sensing Applications Centre. All rights reserved.
       </footer>
     </>
   );

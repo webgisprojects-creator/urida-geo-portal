@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import "../assets/styles/Dashboard.css";
 import QueryPanel from "./QueryPanel";
+import { useLocation, useNavigate } from "react-router-dom";
 
 const MapToolbar = ({
   onDataAnalysis,
@@ -41,6 +42,7 @@ const MapToolbar = ({
   const [selectedRoad, setSelectedRoad] = useState("null");
   const [nestedList, setNestedList] = useState([]);
   const [nestedTitle, setNestedTitle] = useState("");
+  const navigate = useNavigate();
 
   const [activeTool, setActiveTool] = useState(null);
   const [activeQueryTab, setActiveQueryTab] = useState("attributes");
@@ -775,6 +777,14 @@ const MapToolbar = ({
         <button className="map-btn wide-btn" onClick={() => onDssRoad?.()}>
           <i className="fas fa-sitemap" /> <span>DSS</span>
         </button>
+         {/* chainage */}
+              <button
+            className="map-btn wide-btn"
+              onClick={() => navigate(`/chainage?city=${city?.toLowerCase()}&mode=CHAINAGE`)}
+              title="Chainage"
+            >
+            🔗
+          </button>
 
       </div>
 

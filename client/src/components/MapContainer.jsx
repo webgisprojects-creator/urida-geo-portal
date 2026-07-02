@@ -24,6 +24,10 @@ import Point from "ol/geom/Point";
 import GeometryCollection from "ol/geom/GeometryCollection";
 import { bbox as bboxStrategy } from "ol/loadingstrategy";
 import MapNavigation from "./MapNavigation"; // ⭐ NEW: Google Maps style navigation suite
+import TextStyle from "ol/style/Text";//chainage
+import { chainageCityConfig } from "../assets/configs/chainageCityConfig";//chainage
+import ChainageSearchPanel from "./ChainageSearchPanel";//chainage
+import { useLocation } from "react-router-dom";//chainage
 
 // Import Icons
 import bankIcon from "../assets/Amenities_Icons/bank_1.png";
@@ -859,6 +863,8 @@ const cityViews = {
 
 const MapContainer = forwardRef(({
   city = "lucknow",
+  showChainage,//chainage
+  mode = "DASHBOARD",//chainage
   layerVisibility = {},
   streetViewVisible,
   streetLightVisible = false,
@@ -972,7 +978,7 @@ const MapContainer = forwardRef(({
   const roadWfsSourceRef = useRef(null);
   const roadWfsStyleCacheRef = useRef(new Map());
   const segmentedRoadsLayerRef = useRef(null);
-  const chainageLayerRef = useRef(null);
+
   const specializedLayersRef = useRef({});
   const roadDetailsCacheRef = useRef(new Map());
   const featureInfoCacheRef = useRef(new Map());
@@ -997,6 +1003,35 @@ const MapContainer = forwardRef(({
   const [selectedRoadToken, setSelectedRoadToken] = useState(0);
   const [isMobileView, setIsMobileView] = useState(window.innerWidth <= 768);
   const [isLocating, setIsLocating] = useState(false);
+  const knpRoadLayerRef = useRef(null); //chainage
+  const roadLayerRef = useRef(null); //chainage
+  const chainageLayerRef = useRef(null); //chainage
+  const [selectedRoad, setSelectedRoad] = useState(null);//chainage
+
+  const [chainageList, setChainageList] = useState([]);//chainage
+  const [startChainage, setStartChainage] = useState("");//chainage
+  const [endChainage, setEndChainage] = useState("");//chainage
+  const [panelMinimized, setPanelMinimized] = useState(false);//chainage
+  const [patchInfo, setPatchInfo] = useState(null);//chainage
+  const [showPatchPanel, setShowPatchPanel] = useState(false);//chainage
+  const [patchChoice, setPatchChoice] = useState(null);//chainage
+  const patchLayerRef = useRef(null);//chainage
+  const [patchList, setPatchList] = useState([]);//chainage
+  const [selectedPatches, setSelectedPatches] = useState([]);//chainage
+  const startMarkerSourceRef = useRef(new VectorSource());//chainage
+  const endMarkerSourceRef = useRef(new VectorSource());//chainage
+  const startMarkerLayerRef = useRef(null);//chainage
+  const endMarkerLayerRef = useRef(null);//chainage
+  const [patchTableData, setPatchTableData] = useState([]);//chainage
+  const [showPatchTable, setShowPatchTable] = useState(false);//chainage
+  const [isTableMinimized, setIsTableMinimized] = useState(false);//chainage
+  const [showSearchPanel, setShowSearchPanel] = useState(false);//chainage
+  const hasExternalZoomRef = useRef(false);//chainage
+  const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);//chainage
+const [mapImage, setMapImage] = useState(null);//chainage
+const finalImageBlobRef = useRef(null);//chainage
+  const [allPatchRows, setAllPatchRows] = useState([]);//chainage
+  const [currentRoadPatchList, setCurrentRoadPatchList] = useState([]);//chainage
 
   useEffect(() => {
     const handleResize = () => {
@@ -1029,6 +1064,9 @@ const MapContainer = forwardRef(({
       { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
     );
   };
+
+const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
+
 
   const getAutoZoomPadding = (isIdentifierFilter) => {
     if (isIdentifierFilter) {
@@ -2612,6 +2650,48 @@ const MapContainer = forwardRef(({
       controls: defaultControls({ zoom: true, rotate: false }),
     });
 
+    //chainage
+if (mode === "CHAINAGE" && cfg1) {
+  roadLayerRef.current = new TileLayer({
+    source: new TileWMS({
+      url: GEOSERVER_BASE + "/wms",
+      params: {
+        LAYERS: cfg1.roadLayer,
+        TILED: true,
+        FORMAT: "image/png",
+        TRANSPARENT: true,
+        VERSION: "1.1.1",
+      },
+      serverType: "geoserver",
+      crossOrigin: "anonymous",
+    }),
+    visible: true,
+  });
+
+  roadLayerRef.current.setZIndex(500);
+
+  chainageLayerRef.current = new TileLayer({
+    source: new TileWMS({
+      url: GEOSERVER_BASE + "/wms",
+      params: {
+        LAYERS: cfg1.chainageLayer,
+        TILED: true,
+        FORMAT: "image/png",
+        TRANSPARENT: true,
+        VERSION: "1.1.1",
+      },
+      serverType: "geoserver",
+      crossOrigin: "anonymous",
+    }),
+    visible: false,
+  });
+
+  chainageLayerRef.current.setZIndex(510);
+
+  map.addLayer(roadLayerRef.current);
+  map.addLayer(chainageLayerRef.current);
+}
+
     // ---------- MAP LOADING TRACKER ----------
     if (onMapLoadingChange) {
       let loadingTasks = 0;
@@ -2634,6 +2714,10 @@ const MapContainer = forwardRef(({
         loadingTasks++;
         scheduleForceStop();
       };
+
+      //chainage
+
+
 
       const handleLoadEnd = () => {
         loadingTasks = Math.max(0, loadingTasks - 1);
@@ -3000,7 +3084,7 @@ const MapContainer = forwardRef(({
         if (vectorFeature) return;
         if (!layer) return;
         // We only care about specific vector layers here if needed
-        // But previously we checked Amenities/Others here. 
+        // But previously we checked Amenities/Others here.
         // Now they are WMS, so this loop mainly catches 'selectedRoadLayer' or 'drawLayer'
         const layerId = layer.get?.("id");
         if (layerId === LOCATE_LAYER_ID) {
@@ -3323,7 +3407,282 @@ const MapContainer = forwardRef(({
         }
         closePopup();
       }
+
+
+
+    if (mode === "CHAINAGE" && cfg1) {   //chainage
+
+        const view = mapRef.current.getView();
+        const resolution = view.getResolution();
+
+        const url = roadLayerRef.current
+          .getSource()
+          .getFeatureInfoUrl(
+            evt.coordinate,
+            resolution,
+            mapRef.current.getView().getProjection(),
+            {
+              INFO_FORMAT: "application/json",
+              FEATURE_COUNT: 1,
+            }
+          );
+
+        if (!url) return;
+
+        try {
+          const res = await fetch(url);
+          const data = await res.json();
+
+          if (!data.features?.length) return;
+
+          const feature = data.features[0];
+          const roadId = feature.properties[cfg1.roadIdField];
+          const props = feature.properties;
+
+          setSelectedRoad({
+            road_id: props.road_id,
+            road_name: props.road_name,
+            category: props.category,
+            condition: props.condition,
+            // material: props.material,
+
+          });
+          //checks roads have patches
+          try {
+            const res = await fetch(
+              `/api/patches/${city.toLowerCase()}/${roadId}`
+            );
+
+            const data = await res.json();
+
+            console.log("PATCH CHECK:", data);
+
+            // if (data.exists) {
+            //   setPatchInfo(data);
+            //   // extract unique patch_ids
+            //   const uniquePatchIds = [
+            //     ...new Set(data.data.map(row => row.patch_id))
+            //   ];
+
+            //   setPatchList(uniquePatchIds);
+            //   setSelectedPatches(uniquePatchIds); // default = show all
+            //   setShowPatchPanel(true);
+            // } else {
+            //   setShowPatchPanel(false);
+            // }
+            if (data.exists) {
+              const currentRoadId = String(roadId);
+
+              const newRoadRows = data.data.map((row) => ({
+                ...row,
+                road_id: row.road_id || currentRoadId,
+              }));
+
+              // checkbox list only for current road
+              const currentRoadPatches = [];
+              const seenCurrent = new Set();
+
+              newRoadRows.forEach((row) => {
+                const key = getPatchKey(row);
+
+                if (!seenCurrent.has(key)) {
+                  seenCurrent.add(key);
+
+                  currentRoadPatches.push({
+                    key,
+                    patch_id: row.patch_id,
+                    road_id: row.road_id,
+                  });
+                }
+              });
+
+              setCurrentRoadPatchList(currentRoadPatches);
+
+              setAllPatchRows((prevRows) => {
+                const rowsWithoutCurrentRoad = prevRows.filter(
+                  (row) => String(row.road_id) !== currentRoadId
+                );
+
+                const mergedRows = [...rowsWithoutCurrentRoad, ...newRoadRows];
+
+                // keep old selected patches, but do not auto-select current road patches
+                setPatchInfo({ ...data, data: newRoadRows });
+
+                // Yes/No should not be auto-selected
+                setPatchChoice(null);
+                setShowPatchPanel(true);
+
+                return mergedRows;
+              });
+            } else {
+              setCurrentRoadPatchList([]);
+              setPatchInfo(null);
+              setPatchChoice(null);
+              setShowPatchPanel(false);
+            }
+          } catch (err) {
+            console.error("PATCH CHECK ERROR:", err);
+          }
+
+          setStartChainage("");
+          setEndChainage("");
+          setChainageList([]);
+          console.log("PROPERTIES:", props);
+
+          console.log("ROAD ID:", roadId);
+
+          const cityParam = city.toLowerCase();
+          try {
+            const response = await fetch(
+              `/api/chainage/${cityParam}/${roadId}`
+            );
+
+            const chainageData = await response.json();
+
+            console.log("CHAINAGE DATA:", chainageData);
+
+            const distances = chainageData
+              .map(d => Number(d.distance))
+              .filter(v => !isNaN(v));
+
+            setChainageList([...new Set(distances)].sort((a, b) => a - b));
+
+          } catch (err) {
+            console.error("CHAINAGE FETCH ERROR:", err);
+          }
+
+          // 🔹 ZOOM FIX (FINAL)
+          const WFS_URL = `${GEOSERVER_BASE}/${cfg1.workspace}/ows`;
+
+          const zoomUrl =
+            `${WFS_URL}?service=WFS&version=1.0.0&request=GetFeature` +
+            `&typeName=${cfg1.roadLayer}` +
+            `&outputFormat=application/json` +
+            `&CQL_FILTER=${cfg1.roadIdField}='${roadId}'`;
+
+          console.log("ZOOM URL:", zoomUrl);
+
+          try {
+            const zoomRes = await fetch(zoomUrl);
+            const zoomData = await zoomRes.json();
+
+            console.log("ZOOM DATA:", zoomData);
+
+            if (!zoomData.features || zoomData.features.length === 0) {
+              console.log("❌ No feature for zoom");
+              return;
+            }
+
+            const format = new GeoJSON();
+
+            const features = format.readFeatures(zoomData, {
+              dataProjection: "EPSG:4326",
+              featureProjection: mapRef.current.getView().getProjection(),
+            });
+
+            if (!features.length) {
+              console.log("❌ Feature parsing failed");
+              return;
+            }
+
+            // 🔹 merge + expand + zoom
+
+            let extent = features[0].getGeometry().getExtent();
+
+            // merge all segments
+            features.forEach(f => {
+              const e = f.getGeometry().getExtent();
+
+              extent = [
+                Math.min(extent[0], e[0]),
+                Math.min(extent[1], e[1]),
+                Math.max(extent[2], e[2]),
+                Math.max(extent[3], e[3])
+              ];
+            });
+
+            // expand extent
+            const paddingFactor = 0.4;
+
+            const width = extent[2] - extent[0];
+            const height = extent[3] - extent[1];
+
+            extent = [
+              extent[0] - width * paddingFactor,
+              extent[1] - height * paddingFactor,
+              extent[2] + width * paddingFactor,
+              extent[3] + height * paddingFactor
+            ];
+
+            // final zoom
+            mapRef.current.getView().fit(extent, {
+              duration: 800,
+              maxZoom: 18
+            });
+          } catch (e) {
+            console.error("ZOOM ERROR:", e);
+          }
+          // 🔹 FILTER CHAINAGE POINTS
+          const filter =
+            typeof roadId === "number"
+              ? `${cfg1.roadIdField}=${roadId}`
+              : `${cfg1.roadIdField}='${roadId}'`;
+
+          console.log("FILTER:", filter);
+
+          chainageLayerRef.current.getSource().updateParams({
+            CQL_FILTER: filter,
+            STYLES: "chainage_distance_label"
+          });
+
+          chainageLayerRef.current.getSource().refresh();
+          chainageLayerRef.current.setVisible(true);
+
+        } catch (err) {
+          console.error("CHAINAGE ERROR:", err);
+        }
+
+        return;
+      }
+      // if (mode === "CHAINAGE" && cfg1) {
+
+      //   const view = mapRef.current.getView();
+      //   const resolution = view.getResolution();
+
+      //   const url = roadLayerRef.current.getSource().getFeatureInfoUrl(
+      //     evt.coordinate,
+      //     resolution,
+      //     mapRef.current.getView().getProjection(),
+      //     {
+      //       INFO_FORMAT: "application/json",
+      //       FEATURE_COUNT: 5,
+      //       BUFFER: 15,   // 🔥 important for accuracy
+      //     }
+      //   );
+
+      //   console.log("GFI URL:", url);
+
+      //   if (!url) return;
+
+      //   try {
+      //     const res = await fetch(url);
+      //     const text = await res.text();
+
+      //     console.log("RAW RESPONSE:", text);
+
+      //     const data = JSON.parse(text);
+
+      //     console.log("PARSED DATA:", data);
+
+      //   } catch (err) {
+      //     console.error("ERROR:", err);
+      //   }
+
+      //   return;
+      // }
     });
+
+
 
     // Helper function to render popup
     const showPopup = async (
@@ -3502,7 +3861,7 @@ const MapContainer = forwardRef(({
         if (emitSelection) {
           emitRoadSelected(props);
         }
-        
+
         // ⭐ NEW: Zoom and center map to the selected road geometry
         if (olFeature && map) {
           const geometry = olFeature.getGeometry?.() || null;
@@ -3727,6 +4086,64 @@ const MapContainer = forwardRef(({
       cancelled = true;
     };
   }, [mapReady, city, zoomFilter, isMobileView]);
+
+
+  useEffect(() => {
+    if (!knpRoadLayerRef.current) return;
+
+    knpRoadLayerRef.current.setVisible(!!showChainage);
+  }, [showChainage]); //chainage
+
+   //chainage
+  useEffect(() => {
+    if (!mapRef.current) return;
+
+    const startLayer = new VectorLayer({
+      source: startMarkerSourceRef.current,
+      style: new Style({
+        image: new CircleStyle({
+          radius: 8,
+          fill: new Fill({ color: "#22c55e" }),
+          stroke: new Stroke({ color: "#000", width: 3 })
+        }),
+        text: new TextStyle({
+          text: "START",
+          offsetY: -18,
+          font: "bold 12px sans-serif",
+          fill: new Fill({ color: "#000" }),
+          stroke: new Stroke({ color: "#fff", width: 3 })
+        })
+      }),
+      zIndex: 1000
+    });
+
+    const endLayer = new VectorLayer({
+      source: endMarkerSourceRef.current,
+      style: new Style({
+        image: new CircleStyle({
+          radius: 8,
+          fill: new Fill({ color: "#ef4444" }),
+          stroke: new Stroke({ color: "#000", width: 3 })
+        }),
+        text: new TextStyle({
+          text: "END",
+          offsetY: -18,
+          font: "bold 12px sans-serif",
+          fill: new Fill({ color: "#000" }),
+          stroke: new Stroke({ color: "#fff", width: 3 })
+        })
+      }),
+      zIndex: 1000
+    });
+
+    mapRef.current.addLayer(startLayer);
+    mapRef.current.addLayer(endLayer);
+
+    startMarkerLayerRef.current = startLayer;
+    endMarkerLayerRef.current = endLayer;
+
+  }, [mapReady]);
+
 
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
@@ -4583,7 +5000,7 @@ const MapContainer = forwardRef(({
       const source = layer.getSource();
       if (!source) return;
 
-      // ALWAYS update filter params so that if the user toggles the layer 
+      // ALWAYS update filter params so that if the user toggles the layer
       // via the Legend/LayerSwitcher, it respects the current filter.
       source.updateParams({
         CQL_FILTER: roadFilter || null,
@@ -4618,17 +5035,19 @@ const MapContainer = forwardRef(({
         }
       }
     }
-    if (chainageLayerRef.current) {
-      chainageLayerRef.current.setVisible(showChainage);
-      if (showChainage) {
-        const source = chainageLayerRef.current.getSource?.();
-        if (source?.updateParams) {
-          source.updateParams({ _t: Date.now() });
-        } else if (source?.refresh) {
-          source.refresh();
-        }
-      }
+    if (mode !== "CHAINAGE" && chainageLayerRef.current) {
+  chainageLayerRef.current.setVisible(showChainage);
+
+  if (showChainage) {
+    const source = chainageLayerRef.current.getSource?.();
+
+    if (source?.updateParams) {
+      source.updateParams({ _t: Date.now() });
+    } else if (source?.refresh) {
+      source.refresh();
     }
+  }
+}
   }, [layerVisibility, city, selectedRoadToken]);
 
   useEffect(() => {
@@ -5435,6 +5854,905 @@ const MapContainer = forwardRef(({
       .catch((err) => console.error("❌ [AutoZoom] Error:", err));
   }, [zoomFilter, city, isMobileView, baseMap]);
 
+
+  //chainage
+  const refreshPatchStateAfterCreate = async (roadId, createdPatchId = null) => {
+  try {
+    const res = await fetch(
+      `/api/patches/${city.toLowerCase()}/${roadId}`
+    );
+
+    const data = await res.json();
+
+    console.log("PATCH STATE REFRESH:", data);
+
+    if (!data.exists) {
+      setCurrentRoadPatchList([]);
+      setPatchInfo(null);
+      setPatchChoice(null);
+      setShowPatchPanel(false);
+      return;
+    }
+
+    const currentRoadId = String(roadId);
+
+    const newRoadRows = data.data.map((row) => ({
+      ...row,
+      road_id: row.road_id || currentRoadId,
+    }));
+
+    const currentRoadPatches = buildPatchListFromRows(newRoadRows);
+
+    const rowsWithoutCurrentRoad = allPatchRows.filter(
+      (row) => String(row.road_id) !== currentRoadId
+    );
+
+    const mergedRows = [...rowsWithoutCurrentRoad, ...newRoadRows];
+
+    setCurrentRoadPatchList(currentRoadPatches);
+    setAllPatchRows(mergedRows);
+
+    setPatchInfo({
+      ...data,
+      data: newRoadRows,
+    });
+
+    // Requirement 1: show VIEW PATCHES Yes/No immediately
+    setShowPatchPanel(true);
+
+    // Requirement 2: if user already selected Yes, update patch-list/map/table immediately
+    if (patchChoice === "yes") {
+      const createdPatch = currentRoadPatches.find(
+        (patch) => String(patch.patch_id) === String(createdPatchId)
+      );
+
+      const createdPatchKey = createdPatch?.key;
+
+      const updatedSelection = createdPatchKey
+        ? [...new Set([...selectedPatches, createdPatchKey])]
+        : selectedPatches;
+
+      setSelectedPatches(updatedSelection);
+
+      handleShowPatches(updatedSelection, mergedRows);
+      updatePatchTableFromSelection(updatedSelection, mergedRows);
+    } else {
+      // keep Yes/No unselected when user has not chosen Yes yet
+      setPatchChoice(null);
+    }
+  } catch (err) {
+    console.error("PATCH STATE REFRESH ERROR:", err);
+  }
+};
+  //chainage
+  const handleCreateChainage = async () => {
+    if (!selectedRoad?.road_id || !startChainage || !endChainage) {
+      alert("Select road and chainage points");
+      return;
+    }
+
+    const start = Number(startChainage);
+    const end = Number(endChainage);
+
+    if (start >= end) {
+      alert("End chainage must be greater than start");
+      return;
+    }
+
+    try {
+      const payload = {
+        city: city.toLowerCase(),
+        road_id: selectedRoad.road_id,
+        startPoint: start,
+        endPoint: end,
+      };
+
+      console.log("PATCH PAYLOAD:", payload);
+
+      const res = await fetch("/api/create-patch", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+
+if (data.alreadyExists) {
+    alert(data.message || "Patch already exists. Please select it from the checkbox list.");
+
+    // optional but recommended: refresh checkbox list immediately
+    await refreshPatchStateAfterCreate(selectedRoad.road_id, data.patch_id);
+
+    return;
+}
+
+if (!res.ok) {
+    throw new Error(data.error || data.message || "Patch creation failed");
+}
+
+      alert(
+        `Patch Created\nID: ${data.patch_id}\nSegments: ${data.inserted}`
+      );
+
+      console.log("PATCH RESPONSE:", data);
+      await refreshPatchStateAfterCreate(selectedRoad.road_id, data.patch_id);
+
+    } catch (err) {
+      console.error("PATCH ERROR:", err);
+      alert(err.message);
+    }
+  };
+  //chainage
+  // const handleShowPatches = () => {
+  //   if (!patchInfo?.data?.length) return;
+
+  //   // convert DB geom → features
+  //   const format = new GeoJSON();
+
+  //   const features = patchInfo.data.map(row =>
+  //   format.readFeature(JSON.parse(row.geom), {
+  //     dataProjection: "EPSG:4326",
+  //     featureProjection: mapRef.current.getView().getProjection(),
+  //   })
+  // );
+
+  //   const vectorSource = new VectorSource({
+  //     features,
+  //   });
+
+  //   const vectorLayer = new VectorLayer({
+  //     source: vectorSource,
+  //     style: new Style({
+  //       stroke: new Stroke({
+  //         color: "#22c55e",
+  //         width: 4,
+  //       }),
+  //     }),
+  //   });
+
+  //   if (patchLayerRef.current) {
+  //   mapRef.current.removeLayer(patchLayerRef.current);
+  // }
+
+  // mapRef.current.addLayer(vectorLayer);
+  // patchLayerRef.current = vectorLayer;
+  // };
+  //chainage
+  const handleShowPatches = (
+    patchSelection = selectedPatches,
+    rows = allPatchRows
+  ) => {
+    if (!mapRef.current) return;
+
+    const selectedRows = rows.filter((row) =>
+      patchSelection.includes(getPatchKey(row))
+    );
+
+    if (patchLayerRef.current) {
+      mapRef.current.removeLayer(patchLayerRef.current);
+      patchLayerRef.current = null;
+    }
+
+    startMarkerSourceRef.current.clear();
+    endMarkerSourceRef.current.clear();
+
+    if (!selectedRows.length) {
+      setPatchTableData([]);
+      setShowPatchTable(false);
+      return;
+    }
+
+    const format = new GeoJSON();
+
+    const features = selectedRows
+      .map((row) => {
+        try {
+          const feature = format.readFeature(JSON.parse(row.geom), {
+            dataProjection: "EPSG:4326",
+            featureProjection: mapRef.current.getView().getProjection(),
+          });
+
+          feature.set("patch_id", row.patch_id);
+          feature.set("road_id", row.road_id);
+          feature.set("patch_key", getPatchKey(row));
+
+          return feature;
+        } catch (err) {
+          console.error("Invalid patch geometry:", row, err);
+          return null;
+        }
+      })
+      .filter(Boolean);
+
+    if (!features.length) return;
+
+    const vectorSource = new VectorSource({ features });
+
+    const vectorLayer = new VectorLayer({
+      source: vectorSource,
+      style: new Style({
+        stroke: new Stroke({
+          color: "#fc0909",
+          width: 4,
+        }),
+      }),
+    });
+
+    vectorLayer.setZIndex(900);
+
+    mapRef.current.addLayer(vectorLayer);
+    patchLayerRef.current = vectorLayer;
+
+    updatePatchMarkersFromSource(vectorSource);
+
+    let extent = features[0].getGeometry().getExtent();
+
+    features.forEach((feature) => {
+      const e = feature.getGeometry().getExtent();
+
+      extent = [
+        Math.min(extent[0], e[0]),
+        Math.min(extent[1], e[1]),
+        Math.max(extent[2], e[2]),
+        Math.max(extent[3], e[3]),
+      ];
+    });
+
+    const paddingFactor = 0.25;
+    const width = extent[2] - extent[0];
+    const height = extent[3] - extent[1];
+
+    const finalExtent = [
+      extent[0] - width * paddingFactor,
+      extent[1] - height * paddingFactor,
+      extent[2] + width * paddingFactor,
+      extent[3] + height * paddingFactor,
+    ];
+
+    mapRef.current.getView().fit(finalExtent, {
+      duration: 700,
+      maxZoom: 19,
+    });
+
+    updatePatchTableFromSelection(patchSelection, rows);
+  };
+  //chainage
+  const handlePatchToggle = (patchKey) => {
+    const updatedSelection = selectedPatches.includes(patchKey)
+      ? selectedPatches.filter((key) => key !== patchKey)
+      : [...selectedPatches, patchKey];
+
+    setSelectedPatches(updatedSelection);
+
+    handleShowPatches(updatedSelection, allPatchRows);
+    updatePatchTableFromSelection(updatedSelection, allPatchRows);
+  };
+  //chainage
+  const handleHidePatches = () => {
+    if (patchLayerRef.current) {
+      mapRef.current.removeLayer(patchLayerRef.current);
+      patchLayerRef.current = null;
+    }
+    startMarkerSourceRef.current.clear();
+    endMarkerSourceRef.current.clear();
+  };
+  //chainage
+  const updatePatchMarkersFromSource = (source) => {
+    const startSource = startMarkerSourceRef.current;
+    const endSource = endMarkerSourceRef.current;
+
+    startSource.clear();
+    endSource.clear();
+
+    const features = source.getFeatures();
+    if (!features.length) return;
+
+    const patchGroups = {};
+
+    features.forEach(f => {
+      const pid = f.get("patch_id");
+      if (!patchGroups[pid]) patchGroups[pid] = [];
+      patchGroups[pid].push(f);
+    });
+
+    Object.values(patchGroups).forEach(patchFeatures => {
+
+      const startCandidates = {};
+      const endCandidates = {};
+
+      patchFeatures.forEach(f => {
+        const geom = f.getGeometry();
+        if (!geom) return;
+
+        const processCoords = (coords) => {
+          const start = coords[0].join(",");
+          const end = coords[coords.length - 1].join(",");
+
+          startCandidates[start] = (startCandidates[start] || 0) + 1;
+          endCandidates[end] = (endCandidates[end] || 0) + 1;
+        };
+
+        if (geom.getType() === "LineString") {
+          processCoords(geom.getCoordinates());
+        }
+
+        if (geom.getType() === "MultiLineString") {
+          geom.getCoordinates().forEach(seg => processCoords(seg));
+        }
+      });
+
+      let startCoord = null;
+      let endCoord = null;
+
+      Object.keys(startCandidates).forEach(c => {
+        if (!endCandidates[c]) startCoord = c.split(",").map(Number);
+      });
+
+      Object.keys(endCandidates).forEach(c => {
+        if (!startCandidates[c]) endCoord = c.split(",").map(Number);
+      });
+
+      if (startCoord) {
+        startSource.addFeature(new Feature({
+          geometry: new Point(startCoord)
+        }));
+      }
+
+      if (endCoord) {
+        endSource.addFeature(new Feature({
+          geometry: new Point(endCoord)
+        }));
+      }
+
+    });
+  };
+  //chainage
+  const fetchPatchTableData = async (patchIds) => {
+    try {
+      const res = await fetch("/api/patch-segments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          city: city.toLowerCase(),
+          patchIds,
+        }),
+      });
+
+      const data = await res.json();
+
+      setPatchTableData(data);
+      setShowPatchTable(true);
+
+    } catch (err) {
+      console.error("TABLE FETCH ERROR:", err);
+    }
+  };
+  //chainage
+  const applyChainageFilter = (filter) => {
+    if (!roadLayerRef.current) return;
+
+    const source = roadLayerRef.current.getSource();
+
+    if (!source) return;
+
+    console.log("🎯 Chainage filter applied:", filter);
+
+    source.updateParams({
+      CQL_FILTER: filter,
+    });
+  };
+
+  const location = useLocation();//chainage
+  //chainage
+  useEffect(() => {
+    if (!mapReady || mode !== "CHAINAGE") return;
+
+    const params = new URLSearchParams(location.search);
+
+    const zone = params.get("zone");
+    const ward = params.get("ward");
+    const lat = parseFloat(params.get("latitude"));
+    const lon = parseFloat(params.get("longitude"));
+    const view = mapRef.current?.getView();
+
+
+    if (!isNaN(lat) && !isNaN(lon)) {
+      const map = mapRef.current;
+
+      map.once("rendercomplete", () => {
+        view.animate({
+          center: fromLonLat([lon, lat]),
+          zoom: 16,
+          duration: 800,
+        });
+      });
+    }
+
+    let filterParts = [];
+
+    if (zone) filterParts.push(`zone_no='Zone ${zone}'`);
+    if (ward) filterParts.push(`ward_no='${ward}'`);
+
+    if (filterParts.length > 0) {
+      const filter = filterParts.join(" AND ");
+
+      applyChainageFilter(filter); // ✅ CORRECT
+    }
+
+  }, [mapReady, location.search, mode]);
+
+  const params = new URLSearchParams(location.search);//chainage
+  const projectId = params.get("project_id");//chainage
+  const userId = params.get("user_id");//chainage
+  const KMC_WRITE_URL = "https://kmc.igilesolutions.com/api/v1/writedata";//chainage
+  const KMC_API_KEY = process.env.REACT_APP_KMC_API_KEY ;//chainage
+  //chainage
+  const handleSubmitProjectPatches = async () => {
+  try {
+    if (!projectId || !userId) {
+      alert("Missing project_id or user_id");
+      return;
+    }
+
+    if (!selectedPatches.length) {
+      alert("Please select at least one patch");
+      return;
+    }
+
+    const patchIds = getSelectedPatchIdsOnly();
+    const roadIds = getSelectedRoadIdsOnly();
+    const roadPatchSelections = getSelectedRoadPatchSelections();
+
+    if (!roadIds.length || !patchIds.length) {
+      alert("Road ID or Patch ID missing");
+      return;
+    }
+
+    // 1. Map patches with project/user in your local backend
+    const mapRes = await fetch("/api/map-project-patches", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        city,
+        project_id: Number(projectId),
+        projectId: Number(projectId),
+        user_id: Number(userId),
+        userId: Number(userId),
+        roadIds,
+        patchIds,
+        roadPatchSelections,
+      }),
+    });
+
+    const mapText = await mapRes.text();
+
+    if (!mapRes.ok) {
+      throw new Error(mapText || "Failed to map patches");
+    }
+
+    // 2. Fetch grouped patch data from your local backend
+    const groupedRes = await fetch("/api/grouped-patches-by-selection", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        city,
+        project_id: Number(projectId),
+
+        roadIds,
+        patchIds,
+        roadPatchSelections,
+      }),
+    });
+
+    const groupedData = await groupedRes.json();
+
+    if (!groupedRes.ok) {
+      throw new Error(groupedData?.error || "Failed to fetch grouped patches");
+    }
+
+    if (!groupedData.patches || groupedData.patches.length === 0) {
+      alert("No patches found");
+      return;
+    }
+
+    // 3. Final JSON payload for KMC API
+    const finalPayload = {
+      project_id: Number(projectId),
+      user_id: Number(userId),
+      // road_ids: roadIds,
+      // patch_ids: patchIds,
+      // roadPatchSelections,
+      patches: groupedData.patches,
+    };
+
+    console.log("FINAL PAYLOAD:", finalPayload);
+    console.log("KMC API KEY CHECK:", {
+  exists: Boolean(KMC_API_KEY),
+  length: KMC_API_KEY?.length,
+});
+    // 4. Send JSON to KMC API
+    const jsonRes = await fetch(KMC_WRITE_URL, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+
+    "X-API-KEY": KMC_API_KEY,
+  },
+  body: JSON.stringify(finalPayload),
+});
+
+    const jsonText = await jsonRes.text();
+    console.log("KMC JSON response:", jsonRes.status, jsonText);
+
+    if (!jsonRes.ok) {
+  throw new Error(`KMC JSON submit failed. Status: ${jsonRes.status}`);
+}
+    console.log("JSON payload sent to KMC:", finalPayload);
+
+    // 5. Send captured map image to KMC API
+    let imageBlob = finalImageBlobRef.current;
+
+    if (!imageBlob) {
+      const captured = await captureMapImageBlob();
+      imageBlob = captured.blob;
+      finalImageBlobRef.current = imageBlob;
+      setMapImage(captured.dataUrl);
+    }
+
+    const formData = new FormData();
+    formData.append("file", imageBlob, `${city}_project_${projectId}_map.png`);
+    formData.append("project_id", String(projectId));
+    formData.append("user_id", String(userId));
+
+
+    const imageRes = await fetch(KMC_WRITE_URL, {
+  method: "POST",
+  headers: {
+    Accept: "application/json",
+    "X-API-KEY": KMC_API_KEY,
+  },
+  body: formData,
+});
+
+    const imageText = await imageRes.text();
+    console.log("KMC IMAGE response:", imageRes.status, imageText);
+
+    if (!imageRes.ok) {
+  throw new Error(`KMC image submit failed. Status: ${imageRes.status}`);
+}
+    console.log("Image payload sent to KMC");
+
+    alert("Data and map image submitted successfully");
+
+  } catch (err) {
+    console.error("FINAL SUBMIT ERROR:", err);
+    alert(err.message || "Final submit failed");
+  }
+};
+  //chainage
+  const handlePrintMapOnly = () => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    document.body.classList.add("print-map-only");
+
+    setTimeout(() => {
+      map.updateSize();
+
+      setTimeout(() => {
+        window.print();
+
+        setTimeout(() => {
+          document.body.classList.remove("print-map-only");
+          map.updateSize();
+        }, 300);
+      }, 500);
+    }, 300);
+  };
+
+  //chainage
+  // const openSubmitConfirm = () => {
+  //   const map = mapRef.current;
+
+  //   if (!projectId || !userId) {
+  //     alert("Missing project_id or user_id");
+  //     return;
+  //   }
+
+  //   if (!selectedRoad?.road_id) {
+  //     alert("Please select road first");
+  //     return;
+  //   }
+
+  //   if (!selectedPatches.length) {
+  //     alert("Please select at least one patch");
+  //     return;
+  //   }
+
+  //   if (!map) {
+  //     setShowSubmitConfirm(true);
+  //     return;
+  //   }
+
+  //   map.once("rendercomplete", () => {
+  //     const canvas = document.createElement("canvas");
+  //     const size = map.getSize();
+
+  //     canvas.width = size[0];
+  //     canvas.height = size[1];
+
+  //     const context = canvas.getContext("2d");
+
+  //     document
+  //       .querySelectorAll(".ol-layer canvas")
+  //       .forEach((layerCanvas) => {
+  //         if (layerCanvas.width > 0) {
+  //           context.drawImage(layerCanvas, 0, 0);
+  //         }
+  //       });
+
+  //     setMapImage(canvas.toDataURL("image/png"));
+  //     setShowSubmitConfirm(true);
+  //   });
+
+  //   map.renderSync();
+  // };
+  const openSubmitConfirm = async () => {
+  if (!projectId || !userId) {
+    alert("Missing project_id or user_id");
+    return;
+  }
+
+  if (!selectedPatches.length) {
+    alert("Please select at least one patch");
+    return;
+  }
+
+  const roadIds = getSelectedRoadIdsOnly();
+
+  if (!roadIds.length) {
+    alert("Road ID not found for selected patches");
+    return;
+  }
+
+  try {
+    const { blob, dataUrl } = await captureMapImageBlob();
+
+    finalImageBlobRef.current = blob;
+    setMapImage(dataUrl);
+    setShowSubmitConfirm(true);
+
+  } catch (err) {
+    console.error("MAP IMAGE CAPTURE ERROR:", err);
+
+    finalImageBlobRef.current = null;
+    setMapImage(null);
+    setShowSubmitConfirm(true);
+  }
+
+};
+  //chainage
+  const confirmSubmitProjectPatches = async () => {
+    await handleSubmitProjectPatches();
+    setShowSubmitConfirm(false);
+  };
+  //chainage
+  const getPatchKey = (row) => {
+    return `${row.road_id}__${row.patch_id}`;
+  };
+
+  const buildPatchListFromRows = (rows) => {
+    const map = new Map();
+
+    rows.forEach((row) => {
+      const key = getPatchKey(row);
+
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          road_id: row.road_id,
+          patch_id: row.patch_id,
+        });
+      }
+    });
+
+    return Array.from(map.values());
+  };
+  //chainage
+  const getPatchIdFromKey = (key) => {
+    const value = String(key);
+    const index = value.indexOf("__");
+
+    if (index === -1) return value;
+
+    return value.substring(index + 2);
+  };
+  //chainage
+  const normalizePatchTableRow = (row) => {
+    return {
+      ...row,
+      patch_id: row.patch_id ?? "-",
+      segment_id: row.segment_id ?? row.segmentid ?? row.seg_id ?? "-",
+      zone_name: row.zone_name ?? row.zone_no ?? row.zone ?? "-",
+      road_id: row.road_id ?? "-",
+      road_name: row.road_name ?? row.name ?? "-",
+      condition: row.condition ?? row.road_condition ?? "-",
+      material: row.material ?? "-",
+      ownership: row.ownership ?? "-",
+      yoc: row.yoc ?? row.year_of_construction ?? "-",
+      cus: row.cus ?? row.cus_class ?? row.scheme ?? "-",
+    };
+  };
+  //chainage
+  const updatePatchTableFromSelection = async (
+    selectedKeys,
+    rows = allPatchRows
+  ) => {
+    if (!selectedKeys.length) {
+      setPatchTableData([]);
+      setShowPatchTable(false);
+      return;
+    }
+
+    const patchIds = selectedKeys.map(getPatchIdFromKey);
+
+    try {
+      const res = await fetch("/api/patch-segments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          city: city.toLowerCase(),
+          patchIds,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to fetch patch table data");
+      }
+
+      const finalRows = Array.isArray(data)
+        ? data.map(normalizePatchTableRow)
+        : [];
+
+      setPatchTableData(finalRows);
+      setShowPatchTable(finalRows.length > 0);
+    } catch (err) {
+      console.error("TABLE FETCH ERROR:", err);
+
+      // fallback: show whatever local data is available
+      const fallbackRows = rows
+        .filter((row) => selectedKeys.includes(getPatchKey(row)))
+        .map(normalizePatchTableRow);
+
+      setPatchTableData(fallbackRows);
+      setShowPatchTable(fallbackRows.length > 0);
+    }
+  };
+  //chainage
+  // const getSelectedPatchIdsOnly = () => {
+  //   return selectedPatches.map((key) => key.split("__")[1]);
+  // };
+  //chainage
+  const getSelectedPatchIdsOnly = () => {
+  return [...new Set(selectedPatches.map((key) => key.split("__")[1]))];
+};
+//chainage
+const getSelectedRoadIdsOnly = () => {
+  return [...new Set(selectedPatches.map((key) => key.split("__")[0]))];
+};
+  //chainage
+  const getSelectedRoadPatchSelections = () => {
+    return selectedPatches.map((key) => {
+      const [road_id, patch_id] = key.split("__");
+
+      return {
+        road_id,
+        patch_id,
+      };
+    });
+  };
+
+  //chainage
+  const captureMapImageBlob = () => {
+  return new Promise((resolve, reject) => {
+    const map = mapRef.current;
+
+    if (!map) {
+      reject(new Error("Map not available"));
+      return;
+    }
+
+    map.once("rendercomplete", () => {
+      try {
+        const size = map.getSize();
+
+        if (!size || !size[0] || !size[1]) {
+          reject(new Error("Invalid map size"));
+          return;
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = size[0];
+        canvas.height = size[1];
+
+        const context = canvas.getContext("2d");
+
+        // white background
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+
+        const layerCanvases = map
+          .getViewport()
+          .querySelectorAll(".ol-layer canvas, canvas.ol-layer");
+
+        layerCanvases.forEach((layerCanvas) => {
+          if (!layerCanvas.width || !layerCanvas.height) return;
+
+          const opacity =
+            layerCanvas.parentNode?.style?.opacity || layerCanvas.style.opacity;
+
+          context.globalAlpha = opacity === "" || opacity === undefined
+            ? 1
+            : Number(opacity);
+
+          const transform = layerCanvas.style.transform;
+          const matrix = transform.match(/^matrix\(([^\)]*)\)$/);
+
+          if (matrix) {
+            const values = matrix[1].split(",").map(Number);
+            context.setTransform(
+              values[0],
+              values[1],
+              values[2],
+              values[3],
+              values[4],
+              values[5]
+            );
+          } else {
+            context.setTransform(1, 0, 0, 1, 0, 0);
+          }
+
+          context.drawImage(layerCanvas, 0, 0);
+        });
+
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.globalAlpha = 1;
+
+        const dataUrl = canvas.toDataURL("image/png");
+
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            reject(new Error("Map image blob not created"));
+            return;
+          }
+
+          resolve({
+            blob,
+            dataUrl,
+          });
+        }, "image/png");
+
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    map.renderSync();
+  });
+};
+
   return (
     <div id="map-root" className="map-container-wrapper" style={{ position: "relative", width: "100%", height: "100%" }}>
       <div
@@ -5473,6 +6791,384 @@ const MapContainer = forwardRef(({
         />
       </div>
 
+      {selectedRoad && (  //chainage
+        <div className="road-panel">
+          <div className="road-panel-header">
+            <h3>ROAD DETAILS</h3>
+
+            <div className="road-panel-actions">
+              <button
+                className="road-panel-minimize"
+                onClick={() => setPanelMinimized(!panelMinimized)}
+                title={panelMinimized ? "Maximize" : "Minimize"}
+              >
+                {panelMinimized ? "⬜" : "➖"}
+              </button>
+
+              {/* <button
+                className="road-panel-close"
+                onClick={() => {
+                  setSelectedRoad(null);
+                  setPanelMinimized(false);
+
+                  // 🔥 reset chainage layer also
+                  if (chainageLayerRef.current) {
+                    chainageLayerRef.current.getSource().updateParams({
+                      CQL_FILTER: null,
+                      _t: Date.now(),
+                    });
+                    chainageLayerRef.current.getSource().refresh();
+                    chainageLayerRef.current.setVisible(false); // optional (better UX)
+                  }
+                  setPatchChoice(null);
+                }}
+              >
+                ✕
+              </button> */}
+              <button
+  className="road-panel-close"
+  onClick={() => {
+    const closingRoadId = String(selectedRoad?.road_id || "");
+
+    // remove only current road patches from selected patches
+    const currentRoadKeys = currentRoadPatchList.map((patch) => patch.key);
+
+    const updatedSelection = selectedPatches.filter((key) => {
+      const [roadId] = String(key).split("__");
+
+      return (
+        !currentRoadKeys.includes(key) &&
+        String(roadId) !== closingRoadId
+      );
+    });
+
+    setSelectedPatches(updatedSelection);
+
+    // clear current road panel data
+    setSelectedRoad(null);
+    setPanelMinimized(false);
+    setPatchChoice(null);
+    setPatchInfo(null);
+    setShowPatchPanel(false);
+    setCurrentRoadPatchList([]);
+
+    setStartChainage("");
+    setEndChainage("");
+    setChainageList([]);
+
+    // hide chainage points
+    if (chainageLayerRef.current) {
+      chainageLayerRef.current.getSource().updateParams({
+        CQL_FILTER: null,
+        STYLES: null,
+        _t: Date.now(),
+      });
+
+      chainageLayerRef.current.getSource().refresh();
+      chainageLayerRef.current.setVisible(false);
+    }
+
+    // update/hide patch layer and table
+    if (updatedSelection.length > 0) {
+      handleShowPatches(updatedSelection, allPatchRows);
+      updatePatchTableFromSelection(updatedSelection, allPatchRows);
+    } else {
+      handleHidePatches();
+      setPatchTableData([]);
+      setShowPatchTable(false);
+      setIsTableMinimized(false);
+    }
+  }}
+>
+  ✕
+</button>
+            </div>
+          </div>
+          {!panelMinimized && (
+            <div className="road-panel-body">
+              <div className="road-item">
+                <span>ID</span>
+                <strong>{selectedRoad.road_id}</strong>
+
+              </div>
+
+              <div className="road-item">
+                <span>Name</span>
+                <strong>{selectedRoad.road_name || "-"}</strong>
+              </div>
+
+              <div className="road-item">
+                <span>Category</span>
+                <span className="badge">{selectedRoad.category}</span>
+              </div>
+
+              <div className="road-item">
+                <span>Condition</span>
+                <span className={`badge ${selectedRoad.condition?.toLowerCase()}`}>
+                  {selectedRoad.condition}
+                </span>
+              </div>
+
+              {/* <div className="road-item">
+        <span>Material</span>
+        <strong>{selectedRoad.material}</strong>
+      </div> */}
+
+
+              <div className="chainage-selection">
+
+                <div className="chainage-group">
+                  <label>Start Chainage</label>
+                  <select
+                    value={startChainage}
+                    onChange={(e) => setStartChainage(e.target.value)}
+                  >
+                    <option value="">Select</option>
+                    {chainageList.map((d) => (
+                      <option key={`start-${d}`} value={d}>
+                        {Number(d)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="chainage-group">
+                  <label>End Chainage</label>
+                  <select
+                    value={endChainage}
+                    onChange={(e) => setEndChainage(e.target.value)}
+                  >
+                    <option value="">Select</option>
+                    {chainageList.map((d) => (
+                      <option key={`end-${d}`} value={d}>
+                        {Number(d)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+              </div>
+
+              <button
+                className="chainage-create-btn"
+                disabled={!startChainage || !endChainage || Number(startChainage) >= Number(endChainage)}
+                // onClick={() => handleCreateChainage()}
+                onClick={handleCreateChainage}
+              >
+                CREATE
+              </button>
+
+
+            </div>
+          )}
+          {showPatchPanel && patchInfo && (
+            <div className="patch-panel">
+
+              <div className="patch-text">
+                VIEW PATCHES
+              </div>
+
+              <div className="patch-actions">
+                <button
+                  className={`patch-btn yes ${patchChoice === "yes" ? "active" : ""}`}
+                  onClick={() => {
+                    setPatchChoice("yes");
+
+                    handleShowPatches(selectedPatches, allPatchRows);
+                    updatePatchTableFromSelection(selectedPatches, allPatchRows);
+                  }}
+                >
+                  Yes
+                </button>
+
+                <button
+                  className={`patch-btn no ${patchChoice === "no" ? "active" : ""}`}
+                  onClick={() => {
+                    setPatchChoice("no");
+
+                    const currentRoadKeys = currentRoadPatchList.map((patch) => patch.key);
+
+                    const updatedSelection = selectedPatches.filter(
+                      (key) => !currentRoadKeys.includes(key)
+                    );
+
+                    setSelectedPatches(updatedSelection);
+
+                    if (updatedSelection.length > 0) {
+                      handleShowPatches(updatedSelection, allPatchRows);
+                      updatePatchTableFromSelection(updatedSelection, allPatchRows);
+                    } else {
+                      handleHidePatches();
+                      setPatchTableData([]);
+                      setShowPatchTable(false);
+                    }
+                  }}
+                >
+                  No
+                </button>
+              </div>
+              {patchChoice === "yes" && currentRoadPatchList.length > 0 && (
+                <div className="patch-list-panel">
+
+                  <div className="patch-list-title">PATCHES</div>
+
+                  <div className="patch-list-body">
+                    {currentRoadPatchList.map((patch) => (
+                      <label key={patch.key} className="patch-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={selectedPatches.includes(patch.key)}
+                          onChange={() => handlePatchToggle(patch.key)}
+                        />
+                        <span>{patch.patch_id}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                </div>
+              )}
+
+            </div>
+          )}
+        </div>
+      )}
+      {showPatchTable && patchTableData.length > 0 && (
+        <div className={`patch-table-container ${isTableMinimized ? "minimized" : ""}`}>
+
+          <div className="patch-table-header">
+            {mode === "CHAINAGE" && projectId && userId && (
+        <button
+          className="patch-header-submit-btn"
+          onClick={openSubmitConfirm}
+          disabled={!selectedPatches.length || patchChoice === "no"}
+        >
+          Submit
+        </button>
+      )}
+            <h4>PATCH INFORMATION</h4>
+            <div className="patch-table-actions">
+              {/* <button onClick={exportToExcel} title="Export Excel">📊</button> */}
+              {/* PRINT BUTTON */}
+              <button
+                className="patch-print-btn"
+                onClick={handlePrintMapOnly}
+                title="Print Map"
+              >
+                🖨
+              </button>
+
+              <button
+                onClick={() => setIsTableMinimized(prev => !prev)}
+                title={isTableMinimized ? "Maximize" : "Minimize"}
+              >
+                {isTableMinimized ? "▢" : "—"}
+              </button>
+            </div>
+          </div>
+
+
+          <div className="patch-table-body">
+            <table>
+              <thead>
+                <tr>
+                  <th>Patch ID</th>
+                  <th>Segment ID</th>
+                  <th>Zone Name</th>
+                  <th>Road ID</th>
+                  <th>Road Name</th>
+                  <th>Condition</th>
+                  <th>Material</th>
+                  <th>Ownership</th>
+                  <th>YOC</th>
+                  <th>CUS</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {Object.entries(
+                  patchTableData.reduce((acc, row) => {
+                    const roadId = row.road_id || "Unknown Road";
+
+                    if (!acc[roadId]) {
+                      acc[roadId] = [];
+                    }
+
+                    acc[roadId].push(row);
+                    return acc;
+                  }, {})
+                ).map(([roadId, rows]) => (
+                  <React.Fragment key={roadId}>
+                    <tr className="road-group-row">
+                      <td colSpan="10">
+                        Road ID: {roadId}
+                        {rows[0]?.road_name ? ` | ${rows[0].road_name}` : ""}
+                      </td>
+                    </tr>
+
+                    {rows.map((row, i) => (
+                      <tr key={`${roadId}-${row.patch_id}-${row.segment_id}-${i}`}>
+                        <td>{row.patch_id}</td>
+                        <td>{row.segment_id}</td>
+                        <td>{row.zone_name}</td>
+                        <td>{row.road_id}</td>
+                        <td>{row.road_name}</td>
+                        <td>{row.condition}</td>
+                        <td>{row.material}</td>
+                        <td>{row.ownership}</td>
+                        <td>{row.yoc}</td>
+                        <td>{row.cus}</td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+        </div>
+      )}
+
+      {mode === "CHAINAGE" && (
+        <div className="chainage-search-wrapper">
+
+          {/* 🔘 Button */}
+          <button
+            className="chainage-search-toggle"
+            onClick={() => setShowSearchPanel(prev => !prev)}
+          >
+            {showSearchPanel ? "✖" : "🔍"}
+          </button>
+
+          {/* 📦 Expand Panel */}
+          <div className={`chainage-search-expand ${showSearchPanel ? "open" : ""}`}>
+            <ChainageSearchPanel
+              city={city}
+              onSelectRoad={(road) => {
+                const filter = `road_id='${road.road_id}'`;
+                applyRoadFilterImmediate(filter);
+
+                if (road.lon && road.lat) {
+                  const center = fromLonLat([road.lon, road.lat]);
+
+                  mapRef.current.getView().animate({
+                    center,
+                    zoom: 17,
+                    duration: 500,
+                  });
+                }
+
+                // 🔥 auto close after select
+                setShowSearchPanel(false);
+              }}
+            />
+          </div>
+
+        </div>
+
+
+
+      )}
+
       {/* Popup Overlay Structure */}
       <div ref={popupRef} className="ol-popup">
         <a
@@ -5487,6 +7183,65 @@ const MapContainer = forwardRef(({
         ></a>
         <div ref={popupContentRef} className="ol-popup-content"></div>
       </div>
+      {showSubmitConfirm && (
+        <div className="submit-confirm-overlay">
+          <div className="submit-confirm-box">
+
+            <h3>CONFIRM SITE MAP</h3>
+
+            <div className="submit-info">
+              <p><b>Project ID:</b> {projectId}</p>
+              <p><b>User ID:</b> {userId}</p>
+              <p>
+                <b>Selected Road ID:</b>{" "}
+                {[
+                  ...new Set(
+                    allPatchRows
+                      .filter((row) => selectedPatches.includes(getPatchKey(row)))
+                      .map((row) => row.road_id)
+                  ),
+                ].join(", ") || "-"}
+              </p>
+              <p>
+                <b>Selected Patches:</b>{" "}
+                {selectedPatches
+                  .map((key) => {
+                    const [road_id, patch_id] = key.split("__");
+                    return `${road_id} - ${patch_id}`;
+                  })
+                  .join(", ") || "-"}
+              </p>
+            </div>
+
+            <div className="submit-map-preview">
+              {mapImage ? (
+                <img src={mapImage} alt="Map Snapshot" />
+              ) : (
+                <p>Map snapshot not available</p>
+              )}
+            </div>
+
+            <div className="submit-confirm-actions">
+              <button
+                className="cancel-btn"
+                onClick={() => setShowSubmitConfirm(false)}
+              >
+                Cancel
+              </button>
+
+              <button
+                className="final-submit-btn"
+                onClick={confirmSubmitProjectPatches}
+              >
+                Submit
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+
     </div>
   );
 });

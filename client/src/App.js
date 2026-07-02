@@ -1,10 +1,11 @@
 /* App routing and auth gating for login, home, and dashboard flows. */
-import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState, createContext, useContext } from "react";
 import LoginPage from "./pages/Login/LoginPage.jsx";
 import HomePage from "./pages/HomePage/HomePage";
 import Dashboard from "./pages/Dashboard";
 import AdminPanel from "./pages/AdminPanel/AdminPanel.jsx";
+import ChainagePage from "./pages/ChainagePage";//chainage
 
 const DSS = lazy(() => import("./components/DSS"));
 
@@ -99,13 +100,38 @@ function App() {
     () => ({ ...session, refresh }),
     [session.loading, session.user, refresh]
   );
-
+//new
+  // const Protected = ({ children }) => {
+  //   const { loading, user } = useSession();
+  //   if (loading) return null;
+  //   if (!user) return <Navigate to="/" replace />;
+  //   return children;
+  // };
   const Protected = ({ children }) => {
-    const { loading, user } = useSession();
-    if (loading) return null;
-    if (!user) return <Navigate to="/" replace />;
-    return children;
-  };
+  const { loading, user } = useSession();
+  const location = useLocation();
+
+  if (loading) return null;
+
+  if (!user) {
+    const redirectPath = location.pathname + location.search;
+
+    // Only chainage should preserve redirect params
+    if (location.pathname === "/chainage") {
+      return (
+        <Navigate
+          to={`/?redirect=${encodeURIComponent(redirectPath)}`}
+          replace
+        />
+      );
+    }
+
+    // Old behavior for home/dashboard/dss
+    return <Navigate to="/" replace />;
+  }
+
+  return children;
+};
 
   const AdminProtected = ({ children }) => {
     const { loading, user } = useSession();
@@ -168,6 +194,8 @@ function App() {
                 </AdminProtected>
               }
             />
+            {/* chainage */}
+            <Route path="/chainage" element={<Protected><ChainagePage /></Protected>} />
           </Routes>
         </Suspense>
       </Router>
