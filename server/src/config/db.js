@@ -21,6 +21,7 @@ export const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
+  application_name: process.env.DB_APPLICATION_NAME || "urida-backend",
   max: Number.isFinite(dbPoolMax) ? dbPoolMax : 20,
   idleTimeoutMillis: Number.isFinite(dbIdleTimeout) ? dbIdleTimeout : 30000,
   connectionTimeoutMillis: Number.isFinite(dbConnTimeout) ? dbConnTimeout : 5000,
@@ -28,13 +29,10 @@ export const pool = new Pool({
   ssl: dbUseSsl ? { rejectUnauthorized: dbSslRejectUnauthorized } : undefined,
 });
 
-pool.connect()
-  .then((client) => {
-    console.log('✅ Connected to PostgreSQL');
-    client.release();
-  })
-  .catch(err => console.error('❌ Database connection error:', err));
+pool.query("SELECT 1")
+  .then(() => console.log("[DB] Connected to PostgreSQL"))
+  .catch(err => console.error("[DB] Database connection error:", err));
 
 pool.on("error", (err) => {
-  console.error("❌ Unexpected PG pool error:", err);
+  console.error("[DB] Unexpected PG pool error:", err);
 });
