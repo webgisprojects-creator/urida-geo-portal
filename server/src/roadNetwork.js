@@ -958,9 +958,16 @@ router.get("/:cityCode", async (req, res) => {
   try {
     const table = getRoadTable(req.params.cityCode);
 
+    // Some cities' zone_no column already stores "Zone 1" (e.g. Kanpur);
+    // others store a plain number (e.g. "1"). Only prepend "Zone " when the
+    // value doesn't already start with it, so we never produce "Zone Zone 1".
     const zones = await pool.query(`
       SELECT DISTINCT zone_no,
-      ('Zone ' || zone_no) AS name
+      CASE
+        WHEN zone_no ~* '^zone\\s'
+          THEN zone_no
+        ELSE ('Zone ' || zone_no)
+      END AS name
       FROM ${table}
       WHERE zone_no IS NOT NULL
       ORDER BY zone_no;

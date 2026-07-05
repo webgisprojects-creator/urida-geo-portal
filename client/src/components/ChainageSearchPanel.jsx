@@ -1,30 +1,57 @@
-import React, { useState, useEffect } from "react";
+import React, { useRef, useState, useEffect } from "react";
 
 
-const ChainageSearchPanel = ({ city, onSelectRoad }) => {
+const ChainageSearchPanel = ({ city, onSelectRoad, onFeatureUnavailable }) => {
     const [query, setQuery] = useState("");
     const [results, setResults] = useState([]);
     const [show, setShow] = useState(false);
+    const searchCacheRef = useRef(new Map());
+    const onFeatureUnavailableRef = useRef(onFeatureUnavailable);
 
     useEffect(() => {
-        if (!query || query.length < 2) {
+        onFeatureUnavailableRef.current = onFeatureUnavailable;
+    }, [onFeatureUnavailable]);
+
+    useEffect(() => {
+        const term = String(query || "").trim();
+        if (term.length < 2) {
             setResults([]);
             return;
         }
 
+        const cacheKey = `${String(city || "").toLowerCase()}|${term.toLowerCase()}`;
+        if (searchCacheRef.current.has(cacheKey)) {
+            setResults(searchCacheRef.current.get(cacheKey));
+            return;
+        }
+
+        const controller = new AbortController();
         const delay = setTimeout(async () => {
             try {
                 const res = await fetch(
-                    `/api/chainage-search/${city}?q=${encodeURIComponent(query)}`
+                    `/api/chainage-search/${city}?q=${encodeURIComponent(term)}`,
+                    { signal: controller.signal }
                 );
                 const data = await res.json();
+                if (!res.ok) {
+                    if (data?.error === "FEATURE_IN_PROGRESS") {
+                        onFeatureUnavailableRef.current?.(data);
+                    }
+                    setResults([]);
+                    return;
+                }
+                searchCacheRef.current.set(cacheKey, data);
                 setResults(data);
             } catch (e) {
+                if (e?.name === "AbortError") return;
                 setResults([]);
             }
         }, 300);
 
-        return () => clearTimeout(delay);
+        return () => {
+            clearTimeout(delay);
+            controller.abort();
+        };
     }, [query, city]);
 
     return (

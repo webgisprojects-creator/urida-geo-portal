@@ -1,10 +1,18 @@
 import "dotenv/config";
 import express from "express";
-import pkg from "pg";
-
-const { Pool } = pkg;
+import { pool as pool1 } from "../config/db.js";
+import { verifyToken } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
+
+// Every route here reads or writes real patch/chainage data and was
+// reachable with no auth at all (unlike roadNetwork.js/cityRoutes.js, which
+// both gate themselves the same way). Every real path into this feature —
+// including the KMC mobile deep-link — already goes through the app's
+// normal login first (client/src/App.js's <Protected> wraps /chainage and
+// redirects unauthenticated visitors to log in before they ever reach this
+// UI), so requiring a valid session here is transparent to real users.
+router.use(verifyToken);
 
 const requiredDbEnv = ["DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASS"];
 
@@ -16,13 +24,16 @@ if (missingDbEnv.length > 0) {
     );
 }
 
-const pool1 = new Pool({
-    host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT),
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASS,
+const unavailableMessage = (city) =>
+    `Chainage is still in progress for ${city || "this city"}. You can continue using other map features.`;
 
+const isMissingRelationError = (err) => err?.code === "42P01";
+
+const sendFeatureUnavailable = (res, city, feature = "Chainage") => res.status(503).json({
+    error: "FEATURE_IN_PROGRESS",
+    feature,
+    city,
+    message: unavailableMessage(city),
 });
 
 // const chainageDbConfig = {
@@ -52,14 +63,17 @@ const chainageDbConfig = {
         distanceColumn: "distance",
         segmentIdColumn: "segment_id",
     },
-    lucknow: {
-        schema: "lucknow",
-        chainageTable: "lucknow_interpolatedpoints",
-        segmentTable: "lucknow.segmentszone2roads",
-        roadIdColumn: "road_id",
-        distanceColumn: "distance",
-        segmentIdColumn: "segment_id",
-    },
+    // lucknow: not verified as working chainage data yet. Client-side
+    // chainageCityConfig.js (client/src/assets/configs/chainageCityConfig.js)
+    // also has no lucknow entry — keep both in sync. Re-add once confirmed.
+    // lucknow: {
+    //     schema: "lucknow",
+    //     chainageTable: "lucknow_interpolatedpoints",
+    //     segmentTable: "lucknow.segmentszone2roads",
+    //     roadIdColumn: "road_id",
+    //     distanceColumn: "distance",
+    //     segmentIdColumn: "segment_id",
+    // },
     agra: {
         schema: "agra",
         chainageTable: 'agra.agra_points',
@@ -97,8 +111,10 @@ router.get("/api/chainage/:city/:roadId", async (req, res) => {
 
         res.json(result.rows);
     } catch (err) {
-        console.error("Chainage fetch error:", err.message);
-        res.status(500).json({ error: "DB error" });
+        if (isMissingRelationError(err)) {
+            return sendFeatureUnavailable(res, city, "Chainage");
+        }
+        res.status(500).json({ error: "Unable to load chainage data" });
     }
 });
 
@@ -186,6 +202,55 @@ router.get("/api/chainage/:city/:roadId", async (req, res) => {
 
 
 /* CREATE PATCH */
+// Read-only preview of the segments a patch would cover for a given
+// road/chainage range, without writing anything — used to show the user an
+// exact map/image preview before they confirm "Save" on /api/create-patch,
+// which runs the same range query but inside an insert transaction.
+router.get("/api/patch-preview/:city/:roadId", async (req, res) => {
+    const cityKey = String(req.params.city || "").toLowerCase().trim();
+    const roadId = String(req.params.roadId || "").trim();
+    const cfg = chainageDbConfig[cityKey];
+
+    if (!cfg) return res.status(400).json({ error: "Invalid city" });
+    if (!roadId) return res.status(400).json({ error: "roadId is required" });
+
+    const start = Number(req.query.start);
+    const end = Number(req.query.end);
+
+    if (Number.isNaN(start) || Number.isNaN(end)) {
+        return res.status(400).json({ error: "Invalid input" });
+    }
+    if (start >= end) {
+        return res.status(400).json({ error: "Invalid range" });
+    }
+
+    try {
+        const segQuery = `
+            SELECT *, ST_AsGeoJSON(geom) AS geojson
+            FROM ${cfg.segmentTable}
+            WHERE ${cfg.roadIdColumn} = $1
+            AND CAST(split_part(${cfg.segmentIdColumn}, 'S', 2) AS NUMERIC) > $2
+            AND CAST(split_part(${cfg.segmentIdColumn}, 'S', 2) AS NUMERIC) <= $3
+            ORDER BY CAST(split_part(${cfg.segmentIdColumn}, 'S', 2) AS NUMERIC)
+        `;
+
+        const segRes = await pool1.query(segQuery, [roadId, start, end]);
+
+        res.json({
+            road_id: roadId,
+            start,
+            end,
+            count: segRes.rows.length,
+            data: segRes.rows,
+        });
+    } catch (err) {
+        if (isMissingRelationError(err)) {
+            return sendFeatureUnavailable(res, cityKey, "Chainage patch preview");
+        }
+        res.status(500).json({ error: "Unable to load patch preview" });
+    }
+});
+
 router.post("/api/create-patch", async (req, res) => {
     const { city, road_id, startPoint, endPoint } = req.body;
 
@@ -274,8 +339,10 @@ if (existingPatchRes.rows.length > 0) {
         });
     } catch (err) {
         await client.query("ROLLBACK");
-        console.error("Create patch error:", err.message);
-        res.status(500).json({ error: err.message });
+        if (isMissingRelationError(err)) {
+            return sendFeatureUnavailable(res, cityKey, "Chainage patch creation");
+        }
+        res.status(500).json({ error: "Unable to create patch" });
     } finally {
         client.release();
     }
@@ -304,8 +371,10 @@ router.get("/api/patches/:city/:roadId", async (req, res) => {
         });
 
     } catch (err) {
-        console.error("Patch fetch error:", err.message);
-        res.status(500).json({ error: "DB error" });
+        if (isMissingRelationError(err)) {
+            return sendFeatureUnavailable(res, city, "Chainage patches");
+        }
+        res.status(500).json({ error: "Unable to load patches" });
     }
 });
 
@@ -335,8 +404,10 @@ router.post("/api/patch-segments", async (req, res) => {
         res.json(result.rows);
 
     } catch (err) {
-        console.error("Patch segment fetch error:", err.message);
-        res.status(500).json({ error: "DB error" });
+        if (isMissingRelationError(err)) {
+            return sendFeatureUnavailable(res, city, "Chainage patch segments");
+        }
+        res.status(500).json({ error: "Unable to load patch segments" });
     }
 });
 
@@ -373,23 +444,34 @@ router.get("/api/chainage-search/:city", async (req, res) => {
 
     try {
         const query = `
+        WITH matched_roads AS (
+            SELECT
+                road_id,
+                road_name,
+                ward_no,
+                ST_Centroid(ST_Collect(geom)) AS center
+            FROM ${cfg.segmentTable}
+            WHERE road_name ILIKE $1
+            GROUP BY road_id, road_name, ward_no
+            ORDER BY road_name
+            LIMIT 20
+        )
         SELECT
-        road_id,
-        road_name,
-        ward_no,
-        ST_X(ST_Centroid(ST_Union(geom))) AS lon,
-        ST_Y(ST_Centroid(ST_Union(geom))) AS lat
-        FROM ${cfg.segmentTable}
-        WHERE LOWER(road_name) LIKE LOWER($1)
-        GROUP BY road_id, road_name, ward_no
-        LIMIT 20
+            road_id,
+            road_name,
+            ward_no,
+            ST_X(center) AS lon,
+            ST_Y(center) AS lat
+        FROM matched_roads
 `;
         const result = await pool1.query(query, [`%${q}%`]);
 
         res.json(result.rows);
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Search error" });
+        if (isMissingRelationError(err)) {
+            return sendFeatureUnavailable(res, city, "Chainage search");
+        }
+        res.status(500).json({ error: "Unable to search chainage roads" });
     }
 });
 
@@ -432,7 +514,9 @@ router.post("/api/map-project-patches", async (req, res) => {
         res.json({ success: true });
 
     } catch (err) {
-        console.error("Project patch mapping error:", err.message);
+        if (isMissingRelationError(err)) {
+            return sendFeatureUnavailable(res, cityKey, "Project patch mapping");
+        }
         res.status(500).json({ error: "Failed to map project patches" });
     }
 });
@@ -493,7 +577,9 @@ router.post("/api/grouped-patches-by-selection", async (req, res) => {
         });
 
     } catch (err) {
-        console.error("Grouped patch error:", err.message);
+        if (isMissingRelationError(err)) {
+            return sendFeatureUnavailable(res, cityKey, "Grouped patches");
+        }
         res.status(500).json({ error: "Failed to fetch grouped patches" });
     }
 });

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from "react";
 import "../assets/styles/Dashboard.css";
 import QueryPanel from "./QueryPanel";
 import { useLocation, useNavigate } from "react-router-dom";
+import { isChainageAvailable, chainageUnavailableMessage } from "../utils/chainageAvailability";
 
 const MapToolbar = ({
   onDataAnalysis,
@@ -12,6 +13,10 @@ const MapToolbar = ({
   onSummary,
   onClear,
   city,
+  mapRef,
+  onChainageToggle,
+  chainageActive,
+  chainageDisabled,
   onRoadSelected,
   onApplyRoadFilter, // ⭐ ADDED — this will send filter to MapContainer
   onZoomToFilter, // ⭐ ADDED — this will trigger zoom to filtered features
@@ -777,11 +782,40 @@ const MapToolbar = ({
         <button className="map-btn wide-btn" onClick={() => onDssRoad?.()}>
           <i className="fas fa-sitemap" /> <span>DSS</span>
         </button>
-         {/* chainage */}
+         {/* chainage — "Patch Creation / View Chainage": grayed out (but still
+             clickable, so it can explain why) until some road layer is
+             visible on the map, since chainage needs a road to click. */}
               <button
-            className="map-btn wide-btn"
-              onClick={() => navigate(`/chainage?city=${city?.toLowerCase()}&mode=CHAINAGE`)}
-              title="Chainage"
+            className={`map-btn wide-btn${chainageActive ? " active" : ""}${
+              !chainageActive && chainageDisabled ? " map-btn--disabled-look" : ""
+            }`}
+              onClick={() => {
+                if (!isChainageAvailable(city)) {
+                  if (mapRef?.current?.showFeatureNotice) {
+                    mapRef.current.showFeatureNotice({
+                      feature: "Chainage",
+                      message: chainageUnavailableMessage(city),
+                      dedupeKey: `${city}|chainage-unavailable`,
+                    });
+                  } else {
+                    window.alert(chainageUnavailableMessage(city));
+                  }
+                  return;
+                }
+                if (onChainageToggle) {
+                  onChainageToggle();
+                } else {
+                  // Fallback for any context without an in-place toggle handler.
+                  navigate(`/chainage?city=${city?.toLowerCase()}&mode=CHAINAGE`);
+                }
+              }}
+              title={
+                chainageActive
+                  ? "Exit Patch Creation / View Chainage (select a road on the map)"
+                  : chainageDisabled
+                    ? "Patch Creation / View Chainage — open a road layer first"
+                    : "Patch Creation / View Chainage"
+              }
             >
             🔗
           </button>

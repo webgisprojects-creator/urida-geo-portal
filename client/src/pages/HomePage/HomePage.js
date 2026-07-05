@@ -14,7 +14,6 @@ import View from "ol/View";
 import TileLayer from "ol/layer/Tile";
 import ImageLayer from "ol/layer/Image";
 import VectorLayer from "ol/layer/Vector";
-import OSM from "ol/source/OSM";
 import XYZ from "ol/source/XYZ";
 import TileWMS from "ol/source/TileWMS";
 import ImageWMS from "ol/source/ImageWMS";
@@ -32,10 +31,44 @@ import "ol-layerswitcher/dist/ol-layerswitcher.css";
 import { useNavigate } from "react-router-dom";
 import logo from "../../assets/NN_Logo/download.png";
 import HomeMapLegend from "../../components/HomeMapLegend";
+import { attachLayerClip, extractClipRings } from "../../utils/mapClip";
+import { getGeoserverBase } from "../../utils/geoserverBase";
 
 /* ====================== CONFIG ====================== */
 
-const GEOSERVER_BASE = process.env.REACT_APP_GEOSERVER_BASE || "/geoserver";
+const GEOSERVER_BASE = getGeoserverBase();
+const TILE_CACHE_BASE = (process.env.REACT_APP_TILE_CACHE_BASE || "").replace(/\/$/, "");
+// Every base layer here is clipped to the whole state (see UP_BOUNDARY_LAYER
+// below) — the tile proxy masks and caches this server-side once per tile,
+// reused across every user, rather than each browser redoing the same clip.
+const getCachedTileUrl = (style, boundary) =>
+  `${TILE_CACHE_BASE}/api/tiles/${style}/{z}/{x}/{y}.png` +
+  (boundary ? `?boundary=${encodeURIComponent(boundary)}` : "");
+const applyTileTemplate = (template, z, x, y) =>
+  template.replace("{z}", z).replace("{x}", x).replace("{y}", y);
+const UP_BOUNDARY_LAYER = "Ward_38:Up_District";
+const makeCachedXyzSource = ({ style, fallbackUrl, attributions, maxZoom, boundary }) =>
+  new XYZ({
+    url: getCachedTileUrl(style, boundary),
+    transition: 0,
+    crossOrigin: "anonymous",
+    attributions,
+    maxZoom,
+    tileLoadFunction: (tile, src) => {
+      const image = tile.getImage();
+      let triedFallback = false;
+      image.crossOrigin = "anonymous";
+      image.onerror = () => {
+        if (triedFallback || !fallbackUrl) return;
+        triedFallback = true;
+        const coord = tile.getTileCoord?.();
+        if (!coord) return;
+        const [z, x, y] = coord;
+        image.src = applyTileTemplate(fallbackUrl, z, x, -y - 1);
+      };
+      image.src = src;
+    },
+  });
 // Phase 2 uses the same GeoServer; override with REACT_APP_PHASE2_GEOSERVER_BASE if it diverges.
 const PHASE2_GEOSERVER_BASE =
   process.env.REACT_APP_PHASE2_GEOSERVER_BASE || GEOSERVER_BASE;
@@ -62,6 +95,13 @@ const CITY_CENTER = {
 };
 
 const UP_CENTER = fromLonLat([80.5, 27.25]);
+// Matches the `upExtent` bbox already used throughout this file for `.fit()`
+// calls — reused here as a hard pan/zoom limit so the statewide map never
+// requests or renders basemap tiles outside Uttar Pradesh.
+const UP_EXTENT_3857 = [
+  ...fromLonLat([77.0, 23.5]),
+  ...fromLonLat([84.5, 31.0]),
+];
 const HOME_SUMMARY_CACHE_KEY = "homeSummaryCache";
 const HOME_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes – refresh frequently so stale zeros don't persist
 
@@ -414,6 +454,9 @@ const cityCardData = {
 export default function HomePage() {
   const navigate = useNavigate();
   const mapRef = useRef(null);
+  // Flattened UP-district coordinate rings, read every render frame by the
+  // base-layer clip listeners below — null/empty renders unclipped.
+  const upClipRingsRef = useRef(null);
   const boundaryRef = useRef(null);
   const above10mRef = useRef(null);
   const cmGridRef = useRef(null);
@@ -579,56 +622,73 @@ export default function HomePage() {
       title: "OpenStreetMap",
       type: "base",
       visible: true, // ✅ Show by default
-      maxZoom: 23,
-      source: new OSM({
-        crossOrigin: "anonymous",
+      maxZoom: 19,
+      source: makeCachedXyzSource({
+        style: "osm",
+        boundary: UP_BOUNDARY_LAYER,
+        fallbackUrl: "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attributions:
+          'Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19,
       }),
     });
 
     const positronLayer = new TileLayer({
       title: "CartoDB Positron",
       visible: false,
-      maxZoom: 23,
-      source: new XYZ({
-        url: "https://{1-4}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+      maxZoom: 20,
+      source: makeCachedXyzSource({
+        style: "positron",
+        boundary: UP_BOUNDARY_LAYER,
+        fallbackUrl: "https://1.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        attributions:
+          'Map tiles by <a href="https://carto.com/attributions">CARTO</a>, Data by <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        maxZoom: 20,
       }),
     });
 
     const satelliteLayer = new TileLayer({
       title: "Satellite",
       visible: false,
-      maxZoom: 23,
-      source: new XYZ({
-        url: "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      maxZoom: 18,
+      source: makeCachedXyzSource({
+        style: "satellite",
+        boundary: UP_BOUNDARY_LAYER,
+        fallbackUrl: "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attributions: 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>',
+        maxZoom: 18,
       }),
     });
 
     const tonerLayer = new TileLayer({
       title: "Toner",
       visible: false,
-      maxZoom: 23,
-      source: new XYZ({
-        url: "https://stamen-tiles.a.ssl.fastly.net/toner/{z}/{x}/{y}.png",
+      maxZoom: 20,
+      source: makeCachedXyzSource({
+        style: "toner",
+        boundary: UP_BOUNDARY_LAYER,
+        fallbackUrl: "https://1.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
         attributions:
-          'Map tiles by <a href="https://stamen.com">Stamen Design</a>, ' +
-          'under <a href="https://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. ' +
+          'Map tiles by <a href="https://carto.com/attributions">CARTO</a>, ' +
           'Data by <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, ' +
           'under <a href="https://opendatacommons.org/licenses/odbl/">ODbL</a>.',
-        crossOrigin: "anonymous",
+        maxZoom: 20,
       }),
     });
 
     const topoLayer = new TileLayer({
       title: "Topo",
       visible: false,
-      maxZoom: 23,
-      source: new XYZ({
-        url: "https://{a-c}.tile.opentopomap.org/{z}/{x}/{y}.png",
+      maxZoom: 17,
+      source: makeCachedXyzSource({
+        style: "topo",
+        boundary: UP_BOUNDARY_LAYER,
+        fallbackUrl: "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
         attributions:
           'Map data: <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, ' +
           'SRTM | Map style: <a href="https://opentopomap.org">OpenTopoMap</a> ' +
           '(<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)',
-        crossOrigin: "anonymous",
+        maxZoom: 17,
       }),
     });
 
@@ -636,11 +696,13 @@ export default function HomePage() {
     const labelsLayer = new TileLayer({
       title: "Labels (Esri Reference)",
       visible: false,
-      maxZoom: 23,
-      source: new XYZ({
-        url: "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+      maxZoom: 18,
+      source: makeCachedXyzSource({
+        style: "labels",
+        boundary: UP_BOUNDARY_LAYER,
+        fallbackUrl: "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
         attributions: 'Labels &copy; <a href="https://www.esri.com/">Esri</a>',
-        crossOrigin: "anonymous",
+        maxZoom: 18,
       }),
     });
 
@@ -661,6 +723,11 @@ export default function HomePage() {
         zoom: 8,
         minZoom: isMobileView ? 6 : 7,
         maxZoom: isMobileView ? 18 : 20,
+        extent: UP_EXTENT_3857,
+        // constrainOnlyCenter avoids forcing extra zoom-in just because the
+        // viewport aspect ratio doesn't match the extent's — see the same
+        // note in MapContainer.jsx's per-city view restriction.
+        constrainOnlyCenter: true,
       }),
       controls: defaultControls({
         attribution: true,
@@ -751,6 +818,29 @@ export default function HomePage() {
     // ✅ Add layers to the map
     map.addLayer(upDistrictLayer);
     map.addLayer(upBoundaryLayer);
+
+    // Clip every base raster layer to the real UP boundary shape (not just
+    // its bounding box) — upClipRingsRef starts null and is populated
+    // shortly after by the district-boundary WFS fetch below, so layers
+    // simply render unclipped until then.
+    [osmLayer, positronLayer, satelliteLayer, tonerLayer, topoLayer, labelsLayer].forEach(
+      (layer) => attachLayerClip(layer, map, upClipRingsRef)
+    );
+    fetch(
+      `${GEOSERVER_BASE}/Ward_38/ows?service=WFS&version=2.0.0&request=GetFeature` +
+      `&typeName=Ward_38:Up_District&outputFormat=application/json`
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((geojson) => {
+        if (!geojson) return;
+        const features = new GeoJSON({ featureProjection: "EPSG:3857" }).readFeatures(geojson);
+        upClipRingsRef.current = extractClipRings(features);
+        map.render();
+      })
+      .catch(() => {
+        // Non-fatal — the state map just stays unclipped (bbox-restricted
+        // only, from the View's own extent) if this fetch fails.
+      });
 
     // ✅ Store references
     mapRef.current = {

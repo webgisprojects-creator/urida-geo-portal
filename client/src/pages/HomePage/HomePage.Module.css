@@ -711,16 +711,19 @@ body {
   left: 15px !important;
 }
 
-/* When a city IS selected: shift OL zoom controls right of the Back button on desktop */
+/* When a city IS selected: sit directly under the Back button, left-aligned
+   with it. .ol-zoom is a descendant of #map, which is itself
+   `position: fixed; left: 380px` — so its own `left` is measured relative
+   to #map's box, not the viewport, while .map-reset-btn (the Back button)
+   IS positioned relative to the viewport directly. The previous
+   `left: 400px` here therefore landed at viewport-x ~780px (380 + 400) —
+   nowhere near the button's viewport-x of 400px, which read as "floating
+   in the middle of the page". Using the same small offset as the
+   default (no-city-selected) rule keeps it flush with #map's own left
+   edge, directly under the button. */
 #map.city-selected .ol-zoom {
   top: 65px !important;
-  left: 400px !important;
-}
-
-@media (max-width: 1200px) {
-  #map.city-selected .ol-zoom {
-    left: 340px !important;
-  }
+  left: 15px !important;
 }
 
 @media (max-width: 767px) {

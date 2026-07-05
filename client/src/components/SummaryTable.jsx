@@ -1,6 +1,7 @@
 /* Summary panel with metrics, zone/ward filtering, and classification drill-down. */
 import React, { useEffect, useState, useMemo } from "react";
 import { cityConfig } from "../assets/configs/cityConfig";
+import { getGeoserverBase } from "../utils/geoserverBase";
 
 const resolveCityKey = (rawCity) => {
   const normalized = String(rawCity || "").toLowerCase().trim();
@@ -157,9 +158,7 @@ const scrollbarStyles = `
   }
 `;
 
-const GEOSERVER_BASE = window.location.port === "8060"
-  ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-  : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+const GEOSERVER_BASE = getGeoserverBase();
 
 const SummaryTable = ({ city, onClose, onApplyFilter, onClassificationChange }) => {
   const [loading, setLoading] = useState(true);

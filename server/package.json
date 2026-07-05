@@ -22,7 +22,8 @@
     "http-proxy-middleware": "^3.0.6",
     "jsonwebtoken": "^9.0.3",
     "node-cache": "^5.1.2",
-    "pg": "^8.21.0"
+    "pg": "^8.21.0",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

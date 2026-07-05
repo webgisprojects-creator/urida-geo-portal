@@ -3,8 +3,19 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import { pool } from '../config/db.js';
 dotenv.config();
+
+// __dirname-relative, not process.cwd()-relative: the old
+// path.join(process.cwd(), 'server', 'logs', ...) silently wrote to a
+// wrong, doubled-up path (server/server/logs/audit.log) whenever the
+// process was actually started with its cwd already inside server/ (the
+// normal case for `npm run dev` there) — audit.log at the expected path
+// went stale while a real one grew unnoticed one directory deeper.
+const __filename_auth = fileURLToPath(import.meta.url);
+const __dirname_auth = path.dirname(__filename_auth);
+const AUDIT_LOG_FILE = path.join(__dirname_auth, '..', '..', 'logs', 'audit.log');
 
 const cookieName = process.env.AUTH_COOKIE_NAME || 'auth_token';
 const tokenBlacklist = new Map();
@@ -295,20 +306,32 @@ export const enforceCityScope = (paramNames = []) => (req, res, next) => {
   next();
 };
 
+// Response duration + status are attached via `res.on('finish')` rather
+// than logged up front, so this line doubles as a timing record — how long
+// every request (including tile/GWC fetches) actually took end to end, not
+// just that it happened. Async append (not the old appendFileSync) so a
+// disk write is never on the blocking path for high-frequency tile
+// requests.
 export const auditLogger = (req, res, next) => {
-  try {
-    const line = JSON.stringify({
-      ts: new Date().toISOString(),
-      method: req.method,
-      path: req.originalUrl,
-      username: req.user?.username || 'anonymous',
-      role: req.user?.role || 'none',
-      ip: req.ip,
-      ua: req.headers['user-agent'] || ''
-    }) + '\n';
-    const logFile = path.join(process.cwd(), 'server', 'logs', 'audit.log');
-    fs.mkdirSync(path.dirname(logFile), { recursive: true });
-    fs.appendFileSync(logFile, line);
-  } catch {}
+  const startedAt = process.hrtime.bigint();
+  res.on('finish', () => {
+    try {
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+      const line = JSON.stringify({
+        ts: new Date().toISOString(),
+        method: req.method,
+        path: req.originalUrl,
+        status: res.statusCode,
+        durationMs: Math.round(durationMs),
+        username: req.user?.username || 'anonymous',
+        role: req.user?.role || 'none',
+        ip: req.ip,
+        ua: req.headers['user-agent'] || ''
+      }) + '\n';
+      fs.mkdir(path.dirname(AUDIT_LOG_FILE), { recursive: true }, () => {
+        fs.appendFile(AUDIT_LOG_FILE, line, () => {});
+      });
+    } catch {}
+  });
   next();
 };

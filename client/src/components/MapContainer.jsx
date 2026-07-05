@@ -10,19 +10,21 @@ import ImageLayer from "ol/layer/Image";
 import VectorLayer from "ol/layer/Vector";
 import LayerGroup from "ol/layer/Group";
 import { fromLonLat, toLonLat } from "ol/proj";
-import OSM from "ol/source/OSM";
 import XYZ from "ol/source/XYZ";
 import TileWMS from "ol/source/TileWMS";
 import ImageWMS from "ol/source/ImageWMS";
 import VectorSource from "ol/source/Vector";
 import GeoJSON from "ol/format/GeoJSON";
 import Feature from "ol/Feature";
-import { getCenter } from "ol/extent";
+import { getCenter, buffer as bufferExtent, getWidth, getHeight, createEmpty, extend } from "ol/extent";
 import { defaults as defaultControls } from "ol/control";
 import { Style, Stroke, Fill, Circle as CircleStyle, Icon } from "ol/style";
 import Point from "ol/geom/Point";
 import GeometryCollection from "ol/geom/GeometryCollection";
 import { bbox as bboxStrategy } from "ol/loadingstrategy";
+import { attachLayerClip, extractClipRings } from "../utils/mapClip";
+import { attachMapLoadingTracker } from "../utils/mapLoadingTracker";
+import { getIsLowBandwidth } from "../utils/networkStatus";
 import MapNavigation from "./MapNavigation"; // ⭐ NEW: Google Maps style navigation suite
 import TextStyle from "ol/style/Text";//chainage
 import { chainageCityConfig } from "../assets/configs/chainageCityConfig";//chainage
@@ -58,12 +60,13 @@ import WKT from "ol/format/WKT";
 import { cityConfig } from "../assets/configs/cityConfig";
 import MapLegend from "./MapLegend";
 import Overlay from "ol/Overlay";
+import { drawWatermark } from "../utils/gisExport"; //chainage
+import rsacBanner from "../assets/Login/rsac_banner.png"; //chainage
+import { getGeoserverBase } from "../utils/geoserverBase";
 
 const EMPTY_ARRAY = [];
 
-const GEOSERVER_BASE = window.location.port === "8060"
-  ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-  : (process.env.REACT_APP_GEOSERVER_BASE || process.env.GEOSERVER_BASE || "/geoserver");
+const GEOSERVER_BASE = getGeoserverBase();
 
 const WARD_ZONE_WMS = `${GEOSERVER_BASE}/Ward_Boundary_New/wms`;
 const WARD_ZONE_WFS = `${GEOSERVER_BASE}/wfs`;
@@ -71,12 +74,217 @@ const AMENITIES_WMS = `${GEOSERVER_BASE}/Amenities/wms`;
 const AMENITIES_WFS = `${GEOSERVER_BASE}/wfs`; // Use Global WFS Endpoint for robustness
 const CHAINAGE_WMS = `${GEOSERVER_BASE}/Chainage/wms`;
 const STREET_VIEW_WMS = `${GEOSERVER_BASE}/Street_View/wms`;
-const ROAD_WMS = `${GEOSERVER_BASE}/Road_Network/wms`;
-const ROAD_WFS = `${GEOSERVER_BASE}/Road_Network/wfs`;
+const GWC_WMS = `${GEOSERVER_BASE}/gwc/service/wms`;
 const SATELLITE_MAX_ZOOM = 18;
 const DEFAULT_MAX_ZOOM = 20;
 const ROAD_DIM_OPACITY = 0.6;
+const ROAD_LABEL_STYLE = "Road_Network:urida_road_labels";
+
+const buildBoundaryLabelSld = (layerName, labelAttr, color) => `
+<StyledLayerDescriptor version="1.0.0"
+  xmlns="http://www.opengis.net/sld"
+  xmlns:ogc="http://www.opengis.net/ogc"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <NamedLayer>
+    <Name>${layerName}</Name>
+    <UserStyle>
+      <FeatureTypeStyle>
+        <Rule>
+          <PolygonSymbolizer>
+            <Fill>
+              <CssParameter name="fill">#ffffff</CssParameter>
+              <CssParameter name="fill-opacity">0</CssParameter>
+            </Fill>
+            <Stroke>
+              <CssParameter name="stroke">${color}</CssParameter>
+              <CssParameter name="stroke-width">2</CssParameter>
+              <CssParameter name="stroke-opacity">1</CssParameter>
+            </Stroke>
+          </PolygonSymbolizer>
+          <TextSymbolizer>
+            <Label>
+              <ogc:PropertyName>${labelAttr}</ogc:PropertyName>
+            </Label>
+            <Font>
+              <CssParameter name="font-family">Arial</CssParameter>
+              <CssParameter name="font-size">14</CssParameter>
+              <CssParameter name="font-weight">bold</CssParameter>
+            </Font>
+            <Halo>
+              <Radius>2</Radius>
+              <Fill>
+                <CssParameter name="fill">${color}</CssParameter>
+                <CssParameter name="fill-opacity">0.9</CssParameter>
+              </Fill>
+            </Halo>
+            <Fill>
+              <CssParameter name="fill">#ffffff</CssParameter>
+            </Fill>
+          </TextSymbolizer>
+        </Rule>
+      </FeatureTypeStyle>
+    </UserStyle>
+  </NamedLayer>
+</StyledLayerDescriptor>
+`;
+const TILE_CACHE_BASE = (process.env.REACT_APP_TILE_CACHE_BASE || "").replace(/\/$/, "");
+
+// `boundary` (a GeoServer `workspace:layer` typeName) asks the tile proxy
+// for a version of each tile pre-clipped server-side to that boundary's
+// real shape — cached and reused across every user/session, instead of
+// every browser redoing the same clip via canvas on every frame (see
+// server/src/routes/tiles.js's getMaskedTile). Omitting it keeps the
+// original unclipped behavior (used as the fallback-URL path below, which
+// bypasses this proxy entirely and so can't be server-masked).
+const getCachedTileUrl = (style, boundary) =>
+  `${TILE_CACHE_BASE}/api/tiles/${style}/{z}/{x}/{y}.png` +
+  (boundary ? `?boundary=${encodeURIComponent(boundary)}` : "");
+
+const applyTileTemplate = (template, z, x, y) =>
+  template.replace("{z}", z).replace("{x}", x).replace("{y}", y);
+
+const makeCachedXyzSource = ({ style, fallbackUrl, attributions, maxZoom, boundary }) =>
+  new XYZ({
+    url: getCachedTileUrl(style, boundary),
+    transition: 0,
+    crossOrigin: "anonymous",
+    attributions,
+    maxZoom,
+    tileLoadFunction: (tile, src) => {
+      const image = tile.getImage();
+      let triedFallback = false;
+      image.crossOrigin = "anonymous";
+      image.onerror = () => {
+        if (triedFallback || !fallbackUrl) return;
+        triedFallback = true;
+        const coord = tile.getTileCoord?.();
+        if (!coord) return;
+        const [z, x, y] = coord;
+        image.src = applyTileTemplate(fallbackUrl, z, x, -y - 1);
+      };
+      image.src = src;
+    },
+  });
+
+const getWorkspaceFromLayerName = (layerName, fallbackWorkspace = "") => {
+  if (typeof layerName === "string" && layerName.includes(":")) {
+    return layerName.split(":")[0];
+  }
+  return fallbackWorkspace;
+};
+
+const getWorkspaceWmsUrl = (workspace, cacheable = false) => {
+  if (cacheable) return GWC_WMS;
+  return workspace ? `${GEOSERVER_BASE}/${workspace}/wms` : `${GEOSERVER_BASE}/wms`;
+};
+
+const stripEmptyWmsParams = (params) => {
+  Object.keys(params).forEach((key) => {
+    if (params[key] === undefined || params[key] === null || params[key] === "") {
+      delete params[key];
+    }
+  });
+  return params;
+};
+
+// GWC itself caches instantly server-side (confirmed ~5ms on the GeoServer
+// host) — but nothing was caching these requests *locally*, so every user,
+// every pan/zoom, paid the full network round-trip to GeoServer every
+// single time. This routes cacheable (non-CQL-filtered) tile requests
+// through our own server's disk cache instead (server/src/routes/tiles.js,
+// `/api/gwc-tiles`), which mirrors the exact same win already delivered for
+// basemap tiles. Falls back to the original direct GWC URL whenever a
+// dynamic CQL_FILTER is active (that content is per-filter and must not be
+// cached under a shared key) or if the cache proxy itself errors.
+const getGwcCachedTileUrl = (layerName, z, x, y) =>
+  `${TILE_CACHE_BASE}/api/gwc-tiles/${encodeURIComponent(layerName)}/${z}/${x}/${y}.png`;
+
+const makeTileWmsSource = ({
+  layerName,
+  workspace,
+  cacheable = true,
+  params = {},
+}) => {
+  const source = new TileWMS({
+    url: getWorkspaceWmsUrl(workspace || getWorkspaceFromLayerName(layerName), cacheable),
+    params: stripEmptyWmsParams({
+      LAYERS: layerName,
+      TILED: true,
+      FORMAT: "image/png",
+      TRANSPARENT: true,
+      ...params,
+    }),
+    serverType: "geoserver",
+    transition: 0,
+    crossOrigin: "anonymous",
+    hidpi: !cacheable,
+    tileLoadFunction: !cacheable
+      ? undefined
+      : (tile, src) => {
+        const image = tile.getImage();
+        image.crossOrigin = "anonymous";
+        // The GWC tile-cache proxy (server/src/routes/tiles.js) has no way to
+        // pass through CQL_FILTER or SLD_BODY — it only caches by
+        // layer/z/x/y. Any layer with a live filter or a dynamically-applied
+        // style must bypass the cache and hit GeoServer directly, the same
+        // way CQL-filtered requests already do, or the cached tile would
+        // silently ignore the filter/style.
+        const liveParams = source.getParams();
+        const hasLiveFilter = !!(liveParams?.CQL_FILTER || liveParams?.SLD_BODY);
+        const coord = tile.getTileCoord?.();
+        if (hasLiveFilter || !coord) {
+          image.src = src;
+          return;
+        }
+        const [z, x, y] = coord;
+        let triedFallback = false;
+        image.onerror = () => {
+          if (triedFallback) return;
+          triedFallback = true;
+          image.src = src; // fall back to the direct (uncached) GWC URL
+        };
+        image.src = getGwcCachedTileUrl(layerName, z, x, y);
+      },
+  });
+  return source;
+};
+
+const setWmsSourceUrl = (source, url) => {
+  if (!source || source.getUrls?.()?.[0] === url) return;
+  if (source.setUrl) {
+    source.setUrl(url);
+  } else if (source.setUrls) {
+    source.setUrls([url]);
+  }
+};
+
+const updateWmsParams = (source, nextParams) => {
+  const params = source?.getParams?.();
+  if (!params || !source?.updateParams) return;
+  Object.entries(nextParams).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") {
+      delete params[key];
+    } else {
+      params[key] = value;
+    }
+  });
+  source.updateParams({ _t: Date.now() });
+};
+
+const applyCqlToTileLayer = (layer, filter, workspace) => {
+  const source = layer?.getSource?.();
+  if (!source) return;
+  const useLiveWms = !!filter;
+  setWmsSourceUrl(source, getWorkspaceWmsUrl(workspace, !useLiveWms));
+  updateWmsParams(source, { CQL_FILTER: filter || null, _t: useLiveWms ? Date.now() : null });
+};
 const ROAD_WFS_MIN_ZOOM = 14;
+// Below this zoom, a classification/LCLU overlay would render a heavy,
+// mostly-useless whole-city WMS tile set — on a detected slow connection,
+// defer it (with a courtesy notice) until the user zooms in, rather than
+// fetching it immediately just because the sidebar toggle was flipped.
+const LOW_BANDWIDTH_OVERLAY_MIN_ZOOM = 13;
 const LOCATE_LAYER_ID = "__nav_locate_me_layer__";
 
 const AMENITY_ICON_MAP = {
@@ -343,14 +551,6 @@ const getOsmElementCoord = (element) => {
   return null;
 };
 
-const getIsLowBandwidth = () => {
-  if (typeof navigator === "undefined") return false;
-  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-  if (!conn) return false;
-  const effectiveType = String(conn.effectiveType || "").toLowerCase();
-  return !!conn.saveData || ["slow-2g", "2g", "3g"].includes(effectiveType);
-};
-
 const getGeomType = (feature) => feature?.getGeometry?.()?.getType?.() || "";
 
 const normalizeLayerName = (value) => String(value || "").replace(/\s*:\s*/g, ":").trim();
@@ -398,55 +598,6 @@ const fetchLegendColor = async (layerName) => {
   }
 };
 
-const buildBoundaryLabelSld = (layerName, labelAttr, color) => `
-<StyledLayerDescriptor version="1.0.0"
-  xmlns="http://www.opengis.net/sld"
-  xmlns:ogc="http://www.opengis.net/ogc"
-  xmlns:xlink="http://www.w3.org/1999/xlink"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <NamedLayer>
-    <Name>${layerName}</Name>
-    <UserStyle>
-      <FeatureTypeStyle>
-        <Rule>
-          <PolygonSymbolizer>
-            <Fill>
-              <CssParameter name="fill">#ffffff</CssParameter>
-              <CssParameter name="fill-opacity">0</CssParameter>
-            </Fill>
-            <Stroke>
-              <CssParameter name="stroke">${color}</CssParameter>
-              <CssParameter name="stroke-width">2</CssParameter>
-              <CssParameter name="stroke-opacity">1</CssParameter>
-            </Stroke>
-          </PolygonSymbolizer>
-          <TextSymbolizer>
-            <Label>
-              <ogc:PropertyName>${labelAttr}</ogc:PropertyName>
-            </Label>
-            <Font>
-              <CssParameter name="font-family">Arial</CssParameter>
-              <CssParameter name="font-size">14</CssParameter>
-              <CssParameter name="font-weight">bold</CssParameter>
-            </Font>
-            <Halo>
-              <Radius>2</Radius>
-              <Fill>
-                <CssParameter name="fill">${color}</CssParameter>
-                <CssParameter name="fill-opacity">0.9</CssParameter>
-              </Fill>
-            </Halo>
-            <Fill>
-              <CssParameter name="fill">#ffffff</CssParameter>
-            </Fill>
-          </TextSymbolizer>
-        </Rule>
-      </FeatureTypeStyle>
-    </UserStyle>
-  </NamedLayer>
-</StyledLayerDescriptor>
-`;
-
 const getFirstCoord = (geometry) => {
   let cur = geometry?.coordinates;
   while (Array.isArray(cur)) {
@@ -472,72 +623,6 @@ const detectDataProjection = (geometry, viewProjection) => {
     String(viewCode).includes("3857");
   return assumeLonLat ? "EPSG:4326" : (viewCode || "EPSG:3857");
 };
-
-const buildRoadLabelSld = (layerName, nameAttr, idAttr) => `
-<StyledLayerDescriptor version="1.0.0"
-  xsi:schemaLocation="http://www.opengis.net/sld StyledLayerDescriptor.xsd"
-  xmlns="http://www.opengis.net/sld"
-  xmlns:ogc="http://www.opengis.net/ogc"
-  xmlns:xlink="http://www.w3.org/1999/xlink"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <NamedLayer>
-    <Name>${layerName}</Name>
-    <UserStyle>
-      <FeatureTypeStyle>
-        <Rule>
-          <MaxScaleDenominator>10000</MaxScaleDenominator>
-          <TextSymbolizer>
-            <Label>
-              <ogc:PropertyName>${nameAttr}</ogc:PropertyName>
-            </Label>
-            <Font>
-              <CssParameter name="font-family">Arial</CssParameter>
-              <CssParameter name="font-size">12</CssParameter>
-              <CssParameter name="font-weight">bold</CssParameter>
-            </Font>
-            <Halo>
-              <Radius>2</Radius>
-              <Fill>
-                <CssParameter name="fill">#000000</CssParameter>
-              </Fill>
-            </Halo>
-            <Fill>
-              <CssParameter name="fill">#ffffff</CssParameter>
-            </Fill>
-            <VendorOption name="conflictResolution">true</VendorOption>
-            <VendorOption name="spaceAround">6</VendorOption>
-            <VendorOption name="maxDisplacement">20</VendorOption>
-          </TextSymbolizer>
-        </Rule>
-        <Rule>
-          <MaxScaleDenominator>5000</MaxScaleDenominator>
-          <TextSymbolizer>
-            <Label>
-              <ogc:PropertyName>${idAttr}</ogc:PropertyName>
-            </Label>
-            <Font>
-              <CssParameter name="font-family">Arial</CssParameter>
-              <CssParameter name="font-size">10</CssParameter>
-            </Font>
-            <Halo>
-              <Radius>2</Radius>
-              <Fill>
-                <CssParameter name="fill">#000000</CssParameter>
-              </Fill>
-            </Halo>
-            <Fill>
-              <CssParameter name="fill">#ffffff</CssParameter>
-            </Fill>
-            <VendorOption name="conflictResolution">true</VendorOption>
-            <VendorOption name="spaceAround">4</VendorOption>
-            <VendorOption name="maxDisplacement">16</VendorOption>
-          </TextSymbolizer>
-        </Rule>
-      </FeatureTypeStyle>
-    </UserStyle>
-  </NamedLayer>
-</StyledLayerDescriptor>
-`;
 
 const computeIconScale = (resolution) => {
   if (!resolution) return 0.085;
@@ -895,6 +980,8 @@ const MapContainer = forwardRef(({
   onAnalysisDataLoaded, // ⭐ NEW
   onRoadSelected,
   onPopupClosed,
+  onPatchTableOpen, //chainage
+  onPatchTableClose, //chainage
   baseMap, // ⭐ NEW: For adaptive colors
   isSidebarOpen = false,
   tableHasRows = false,
@@ -906,6 +993,22 @@ const MapContainer = forwardRef(({
   const [mapReady, setMapReady] = useState(false);
   const [coordText, setCoordText] = useState("0.0000, 0.0000");
   const [legendPos, setLegendPos] = useState({ top: 10, left: 10 });
+  // Colors actually resolved+applied to the zone/ward boundary layers
+  // (fetchLegendColor, below), so MapLegend can show the same color it
+  // sees on the map instead of independently re-fetching (and potentially
+  // mismatching) its own swatch color.
+  const [zoneBoundaryColor, setZoneBoundaryColor] = useState("#e11d48");
+  const [wardBoundaryColor, setWardBoundaryColor] = useState("#16a34a");
+  const [roadPanelPos, setRoadPanelPos] = useState({ top: null, left: null }); //chainage
+  // Dragged panel positions live in this same component instance across a
+  // city switch (the `city` prop changes, but MapContainer itself doesn't
+  // remount) — without this, dragging the Legend on one city carries the
+  // dragged position over to the next city you open, which reads as a
+  // wrong/inconsistent "default" position. Reset both on every city change.
+  useEffect(() => {
+    setLegendPos({ top: 10, left: 10 });
+    setRoadPanelPos({ top: null, left: null });
+  }, [city]);
   const [coordPos, setCoordPos] = useState({ bottom: 32, left: "50%" });
   const [amenityLegendCounts, setAmenityLegendCounts] = useState({});
   const [otherLegendCounts, setOtherLegendCounts] = useState({});
@@ -934,6 +1037,8 @@ const MapContainer = forwardRef(({
   const coordDragOriginRef = useRef({ x: 0, y: 0, left: 0, bottom: 0, w: 0, h: 0 });
   const draggingRef = useRef(false);
   const dragOriginRef = useRef({ x: 0, y: 0, left: 0, top: 0, w: 0, h: 0 });
+  const roadPanelDraggingRef = useRef(false); //chainage
+  const roadPanelDragOriginRef = useRef({ x: 0, y: 0, left: 0, top: 0, w: 0, h: 0 }); //chainage
   // Popup refs
   const popupRef = useRef(null);
   const popupContentRef = useRef(null);
@@ -944,7 +1049,22 @@ const MapContainer = forwardRef(({
   const lastPopupWasRoadRef = useRef(false);
   const onPopupClosedRef = useRef(onPopupClosed);
   const onRoadSelectedRef = useRef(onRoadSelected);
+  const onPatchTableOpenRef = useRef(onPatchTableOpen); //chainage
+  const onPatchTableCloseRef = useRef(onPatchTableClose); //chainage
+  // Kept current every render (not just at mount) so the map-click handler,
+  // which reads these refs from a stable closure registered once, always
+  // calls the latest callback from Dashboard instead of whatever closure
+  // happened to exist on first render.
+  onPopupClosedRef.current = onPopupClosed;
+  onRoadSelectedRef.current = onRoadSelected;
+  onPatchTableOpenRef.current = onPatchTableOpen;
+  onPatchTableCloseRef.current = onPatchTableClose;
+  // Lags one run behind `mode` — only updated inside the AutoZoom effect
+  // below, so it lets that effect tell "mode just changed" apart from
+  // "zoomFilter changed" even though both are in its dependency array.
+  const prevZoomEffectModeRef = useRef(mode); //chainage
   const showPopupRef = useRef(null);
+  const closePopupRef = useRef(null);
   const osmReverseCacheRef = useRef(new Map());
   const amenityMarkerOverlayRef = useRef(null);
   const amenityMarkerElRef = useRef(null);
@@ -994,16 +1114,19 @@ const MapContainer = forwardRef(({
   const otherExtentKeyRef = useRef("");
   const roadWfsExtentKeyRef = useRef("");
   const lastSpatialExtentRef = useRef(null);
-  const boundaryExtentCacheRef = useRef({});
   const boundaryFeatureCacheRef = useRef(new Map());
   const boundaryFeaturesRef = useRef({ layerName: "", features: [] });
   const boundaryFetchAbortRef = useRef(null);
+  // Flattened coordinate rings (in map projection) of the current city's
+  // zone/ward boundary — read every render frame by the base-layer clip
+  // listeners attached in the map-init effect. null/empty = render unclipped.
+  const cityClipRingsRef = useRef(null);
+  const stopLoadingTrackerRef = useRef(null);
   const roadOpacityRef = useRef(new Map());
   const selectedRoadGeomRef = useRef(null);
   const [selectedRoadToken, setSelectedRoadToken] = useState(0);
   const [isMobileView, setIsMobileView] = useState(window.innerWidth <= 768);
   const [isLocating, setIsLocating] = useState(false);
-  const knpRoadLayerRef = useRef(null); //chainage
   const roadLayerRef = useRef(null); //chainage
   const chainageLayerRef = useRef(null); //chainage
   const [selectedRoad, setSelectedRoad] = useState(null);//chainage
@@ -1012,6 +1135,7 @@ const MapContainer = forwardRef(({
   const [startChainage, setStartChainage] = useState("");//chainage
   const [endChainage, setEndChainage] = useState("");//chainage
   const [panelMinimized, setPanelMinimized] = useState(false);//chainage
+  const [showCreateChainageForm, setShowCreateChainageForm] = useState(false);//chainage
   const [patchInfo, setPatchInfo] = useState(null);//chainage
   const [showPatchPanel, setShowPatchPanel] = useState(false);//chainage
   const [patchChoice, setPatchChoice] = useState(null);//chainage
@@ -1030,8 +1154,30 @@ const MapContainer = forwardRef(({
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);//chainage
 const [mapImage, setMapImage] = useState(null);//chainage
 const finalImageBlobRef = useRef(null);//chainage
+const [showPatchConfirm, setShowPatchConfirm] = useState(false);//chainage
+const [patchConfirmImage, setPatchConfirmImage] = useState(null);//chainage
+const [patchConfirmPending, setPatchConfirmPending] = useState(null);//chainage - {roadId, start, end}
+const [patchConfirmSaving, setPatchConfirmSaving] = useState(false);//chainage
+const patchPreviewLayerRef = useRef(null);//chainage
   const [allPatchRows, setAllPatchRows] = useState([]);//chainage
   const [currentRoadPatchList, setCurrentRoadPatchList] = useState([]);//chainage
+  const chainageRoadDataCacheRef = useRef(new Map());//chainage
+
+  const URL_LOCATION_PIN_SVG = `data:image/svg+xml;utf8,${encodeURIComponent(`
+<svg xmlns="http://www.w3.org/2000/svg" width="42" height="56" viewBox="0 0 42 56">
+  <path d="M21 2C10.5 2 3 9.7 3 20.3C3 34.5 21 54 21 54S39 34.5 39 20.3C39 9.7 31.5 2 21 2Z"
+    fill="#E74C3C" stroke="#B91C1C" stroke-width="2"/>
+  <circle cx="21" cy="20" r="7" fill="#FFFFFF" stroke="#B91C1C" stroke-width="2"/>
+</svg>
+`)}`;
+const urlLocationMarkerSourceRef = useRef(new VectorSource());//chainage
+const urlLocationMarkerLayerRef = useRef(null);//chainage
+const location = useLocation();//chainage
+// Lets the map-click handler (registered once inside the [city]-only map
+// effect) read the *current* mode without a stale closure and without
+// forcing that whole effect (and the map) to rebuild when mode toggles.
+const modeRef = useRef(mode);//chainage
+modeRef.current = mode;//chainage
 
   useEffect(() => {
     const handleResize = () => {
@@ -1066,7 +1212,57 @@ const finalImageBlobRef = useRef(null);//chainage
   };
 
 const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
+  const [featureNotice, setFeatureNotice] = useState(null);
+  const featureNoticeKeysRef = useRef(new Set());
 
+  const getCityDisplayName = useCallback(() => {
+    const key = String(city || "").toLowerCase();
+    return cityConfig[key]?.name || city || "this city";
+  }, [city]);
+
+  const showFeatureNotice = useCallback(({
+    feature = "This feature",
+    message,
+    layerName,
+    cityName,
+    dedupeKey,
+    autoDismissMs,
+  } = {}) => {
+    const resolvedCity = cityName || getCityDisplayName();
+    const key = dedupeKey || `${resolvedCity}|${feature}|${layerName || ""}`;
+    if (featureNoticeKeysRef.current.has(key)) return;
+    featureNoticeKeysRef.current.add(key);
+    setFeatureNotice({
+      feature,
+      cityName: resolvedCity,
+      layerName,
+      message: message || `${feature} could not be loaded right now for ${resolvedCity}. You can continue using other map tools.`,
+      autoDismissMs,
+      noticeId: `${key}|${Date.now()}`,
+    });
+  }, [getCityDisplayName]);
+
+  // Auto-dismiss transient notices (e.g. "please select a road") after their TTL.
+  useEffect(() => {
+    if (!featureNotice?.autoDismissMs) return;
+    const timer = setTimeout(() => {
+      setFeatureNotice((current) =>
+        current?.noticeId === featureNotice.noticeId ? null : current
+      );
+    }, featureNotice.autoDismissMs);
+    return () => clearTimeout(timer);
+  }, [featureNotice]);
+
+  const showApiUnavailableNotice = useCallback((payload, fallbackFeature = "This feature") => {
+    if (!payload || payload.error !== "FEATURE_IN_PROGRESS") return false;
+    showFeatureNotice({
+      feature: payload.feature || fallbackFeature,
+      cityName: payload.city,
+      message: payload.message,
+      dedupeKey: `${payload.city || city}|${payload.feature || fallbackFeature}`,
+    });
+    return true;
+  }, [city, showFeatureNotice]);
 
   const getAutoZoomPadding = (isIdentifierFilter) => {
     if (isIdentifierFilter) {
@@ -1669,7 +1865,11 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       })
       .catch((err) => {
         if (abortSignal?.aborted) return;
-        console.error(`${prefix} WFS failed:`, id, err);
+        showFeatureNotice({
+          feature: `${prefix} layer`,
+          layerName,
+          dedupeKey: `${city}|wfs|${layerName || id}`,
+        });
       });
   };
 
@@ -1944,29 +2144,10 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
 
   const applyRoadFilterImmediate = (filter) => {
     const filterValue = filter || null;
-    if (roadNetworkLayerRef.current) {
-      const src = roadNetworkLayerRef.current.getSource?.();
-      if (src?.updateParams) {
-        src.updateParams({ CQL_FILTER: filterValue, _t: Date.now() });
-      } else if (src?.refresh) {
-        src.refresh();
-      }
-    }
-    if (roadLabelsLayerRef.current) {
-      const src = roadLabelsLayerRef.current.getSource?.();
-      if (src?.updateParams) {
-        src.updateParams({ CQL_FILTER: filterValue, _t: Date.now() });
-      } else if (src?.refresh) {
-        src.refresh();
-      }
-    }
+    applyCqlToTileLayer(roadNetworkLayerRef.current, filterValue, "Road_Network");
+    applyCqlToTileLayer(roadLabelsLayerRef.current, filterValue, "Road_Network");
     Object.values(roadClassLayersRef.current || {}).forEach((layer) => {
-      const src = layer?.getSource?.();
-      if (src?.updateParams) {
-        src.updateParams({ CQL_FILTER: filterValue, _t: Date.now() });
-      } else if (src?.refresh) {
-        src.refresh();
-      }
+      applyCqlToTileLayer(layer, filterValue, "Road_Network");
     });
     refreshRoadWmsLayers();
   };
@@ -2008,79 +2189,6 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
     return extent;
   };
 
-  const fetchBoundaryExtent4326 = async (layerName) => {
-    if (!layerName) return null;
-    const cache =
-      boundaryExtentCacheRef.current &&
-        typeof boundaryExtentCacheRef.current === "object"
-        ? boundaryExtentCacheRef.current
-        : {};
-    if (cache !== boundaryExtentCacheRef.current) {
-      boundaryExtentCacheRef.current = cache;
-    }
-    const cacheKey = String(layerName);
-    if (Object.prototype.hasOwnProperty.call(cache, cacheKey)) {
-      return cache[cacheKey];
-    }
-    try {
-      const url = `${WARD_ZONE_WMS}?service=WMS&request=GetCapabilities`;
-      const res = await fetch(url);
-      if (!res.ok) return null;
-      const xmlText = await res.text();
-      const doc = new DOMParser().parseFromString(xmlText, "text/xml");
-      const layers = Array.from(doc.getElementsByTagName("Layer"));
-      const layerNode = layers.find((node) => {
-        const nameEl = node.getElementsByTagName("Name")[0];
-        return nameEl && nameEl.textContent === layerName;
-      });
-      if (!layerNode) return null;
-
-      const exGeo = layerNode.getElementsByTagName("EX_GeographicBoundingBox")[0];
-      if (exGeo) {
-        const west = parseFloat(exGeo.getElementsByTagName("westBoundLongitude")[0]?.textContent);
-        const east = parseFloat(exGeo.getElementsByTagName("eastBoundLongitude")[0]?.textContent);
-        const south = parseFloat(exGeo.getElementsByTagName("southBoundLatitude")[0]?.textContent);
-        const north = parseFloat(exGeo.getElementsByTagName("northBoundLatitude")[0]?.textContent);
-        if ([west, south, east, north].every((n) => Number.isFinite(n))) {
-          const extent = [west, south, east, north];
-          cache[cacheKey] = extent;
-          return extent;
-        }
-      }
-
-      const latLonBox = layerNode.getElementsByTagName("LatLonBoundingBox")[0];
-      if (latLonBox) {
-        const west = parseFloat(latLonBox.getAttribute("minx"));
-        const south = parseFloat(latLonBox.getAttribute("miny"));
-        const east = parseFloat(latLonBox.getAttribute("maxx"));
-        const north = parseFloat(latLonBox.getAttribute("maxy"));
-        if ([west, south, east, north].every((n) => Number.isFinite(n))) {
-          const extent = [west, south, east, north];
-          cache[cacheKey] = extent;
-          return extent;
-        }
-      }
-
-      const bboxNodes = Array.from(layerNode.getElementsByTagName("BoundingBox"));
-      const bbox4326 = bboxNodes.find((node) => {
-        const crs = node.getAttribute("CRS") || node.getAttribute("SRS");
-        return crs === "EPSG:4326";
-      });
-      if (bbox4326) {
-        const west = parseFloat(bbox4326.getAttribute("minx"));
-        const south = parseFloat(bbox4326.getAttribute("miny"));
-        const east = parseFloat(bbox4326.getAttribute("maxx"));
-        const north = parseFloat(bbox4326.getAttribute("maxy"));
-        if ([west, south, east, north].every((n) => Number.isFinite(n))) {
-          const extent = [west, south, east, north];
-          cache[cacheKey] = extent;
-          return extent;
-        }
-      }
-    } catch { }
-    return null;
-  };
-
   const fetchBoundaryFeatures = async (layerName, projection) => {
     if (!layerName || !projection) return [];
     const cacheKey = `${layerName}|${projection.getCode()}`;
@@ -2104,7 +2212,11 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       return features;
     } catch (err) {
       if (controller.signal.aborted) return [];
-      console.error("Boundary WFS failed:", err);
+      showFeatureNotice({
+        feature: "Boundary layer",
+        layerName,
+        dedupeKey: `${city}|boundary-wfs|${layerName}`,
+      });
       return [];
     }
   };
@@ -2115,27 +2227,39 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
   useEffect(() => {
     const cityKey = city.toLowerCase();
     const cfg = cityConfig[cityKey] || {};
+    const activeBaseMap = baseMap || "osm";
 
     // ---------- BASE MAPS ----------
     // 1️⃣ Create all base layers (migrated from HomePage.js)
     const osmLayer = new TileLayer({
       title: "OpenStreetMap",
       type: "base",
-      visible: true,
+      visible: activeBaseMap === "osm",
+      preload: 1,
       maxZoom: 19,
-      source: new OSM({
-        crossOrigin: "anonymous",
+      source: makeCachedXyzSource({
+        style: "osm",
+        boundary: cfg.zoneLayer || cfg.wardLayer,
+        fallbackUrl: "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attributions:
+          'Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19,
       }),
     });
 
     const positronLayer = new TileLayer({
       title: "CartoDB Positron",
       type: "base",
-      visible: false,
-      maxZoom: 23,
-      source: new XYZ({
-        url: "https://{1-4}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        crossOrigin: 'anonymous',
+      visible: activeBaseMap === "positron",
+      preload: 1,
+      maxZoom: 20,
+      source: makeCachedXyzSource({
+        style: "positron",
+        boundary: cfg.zoneLayer || cfg.wardLayer,
+        fallbackUrl: "https://1.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        attributions:
+          'Map tiles by <a href="https://carto.com/attributions">CARTO</a>, Data by <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        maxZoom: 20,
       }),
     });
 
@@ -2143,41 +2267,50 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       title: "Satellite",
       type: "base",
       visible: true,
+      preload: 1,
       maxZoom: SATELLITE_MAX_ZOOM,
-      source: new XYZ({
-        url: "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        crossOrigin: 'anonymous',
+      source: makeCachedXyzSource({
+        style: "satellite",
+        boundary: cfg.zoneLayer || cfg.wardLayer,
+        fallbackUrl: "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attributions: 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>',
+        maxZoom: SATELLITE_MAX_ZOOM,
       }),
     });
 
     const tonerLayer = new TileLayer({
       title: "Toner",
       type: "base",
-      visible: false,
-      maxZoom: 23,
-      source: new XYZ({
-        url: "https://stamen-tiles.a.ssl.fastly.net/toner/{z}/{x}/{y}.png",
+      visible: activeBaseMap === "toner",
+      preload: 1,
+      maxZoom: 20,
+      source: makeCachedXyzSource({
+        style: "toner",
+        boundary: cfg.zoneLayer || cfg.wardLayer,
+        fallbackUrl: "https://1.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
         attributions:
-          'Map tiles by <a href="https://stamen.com">Stamen Design</a>, ' +
-          'under <a href="https://creativecommons.org/licenses/by/3.0">CC BY 3.0</a>. ' +
+          'Map tiles by <a href="https://carto.com/attributions">CARTO</a>, ' +
           'Data by <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, ' +
           'under <a href="https://opendatacommons.org/licenses/odbl/">ODbL</a>.',
-        crossOrigin: "anonymous",
+        maxZoom: 20,
       }),
     });
 
     const topoLayer = new TileLayer({
       title: "Topo",
       type: "base",
-      visible: false,
-      maxZoom: 23,
-      source: new XYZ({
-        url: "https://{a-c}.tile.opentopomap.org/{z}/{x}/{y}.png",
+      visible: activeBaseMap === "topo",
+      preload: 1,
+      maxZoom: 17,
+      source: makeCachedXyzSource({
+        style: "topo",
+        boundary: cfg.zoneLayer || cfg.wardLayer,
+        fallbackUrl: "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
         attributions:
           'Map data: <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, ' +
           'SRTM | Map style: <a href="https://opentopomap.org">OpenTopoMap</a> ' +
           '(<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)',
-        crossOrigin: "anonymous",
+        maxZoom: 17,
       }),
     });
 
@@ -2185,11 +2318,14 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
     const labelsLayer = new TileLayer({
       title: "Labels (Esri Reference)",
       visible: true,
+      preload: 1,
       maxZoom: SATELLITE_MAX_ZOOM,
-      source: new XYZ({
-        url: "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+      source: makeCachedXyzSource({
+        style: "labels",
+        boundary: cfg.zoneLayer || cfg.wardLayer,
+        fallbackUrl: "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
         attributions: 'Labels &copy; <a href="https://www.esri.com/">Esri</a>',
-        crossOrigin: "anonymous",
+        maxZoom: SATELLITE_MAX_ZOOM,
       }),
     });
 
@@ -2197,7 +2333,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       title: "Satellite + Labels",
       type: "base",
       combine: true,
-      visible: false,
+      visible: activeBaseMap === "satellite",
       layers: [satelliteLayer, labelsLayer],
     });
 
@@ -2209,72 +2345,53 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
 
     // ---------- ADMIN LAYERS ----------
     const zoneBoundary = cfg.zoneLayer
-      ? new ImageLayer({
+      ? new TileLayer({
         title: "Zone Boundary",
-        source: new ImageWMS({
-          url: WARD_ZONE_WMS,
-          params: {
-            LAYERS: cfg.zoneLayer,
-            FORMAT: "image/png",
-            TRANSPARENT: true,
-            TILED: true,
-            FORMAT_OPTIONS: "antiAlias:false",
-          },
-          serverType: "geoserver",
-          ratio: 1,
-          crossOrigin: "anonymous", // ⭐ Added for screenshot
+        source: makeTileWmsSource({
+          layerName: cfg.zoneLayer,
+          workspace: "Ward_Boundary_New",
+          cacheable: true,
         }),
       })
       : null;
 
     const wardBoundary = cfg.wardLayer
-      ? new ImageLayer({
+      ? new TileLayer({
         title: "Ward Boundary",
-        source: new ImageWMS({
-          url: WARD_ZONE_WMS,
-          params: {
-            LAYERS: cfg.wardLayer,
-            FORMAT: "image/png",
-            TRANSPARENT: true,
-            TILED: true,
-            FORMAT_OPTIONS: "antiAlias:false",
-          },
-          serverType: "geoserver",
-          ratio: 1,
-          crossOrigin: "anonymous", // ⭐ Added for screenshot
+        source: makeTileWmsSource({
+          layerName: cfg.wardLayer,
+          workspace: "Ward_Boundary_New",
+          cacheable: true,
         }),
       })
       : null;
 
     const applyBoundaryLabelStyle = async (layer, layerName, labelAttr, fallbackColor) => {
-      if (!layer || !layerName) return;
+      if (!layer || !layerName) return null;
       const color = (await fetchLegendColor(layerName)) || fallbackColor;
       const source = layer.getSource();
       if (source?.updateParams) {
-        source.updateParams({
-          SLD_BODY: buildBoundaryLabelSld(layerName, labelAttr, color),
-          _t: Date.now(),
-        });
+        updateWmsParams(source, { SLD_BODY: buildBoundaryLabelSld(layerName, labelAttr, color) });
       }
+      return color;
     };
 
     const applyRoadLabelStyle = (layer, layerName) => {
       if (!layer || !layerName) return;
       const source = layer.getSource();
       if (source?.updateParams) {
-        source.updateParams({
-          SLD_BODY: buildRoadLabelSld(layerName, "road_name", "road_id"),
-          _t: Date.now(),
-        });
+        updateWmsParams(source, { STYLES: ROAD_LABEL_STYLE });
       }
     };
 
     if (!getIsLowBandwidth()) {
       const applyBoundaryLabelStyles = async () => {
-        await Promise.all([
+        const [zoneColor, wardColor] = await Promise.all([
           applyBoundaryLabelStyle(zoneBoundary, cfg.zoneLayer, "zone_no", "#e11d48"),
           applyBoundaryLabelStyle(wardBoundary, cfg.wardLayer, "ward_no", "#16a34a"),
         ]);
+        if (zoneColor) setZoneBoundaryColor(zoneColor);
+        if (wardColor) setWardBoundaryColor(wardColor);
       };
       applyBoundaryLabelStyles();
     }
@@ -2284,8 +2401,12 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       layers: [zoneBoundary, wardBoundary].filter(Boolean),
       fold: "open",
     });
-    if (zoneBoundary) zoneBoundary.setZIndex(20010);
-    if (wardBoundary) wardBoundary.setZIndex(20020);
+    // Zone boundary (and its zone-number labels, baked into the same WMS
+    // style) renders above ward boundary — zones are the coarser,
+    // higher-priority grouping, so their numbers shouldn't get buried under
+    // the much denser ward outlines when both are visible together.
+    if (wardBoundary) wardBoundary.setZIndex(20010);
+    if (zoneBoundary) zoneBoundary.setZIndex(20020);
     adminLayers.setZIndex(20000);
 
     // ---------- MAIN ROAD NETWORK (SEARCH) ----------
@@ -2295,36 +2416,23 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       roadNetworkLayer = new TileLayer({
         title: "Road Network Layer",
         visible: true,
-        source: new TileWMS({
-          url: ROAD_WMS,
-          params: {
-            LAYERS: cfg.roadLayer,
-            TILED: true,
-            FORMAT: "image/png",
-            TRANSPARENT: true,
-            FORMAT_OPTIONS: "antiAlias:false",
-          },
-          serverType: "geoserver",
-          transition: 0,
-          crossOrigin: "anonymous",
+        source: makeTileWmsSource({
+          layerName: cfg.roadLayer,
+          workspace: "Road_Network",
+          cacheable: true,
         }),
       });
       roadNetworkLayer.setZIndex(40);
       roadLabelsLayer = new TileLayer({
         title: "Road Labels",
         visible: true,
-        source: new TileWMS({
-          url: ROAD_WMS,
+        source: makeTileWmsSource({
+          layerName: cfg.roadLayer,
+          workspace: "Road_Network",
+          cacheable: true,
           params: {
-            LAYERS: cfg.roadLayer,
-            TILED: true,
-            FORMAT: "image/png",
-            TRANSPARENT: true,
-            FORMAT_OPTIONS: "antiAlias:false",
+            STYLES: ROAD_LABEL_STYLE,
           },
-          serverType: "geoserver",
-          transition: 0,
-          crossOrigin: "anonymous",
         }),
       });
       roadLabelsLayer.setZIndex(60);
@@ -2427,19 +2535,10 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       specializedLayers[id] = new TileLayer({
         title: `Network: ${specCfg.label || id}`,
         visible: !!layerVisibility?.network?.[id] && !wantsNone,
-        source: new TileWMS({
-          url: `${GEOSERVER_BASE}/wms`, // Use Global WMS to support cross-workspace layers
-          params: {
-            LAYERS: normalizedName,
-            TILED: true,
-            FORMAT: "image/png",
-            TRANSPARENT: true,
-            FORMAT_OPTIONS: "antiAlias:false",
-            _t: Date.now(), // Force source refresh on init
-          },
-          serverType: "geoserver",
-          transition: 0,
-          crossOrigin: "anonymous",
+        source: makeTileWmsSource({
+          layerName: normalizedName,
+          workspace: getWorkspaceFromLayerName(normalizedName),
+          cacheable: true,
         }),
       });
       specializedLayers[id].setZIndex(35); // Above basemap, below road network (40)
@@ -2464,12 +2563,11 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       roadClassLayers[key] = new TileLayer({
         title: `Roads by ${key}`,
         visible: false,
-        source: new TileWMS({
-          url: ROAD_WMS,
+        source: makeTileWmsSource({
+          layerName: rcfg.layer,
+          workspace: "Road_Network",
+          cacheable: true,
           params: classParams,
-          serverType: "geoserver",
-          transition: 0,
-          crossOrigin: "anonymous",
         }),
       });
       roadClassLayers[key].setZIndex(45);
@@ -2483,18 +2581,17 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       lcluLayers[id] = new TileLayer({
         title: `LCLU: ${id}`,
         visible: !!layerVisibility?.lclu?.[id],
-        source: new TileWMS({
-          url: `${GEOSERVER_BASE}/wms`,
-          params: {
-            LAYERS: normalizedName,
-            TILED: true,
-            FORMAT: "image/png",
-            TRANSPARENT: true,
-            _t: Date.now(),
-          },
-          serverType: "geoserver",
-          transition: 0,
-          crossOrigin: "anonymous",
+        // Routed through GWC + the local tile cache like every other
+        // static/non-CQL-filtered overlay (see makeTileWmsSource) instead
+        // of a raw direct-to-GeoServer TileWMS with a permanent cache-buster
+        // baked into its initial params — the visibility-toggle effect
+        // already calls updateParams({_t: Date.now()}) itself whenever this
+        // layer's LAYERS param actually changes, so a static initial
+        // construction doesn't lose any freshness.
+        source: makeTileWmsSource({
+          layerName: normalizedName,
+          workspace: getWorkspaceFromLayerName(normalizedName, "Road_Network"),
+          cacheable: true,
         }),
       });
       lcluLayers[id].setZIndex(55);
@@ -2650,8 +2747,27 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       controls: defaultControls({ zoom: true, rotate: false }),
     });
 
+    // Clip every base raster layer to the current city's zone/ward boundary
+    // shape (not just its rectangular extent) — cityClipRingsRef starts
+    // null on a fresh map instance and is populated shortly after by the
+    // boundary-loading effect below, so layers simply render unclipped
+    // until then rather than using a stale previous city's shape.
+    [osmLayer, positronLayer, satelliteLayer, labelsLayer, tonerLayer, topoLayer].forEach(
+      (layer) => attachLayerClip(layer, map, cityClipRingsRef)
+    );
+
     //chainage
-if (mode === "CHAINAGE" && cfg1) {
+    // Built whenever the city has chainage config at all, regardless of
+    // what `mode` happens to be when this [city]-only effect runs (i.e. at
+    // mount/city-change). Chainage mode itself is now armed/toggled later
+    // via the "Chainage" button without re-running this effect (modeRef,
+    // not `mode`, gates the click handler) — gating layer *construction* on
+    // `mode === "CHAINAGE"` here meant these layers were only ever built for
+    // sessions that happened to start already in chainage mode (a deep
+    // link), and silently stayed null/never-created for the normal
+    // Dashboard → click "Chainage" → click a road flow. Both layers default
+    // to visible:false and are only shown when actually needed.
+if (cfg1) {
   roadLayerRef.current = new TileLayer({
     source: new TileWMS({
       url: GEOSERVER_BASE + "/wms",
@@ -2665,10 +2781,16 @@ if (mode === "CHAINAGE" && cfg1) {
       serverType: "geoserver",
       crossOrigin: "anonymous",
     }),
-    visible: true,
+    // Hidden by default — this layer exists only to answer WMS GetFeatureInfo
+    // identify requests (which don't require the layer to be rendered), not to
+    // be drawn as "all roads in the city." It's made visible only when a
+    // zone/ward deep-link filter is applied (see the URL marker effect), which
+    // is the one legitimate case where showing a filtered road subset is correct.
+    visible: false,
+    opacity: 0.72,
   });
 
-  roadLayerRef.current.setZIndex(500);
+  roadLayerRef.current.setZIndex(30);
 
   chainageLayerRef.current = new TileLayer({
     source: new TileWMS({
@@ -2686,52 +2808,19 @@ if (mode === "CHAINAGE" && cfg1) {
     visible: false,
   });
 
-  chainageLayerRef.current.setZIndex(510);
+  chainageLayerRef.current.setZIndex(120);
 
   map.addLayer(roadLayerRef.current);
   map.addLayer(chainageLayerRef.current);
 }
-
     // ---------- MAP LOADING TRACKER ----------
+    // Auto-attaches to every layer's source (present now or added later, at
+    // any nesting depth) and reports friendly `title`s, not raw GeoServer
+    // layer names — see utils/mapLoadingTracker.js. Any future layer added
+    // anywhere in this file automatically participates as long as it has a
+    // `title`; no extra wiring required.
     if (onMapLoadingChange) {
-      let loadingTasks = 0;
-      let debounceTimeout = null;
-      let forceStopTimeout = null;
-
-      const scheduleForceStop = () => {
-        clearTimeout(forceStopTimeout);
-        forceStopTimeout = setTimeout(() => {
-          loadingTasks = 0;
-          onMapLoadingChange(false);
-        }, 5000);
-      };
-
-      const handleLoadStart = () => {
-        if (loadingTasks === 0) {
-          clearTimeout(debounceTimeout);
-          onMapLoadingChange(true);
-        }
-        loadingTasks++;
-        scheduleForceStop();
-      };
-
-      //chainage
-
-
-
-      const handleLoadEnd = () => {
-        loadingTasks = Math.max(0, loadingTasks - 1);
-        if (loadingTasks === 0) {
-          clearTimeout(forceStopTimeout);
-          clearTimeout(debounceTimeout);
-          debounceTimeout = setTimeout(() => {
-            if (loadingTasks === 0) onMapLoadingChange(false);
-          }, 300);
-        }
-      };
-
-      map.on("loadstart", handleLoadStart);
-      map.on("loadend", handleLoadEnd);
+      stopLoadingTrackerRef.current = attachMapLoadingTracker(map, onMapLoadingChange);
     }
 
     if (!amenityMarkerElRef.current) {
@@ -2773,7 +2862,38 @@ if (mode === "CHAINAGE" && cfg1) {
     }
     map.addOverlay(searchMarkerOverlayRef.current);
 
-    // Create Popup Overlay
+    // Create Popup Overlay. Built with document.createElement (like the
+    // amenity/search markers above), NOT React JSX + ref: OL's
+    // map.addOverlay() reparents `element` into its own internal overlay
+    // container, silently moving it out from under whatever parent React
+    // rendered it into. If the element were React-owned, any later
+    // re-render that inserts/removes a sibling near its original JSX
+    // position (e.g. toggling {mode === "CHAINAGE" && (...)}) crashes with
+    // "insertBefore: node is not a child of this node", because React's
+    // fiber still thinks the node lives at its original DOM position.
+    if (!popupRef.current) {
+      const popupEl = document.createElement("div");
+      popupEl.className = "ol-popup";
+
+      const closerEl = document.createElement("a");
+      closerEl.href = "#";
+      closerEl.className = "ol-popup-closer";
+      closerEl.addEventListener("click", (e) => {
+        e.preventDefault();
+        try { closePopupRef.current?.(); } catch (err) { console.error("Popup close error:", err); }
+      });
+
+      const contentEl = document.createElement("div");
+      contentEl.className = "ol-popup-content";
+
+      popupEl.appendChild(closerEl);
+      popupEl.appendChild(contentEl);
+
+      popupRef.current = popupEl;
+      popupCloserRef.current = closerEl;
+      popupContentRef.current = contentEl;
+    }
+
     const overlay = new Overlay({
       element: popupRef.current,
       autoPan: true,
@@ -3207,6 +3327,23 @@ if (mode === "CHAINAGE" && cfg1) {
             ? vectorFeature.getProperties()
             : vectorFeature.properties || {};
         const derivedIsRoad = vectorIsRoad || isRoadFeatureProps(props);
+
+        // Most road clicks actually resolve here (via the precise vector
+        // hit-test against roadWfsLayer/selectedRoadLayer), not through the
+        // WMS candidates loop below — chainage-armed mode needs the same
+        // branch here too, or it never sees the click at all.
+        if (derivedIsRoad && modeRef.current === "CHAINAGE" && cfg1) {
+          const roadId =
+            (cfg1.roadIdField && props[cfg1.roadIdField]) ||
+            props.road_id ||
+            props.ROAD_ID ||
+            props.gis_id;
+          if (roadId) {
+            await openChainageForRoadId(roadId, props, featureInfoController.signal);
+            return;
+          }
+        }
+
         let displayTitle = vectorLayerTitle;
         if (vectorLayerTitle && vectorLayerTitle.includes(":")) {
           displayTitle = vectorLayerTitle.split(":")[1].trim();
@@ -3228,35 +3365,53 @@ if (mode === "CHAINAGE" && cfg1) {
       const projection = view.getProjection();
 
       const candidates = [];
-
-      // Add visible Amenities
-      Object.values(amenityLayersRef.current).forEach(l => {
-        if (l.getVisible()) candidates.push({ layer: l, isRoad: false });
-      });
-
-      // Add visible Others
-      Object.values(otherLayersRef.current).forEach(l => {
-        if (l.getVisible()) candidates.push({ layer: l, isRoad: false });
-      });
-
-      // Add visible Roads
       const activeClassLayer = Object.values(roadClassLayersRef.current).find(l => l.getVisible());
-      if (activeClassLayer) {
-        candidates.push({ layer: activeClassLayer, isRoad: true });
-      } else if (roadNetworkLayerRef.current && roadNetworkLayerRef.current.getVisible()) {
-        candidates.push({ layer: roadNetworkLayerRef.current, isRoad: true });
-      }
-      if (segmentedRoadsLayerRef.current && segmentedRoadsLayerRef.current.getVisible()) {
-        candidates.push({ layer: segmentedRoadsLayerRef.current, isRoad: false });
-      }
-      if (chainageLayerRef.current && chainageLayerRef.current.getVisible()) {
-        candidates.push({ layer: chainageLayerRef.current, isRoad: false });
-      }
-      Object.values(specializedLayersRef.current).forEach((layer) => {
-        if (layer.getVisible()) {
-          candidates.push({ layer, isRoad: false });
+
+      if (modeRef.current === "CHAINAGE") {
+        // Armed: only roads matter for identification, so skip amenities/
+        // others/specialized entirely — every sequential candidate tried
+        // and missed before reaching a road is pure added latency.
+        if (activeClassLayer) {
+          candidates.push({ layer: activeClassLayer, isRoad: true });
+        } else if (roadNetworkLayerRef.current && roadNetworkLayerRef.current.getVisible()) {
+          candidates.push({ layer: roadNetworkLayerRef.current, isRoad: true });
         }
-      });
+        // Fallback identify target: intentionally always-invisible (see its
+        // creation comment) but GetFeatureInfo doesn't require visibility,
+        // so it can still resolve a road_id when no visible road layer
+        // caught the click.
+        if (roadLayerRef.current) {
+          candidates.push({ layer: roadLayerRef.current, isRoad: true });
+        }
+      } else {
+        // Add visible Amenities
+        Object.values(amenityLayersRef.current).forEach(l => {
+          if (l.getVisible()) candidates.push({ layer: l, isRoad: false });
+        });
+
+        // Add visible Others
+        Object.values(otherLayersRef.current).forEach(l => {
+          if (l.getVisible()) candidates.push({ layer: l, isRoad: false });
+        });
+
+        // Add visible Roads
+        if (activeClassLayer) {
+          candidates.push({ layer: activeClassLayer, isRoad: true });
+        } else if (roadNetworkLayerRef.current && roadNetworkLayerRef.current.getVisible()) {
+          candidates.push({ layer: roadNetworkLayerRef.current, isRoad: true });
+        }
+        if (segmentedRoadsLayerRef.current && segmentedRoadsLayerRef.current.getVisible()) {
+          candidates.push({ layer: segmentedRoadsLayerRef.current, isRoad: false });
+        }
+        if (chainageLayerRef.current && chainageLayerRef.current.getVisible()) {
+          candidates.push({ layer: chainageLayerRef.current, isRoad: false });
+        }
+        Object.values(specializedLayersRef.current).forEach((layer) => {
+          if (layer.getVisible()) {
+            candidates.push({ layer, isRoad: false });
+          }
+        });
+      }
 
       let foundFeature = null;
       let foundTitle = "";
@@ -3314,6 +3469,21 @@ if (mode === "CHAINAGE" && cfg1) {
         }
       }
 
+      if (foundFeature && foundIsRoad && modeRef.current === "CHAINAGE" && cfg1) {
+        const roadProps = foundFeature.properties || {};
+        const roadId =
+          (cfg1.roadIdField && roadProps[cfg1.roadIdField]) ||
+          roadProps.road_id ||
+          roadProps.ROAD_ID ||
+          roadProps.gis_id;
+        if (roadId) {
+          await openChainageForRoadId(roadId, roadProps, featureInfoController.signal);
+          return;
+        }
+        // No resolvable road_id on this feature — fall through to the
+        // normal popup rather than silently doing nothing.
+      }
+
       if (foundFeature) {
         if (foundTitle && foundTitle.includes(":")) {
           foundTitle = foundTitle.split(":")[1].trim();
@@ -3341,6 +3511,18 @@ if (mode === "CHAINAGE" && cfg1) {
               featureInfoController.signal
             );
             if (nearest) {
+              const nearestProps = nearest.properties || nearest.getProperties?.() || {};
+              if (modeRef.current === "CHAINAGE" && cfg1) {
+                const roadId =
+                  (cfg1.roadIdField && nearestProps[cfg1.roadIdField]) ||
+                  nearestProps.road_id ||
+                  nearestProps.ROAD_ID ||
+                  nearestProps.gis_id;
+                if (roadId) {
+                  await openChainageForRoadId(roadId, nearestProps, featureInfoController.signal);
+                  return;
+                }
+              }
               await showPopup(nearest, "Road", evt.coordinate, true, true, featureInfoController.signal);
               return;
             }
@@ -3407,279 +3589,6 @@ if (mode === "CHAINAGE" && cfg1) {
         }
         closePopup();
       }
-
-
-
-    if (mode === "CHAINAGE" && cfg1) {   //chainage
-
-        const view = mapRef.current.getView();
-        const resolution = view.getResolution();
-
-        const url = roadLayerRef.current
-          .getSource()
-          .getFeatureInfoUrl(
-            evt.coordinate,
-            resolution,
-            mapRef.current.getView().getProjection(),
-            {
-              INFO_FORMAT: "application/json",
-              FEATURE_COUNT: 1,
-            }
-          );
-
-        if (!url) return;
-
-        try {
-          const res = await fetch(url);
-          const data = await res.json();
-
-          if (!data.features?.length) return;
-
-          const feature = data.features[0];
-          const roadId = feature.properties[cfg1.roadIdField];
-          const props = feature.properties;
-
-          setSelectedRoad({
-            road_id: props.road_id,
-            road_name: props.road_name,
-            category: props.category,
-            condition: props.condition,
-            // material: props.material,
-
-          });
-          //checks roads have patches
-          try {
-            const res = await fetch(
-              `/api/patches/${city.toLowerCase()}/${roadId}`
-            );
-
-            const data = await res.json();
-
-            console.log("PATCH CHECK:", data);
-
-            // if (data.exists) {
-            //   setPatchInfo(data);
-            //   // extract unique patch_ids
-            //   const uniquePatchIds = [
-            //     ...new Set(data.data.map(row => row.patch_id))
-            //   ];
-
-            //   setPatchList(uniquePatchIds);
-            //   setSelectedPatches(uniquePatchIds); // default = show all
-            //   setShowPatchPanel(true);
-            // } else {
-            //   setShowPatchPanel(false);
-            // }
-            if (data.exists) {
-              const currentRoadId = String(roadId);
-
-              const newRoadRows = data.data.map((row) => ({
-                ...row,
-                road_id: row.road_id || currentRoadId,
-              }));
-
-              // checkbox list only for current road
-              const currentRoadPatches = [];
-              const seenCurrent = new Set();
-
-              newRoadRows.forEach((row) => {
-                const key = getPatchKey(row);
-
-                if (!seenCurrent.has(key)) {
-                  seenCurrent.add(key);
-
-                  currentRoadPatches.push({
-                    key,
-                    patch_id: row.patch_id,
-                    road_id: row.road_id,
-                  });
-                }
-              });
-
-              setCurrentRoadPatchList(currentRoadPatches);
-
-              setAllPatchRows((prevRows) => {
-                const rowsWithoutCurrentRoad = prevRows.filter(
-                  (row) => String(row.road_id) !== currentRoadId
-                );
-
-                const mergedRows = [...rowsWithoutCurrentRoad, ...newRoadRows];
-
-                // keep old selected patches, but do not auto-select current road patches
-                setPatchInfo({ ...data, data: newRoadRows });
-
-                // Yes/No should not be auto-selected
-                setPatchChoice(null);
-                setShowPatchPanel(true);
-
-                return mergedRows;
-              });
-            } else {
-              setCurrentRoadPatchList([]);
-              setPatchInfo(null);
-              setPatchChoice(null);
-              setShowPatchPanel(false);
-            }
-          } catch (err) {
-            console.error("PATCH CHECK ERROR:", err);
-          }
-
-          setStartChainage("");
-          setEndChainage("");
-          setChainageList([]);
-          console.log("PROPERTIES:", props);
-
-          console.log("ROAD ID:", roadId);
-
-          const cityParam = city.toLowerCase();
-          try {
-            const response = await fetch(
-              `/api/chainage/${cityParam}/${roadId}`
-            );
-
-            const chainageData = await response.json();
-
-            console.log("CHAINAGE DATA:", chainageData);
-
-            const distances = chainageData
-              .map(d => Number(d.distance))
-              .filter(v => !isNaN(v));
-
-            setChainageList([...new Set(distances)].sort((a, b) => a - b));
-
-          } catch (err) {
-            console.error("CHAINAGE FETCH ERROR:", err);
-          }
-
-          // 🔹 ZOOM FIX (FINAL)
-          const WFS_URL = `${GEOSERVER_BASE}/${cfg1.workspace}/ows`;
-
-          const zoomUrl =
-            `${WFS_URL}?service=WFS&version=1.0.0&request=GetFeature` +
-            `&typeName=${cfg1.roadLayer}` +
-            `&outputFormat=application/json` +
-            `&CQL_FILTER=${cfg1.roadIdField}='${roadId}'`;
-
-          console.log("ZOOM URL:", zoomUrl);
-
-          try {
-            const zoomRes = await fetch(zoomUrl);
-            const zoomData = await zoomRes.json();
-
-            console.log("ZOOM DATA:", zoomData);
-
-            if (!zoomData.features || zoomData.features.length === 0) {
-              console.log("❌ No feature for zoom");
-              return;
-            }
-
-            const format = new GeoJSON();
-
-            const features = format.readFeatures(zoomData, {
-              dataProjection: "EPSG:4326",
-              featureProjection: mapRef.current.getView().getProjection(),
-            });
-
-            if (!features.length) {
-              console.log("❌ Feature parsing failed");
-              return;
-            }
-
-            // 🔹 merge + expand + zoom
-
-            let extent = features[0].getGeometry().getExtent();
-
-            // merge all segments
-            features.forEach(f => {
-              const e = f.getGeometry().getExtent();
-
-              extent = [
-                Math.min(extent[0], e[0]),
-                Math.min(extent[1], e[1]),
-                Math.max(extent[2], e[2]),
-                Math.max(extent[3], e[3])
-              ];
-            });
-
-            // expand extent
-            const paddingFactor = 0.4;
-
-            const width = extent[2] - extent[0];
-            const height = extent[3] - extent[1];
-
-            extent = [
-              extent[0] - width * paddingFactor,
-              extent[1] - height * paddingFactor,
-              extent[2] + width * paddingFactor,
-              extent[3] + height * paddingFactor
-            ];
-
-            // final zoom
-            mapRef.current.getView().fit(extent, {
-              duration: 800,
-              maxZoom: 18
-            });
-          } catch (e) {
-            console.error("ZOOM ERROR:", e);
-          }
-          // 🔹 FILTER CHAINAGE POINTS
-          const filter =
-            typeof roadId === "number"
-              ? `${cfg1.roadIdField}=${roadId}`
-              : `${cfg1.roadIdField}='${roadId}'`;
-
-          console.log("FILTER:", filter);
-
-          chainageLayerRef.current.getSource().updateParams({
-            CQL_FILTER: filter,
-            STYLES: "chainage_distance_label"
-          });
-
-          chainageLayerRef.current.getSource().refresh();
-          chainageLayerRef.current.setVisible(true);
-
-        } catch (err) {
-          console.error("CHAINAGE ERROR:", err);
-        }
-
-        return;
-      }
-      // if (mode === "CHAINAGE" && cfg1) {
-
-      //   const view = mapRef.current.getView();
-      //   const resolution = view.getResolution();
-
-      //   const url = roadLayerRef.current.getSource().getFeatureInfoUrl(
-      //     evt.coordinate,
-      //     resolution,
-      //     mapRef.current.getView().getProjection(),
-      //     {
-      //       INFO_FORMAT: "application/json",
-      //       FEATURE_COUNT: 5,
-      //       BUFFER: 15,   // 🔥 important for accuracy
-      //     }
-      //   );
-
-      //   console.log("GFI URL:", url);
-
-      //   if (!url) return;
-
-      //   try {
-      //     const res = await fetch(url);
-      //     const text = await res.text();
-
-      //     console.log("RAW RESPONSE:", text);
-
-      //     const data = JSON.parse(text);
-
-      //     console.log("PARSED DATA:", data);
-
-      //   } catch (err) {
-      //     console.error("ERROR:", err);
-      //   }
-
-      //   return;
-      // }
     });
 
 
@@ -3999,6 +3908,9 @@ if (mode === "CHAINAGE" && cfg1) {
         map.setTarget(null);
       }
       mapRef.current = null;
+      cityClipRingsRef.current = null;
+      stopLoadingTrackerRef.current?.();
+      stopLoadingTrackerRef.current = null;
       setMapReady(false);
     };
   }, [city]);
@@ -4057,9 +3969,16 @@ if (mode === "CHAINAGE" && cfg1) {
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
     if (zoomFilter) return;
+    const urlParams = new URLSearchParams(location.search);
+    const hasUrlTarget =
+      urlParams.has("latitude") && urlParams.has("longitude");
+    if (hasUrlTarget) return; // redirected chainage marker owns the initial view
     const cityKey = city.toLowerCase();
     const cfg = cityConfig[cityKey] || {};
-    const layerName = cfg.wardLayer || cfg.zoneLayer;
+    // Zone boundary first, ward boundary as the fallback reference when a
+    // city has no zone layer — both cover the same overall city extent, so
+    // this only matters for which layer name is used to look up the bbox.
+    const layerName = cfg.zoneLayer || cfg.wardLayer;
     if (!layerName) return;
 
     let cancelled = false;
@@ -4067,14 +3986,52 @@ if (mode === "CHAINAGE" && cfg1) {
     const view = map.getView();
 
     const fitToBoundary = async () => {
-      const extent4326 = await fetchBoundaryExtent4326(layerName);
-      if (cancelled || !extent4326) return;
-      const min = fromLonLat([extent4326[0], extent4326[1]]);
-      const max = fromLonLat([extent4326[2], extent4326[3]]);
-      const projected = [min[0], min[1], max[0], max[1]];
+      // Reuses fetchBoundaryFeatures (WFS, already fetched/cached for the
+      // clip-mask effect below) instead of a separate WMS GetCapabilities
+      // call — one less ~2s network round trip before the extent
+      // restriction can apply, and the features are already in the map's
+      // own projection so no lon/lat conversion is needed either.
+      const features = await fetchBoundaryFeatures(layerName, view.getProjection());
+      if (cancelled || !features.length) return;
+      const projected = createEmpty();
+      features.forEach((feature) => {
+        const geom = feature.getGeometry?.();
+        if (geom) extend(projected, geom.getExtent());
+      });
       const fitExtent = normalizeExtent(projected, view);
       if (!fitExtent) return;
-      view.fit(fitExtent, {
+
+      // Restrict panning/zooming to this city's zone/ward extent (padded
+      // ~20% so the boundary doesn't feel like a hard wall right at its
+      // edge) so the map never requests/renders basemap tiles for the rest
+      // of the state once a city dashboard is open. OL bakes the extent
+      // constraint into the View at construction time — there's no setter
+      // to change it on the live view — so replace the view in place,
+      // carrying over its current center/zoom/limits.
+      const padding = Math.max(
+        getWidth(fitExtent),
+        getHeight(fitExtent)
+      ) * 0.2;
+      const restrictedExtent = bufferExtent(fitExtent, padding);
+      const restrictedView = new View({
+        projection: view.getProjection(),
+        center: view.getCenter(),
+        zoom: view.getZoom(),
+        rotation: view.getRotation(),
+        minZoom: view.getMinZoom(),
+        maxZoom: view.getMaxZoom(),
+        extent: restrictedExtent,
+        // Default (false) forces the *entire viewport* to stay inside
+        // `extent`, which silently overrides view.fit()'s chosen zoom with
+        // a tighter one whenever the boundary's aspect ratio doesn't match
+        // the viewport (very likely for a long, narrow city like Kanpur) —
+        // that's what was forcing an over-zoomed initial view. Restricting
+        // only the center keeps the same soft pan limit without fighting
+        // fit()'s own zoom calculation.
+        constrainOnlyCenter: true,
+      });
+      map.setView(restrictedView);
+      restrictedView.fit(fitExtent, {
         padding: getAutoZoomPadding(false),
         duration: 800,
         maxZoom: isMobileView ? 12 : 14,
@@ -4085,14 +4042,8 @@ if (mode === "CHAINAGE" && cfg1) {
     return () => {
       cancelled = true;
     };
-  }, [mapReady, city, zoomFilter, isMobileView]);
+  }, [mapReady, city, zoomFilter, isMobileView, location.search]);
 
-
-  useEffect(() => {
-    if (!knpRoadLayerRef.current) return;
-
-    knpRoadLayerRef.current.setVisible(!!showChainage);
-  }, [showChainage]); //chainage
 
    //chainage
   useEffect(() => {
@@ -4136,12 +4087,37 @@ if (mode === "CHAINAGE" && cfg1) {
       zIndex: 1000
     });
 
-    mapRef.current.addLayer(startLayer);
-    mapRef.current.addLayer(endLayer);
+    const urlLocationLayer = new VectorLayer({
+ source: urlLocationMarkerSourceRef.current,
+ style: new Style({
+ image: new Icon({
+ src: URL_LOCATION_PIN_SVG,
+ anchor: [0.5, 1],
+ anchorXUnits: "fraction",
+ anchorYUnits: "fraction",
+ scale: 1,
+ }),
+ }),
+ zIndex: 1300,
+});
+
+    const map = mapRef.current;
+    map.addLayer(startLayer);
+    map.addLayer(endLayer);
+    map.addLayer(urlLocationLayer);
 
     startMarkerLayerRef.current = startLayer;
     endMarkerLayerRef.current = endLayer;
+    urlLocationMarkerLayerRef.current = urlLocationLayer;
 
+    return () => {
+      map.removeLayer(startLayer);
+      map.removeLayer(endLayer);
+      map.removeLayer(urlLocationLayer);
+      if (startMarkerLayerRef.current === startLayer) startMarkerLayerRef.current = null;
+      if (endMarkerLayerRef.current === endLayer) endMarkerLayerRef.current = null;
+      if (urlLocationMarkerLayerRef.current === urlLocationLayer) urlLocationMarkerLayerRef.current = null;
+    };
   }, [mapReady]);
 
 
@@ -4150,6 +4126,10 @@ if (mode === "CHAINAGE" && cfg1) {
     const cityKey = city.toLowerCase();
     const cfg = cityConfig[cityKey] || {};
     const boundaryLayerName = cfg.zoneLayer || cfg.wardLayer;
+    // Clear immediately on city/roadFilter change so the map never clips to
+    // a stale (wrong-city) shape while the fetch below is in flight — it
+    // just renders unclipped for that brief window instead.
+    cityClipRingsRef.current = null;
     if (!boundaryLayerName) {
       boundaryFeaturesRef.current = { layerName: "", features: [] };
       return;
@@ -4160,6 +4140,8 @@ if (mode === "CHAINAGE" && cfg1) {
       const features = await fetchBoundaryFeatures(boundaryLayerName, projection);
       if (cancelled) return;
       boundaryFeaturesRef.current = { layerName: boundaryLayerName, features };
+      cityClipRingsRef.current = extractClipRings(features);
+      mapRef.current?.render();
     };
     loadBoundary();
     return () => {
@@ -4207,8 +4189,9 @@ if (mode === "CHAINAGE" && cfg1) {
   // =====================================================
 
   // Keep callback refs always up-to-date so closures never use stale references
-  useEffect(() => { onPopupClosedRef.current = onPopupClosed; }, [onPopupClosed]);
-  useEffect(() => { onRoadSelectedRef.current = onRoadSelected; }, [onRoadSelected]);
+
+  
+  
 
   // Helper to close popup internally
   const closePopup = () => {
@@ -4238,6 +4221,7 @@ if (mode === "CHAINAGE" && cfg1) {
       lastPopupWasRoadRef.current = false;
     }
   };
+  closePopupRef.current = closePopup;
 
   useImperativeHandle(ref, () => ({
     map: mapRef.current,
@@ -4251,6 +4235,7 @@ if (mode === "CHAINAGE" && cfg1) {
     zoomToPlace: (place) => {
       handlePlaceSearch(place);
     },
+    showFeatureNotice: (payload) => showFeatureNotice(payload),
   }));
 
   useEffect(() => {
@@ -4465,15 +4450,20 @@ if (mode === "CHAINAGE" && cfg1) {
           const cfg = cityConfig[(city || "").toLowerCase()] || {};
           const layerName = cfg.roadLayer;
           if (!layerName) return;
+          // Routed through our own server-side cache instead of GeoServer
+          // directly — same bbox/filter/maxFeatures the client always
+          // computed, just cached for ~3 minutes so repeat/overlapping
+          // views (this user panning back, or a different user looking at
+          // a similar area) don't each pay a fresh WFS round trip. This was
+          // confirmed via real usage telemetry to be the single largest,
+          // slowest source of network traffic in the app.
           let url =
-            `${ROAD_WFS}?service=WFS&version=1.1.0&request=GetFeature` +
-            `&typeName=${encodeURIComponent(layerName)}` +
-            `&outputFormat=application/json` +
+            `/api/road-wfs-cache?layer=${encodeURIComponent(layerName)}` +
             `&srsName=${encodeURIComponent(projection.getCode())}` +
-            `&bbox=${extent.join(",")},${encodeURIComponent(projection.getCode())}` +
+            `&bbox=${encodeURIComponent(extent.join(","))}` +
             `&maxFeatures=${maxFeatures}`;
           if (applyFilter) {
-            url += `&CQL_FILTER=${encodeURIComponent(filterText)}`;
+            url += `&cqlFilter=${encodeURIComponent(filterText)}`;
           }
           fetch(url, { signal: controller.signal })
             .then((res) => res.json())
@@ -4484,7 +4474,11 @@ if (mode === "CHAINAGE" && cfg1) {
             })
             .catch((err) => {
               if (controller.signal.aborted) return;
-              console.error("RoadWFS failed:", err);
+              showFeatureNotice({
+                feature: "Road network detail",
+                layerName,
+                dedupeKey: `${city}|road-wfs|${layerName}`,
+              });
             });
         }, wait);
       } else if (roadWfsLayerRef.current) {
@@ -4707,10 +4701,7 @@ if (mode === "CHAINAGE" && cfg1) {
       const isRoadLayer = cfg && drawMode.layer === cfg.roadLayer;
 
       let typeName = drawMode.layer;
-      const geoserverBase = window.location.port === "8060"
-        ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-        : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
-      let baseUrl = isRoadLayer ? `${geoserverBase}/Road_Network/wfs` : `${geoserverBase}/Amenities/wfs`;
+      let baseUrl = isRoadLayer ? `${GEOSERVER_BASE}/Road_Network/wfs` : `${GEOSERVER_BASE}/Amenities/wfs`;
 
       const filterExpr = `INTERSECTS(geom, ${sridWkt})`;
       const queryUrl = `${baseUrl}?service=WFS&version=1.1.0&request=GetFeature&typeName=${encodeURIComponent(
@@ -4720,8 +4711,7 @@ if (mode === "CHAINAGE" && cfg1) {
       // Apply filter directly to the road network WMS and notify parent
       if (isRoadLayer) {
         if (roadNetworkLayerRef.current) {
-          const src = roadNetworkLayerRef.current.getSource();
-          src.updateParams({ CQL_FILTER: filterExpr, _t: Date.now() });
+          applyCqlToTileLayer(roadNetworkLayerRef.current, filterExpr, "Road_Network");
           roadNetworkLayerRef.current.setVisible(true);
         }
         if (typeof onRoadFilterChange === "function") {
@@ -4792,6 +4782,7 @@ if (mode === "CHAINAGE" && cfg1) {
     const rect = el.getBoundingClientRect();
     draggingRef.current = true;
     dragOriginRef.current = {
+      el,
       x: e.clientX,
       y: e.clientY,
       left: legendPos.left ?? rect.left,
@@ -4804,6 +4795,12 @@ if (mode === "CHAINAGE" && cfg1) {
     document.addEventListener("pointercancel", onLegendPointerUp);
   };
 
+  // Mutates the DOM directly during the drag instead of calling
+  // setLegendPos() on every pointermove — this component's render function
+  // is large, so committing React state at mouse-move frequency was
+  // forcing a full re-render per pixel of movement, which is what made
+  // dragging feel jittery. React state is only committed once, on
+  // pointer-up, so layout stays correct after the drag ends.
   const onLegendPointerMove = (e) => {
     if (!draggingRef.current) return;
     const o = dragOriginRef.current;
@@ -4813,14 +4810,78 @@ if (mode === "CHAINAGE" && cfg1) {
     const maxTop = Math.max(0, window.innerHeight - o.h);
     const clampedLeft = Math.min(Math.max(0, nextLeft), maxLeft);
     const clampedTop = Math.min(Math.max(0, nextTop), maxTop);
-    setLegendPos({ left: clampedLeft, top: clampedTop });
+    o.lastLeft = clampedLeft;
+    o.lastTop = clampedTop;
+    if (o.el) {
+      o.el.style.left = `${clampedLeft}px`;
+      o.el.style.right = "auto";
+      o.el.style.top = `${clampedTop}px`;
+    }
   };
 
   const onLegendPointerUp = () => {
     draggingRef.current = false;
+    const o = dragOriginRef.current;
+    if (o && o.lastLeft !== undefined) {
+      setLegendPos({ left: o.lastLeft, top: o.lastTop });
+    }
     document.removeEventListener("pointermove", onLegendPointerMove);
     document.removeEventListener("pointerup", onLegendPointerUp);
     document.removeEventListener("pointercancel", onLegendPointerUp);
+  };
+
+  // Road details / patch panel drag — same mechanics as the Legend above. //chainage
+  const onRoadPanelPointerDown = (e) => {
+    if (e.target && e.target.closest && e.target.closest("button")) return;
+    e.preventDefault();
+    const el = e.currentTarget.closest(".road-panel");
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    roadPanelDraggingRef.current = true;
+    roadPanelDragOriginRef.current = {
+      el,
+      x: e.clientX,
+      y: e.clientY,
+      left: roadPanelPos.left ?? rect.left,
+      top: roadPanelPos.top ?? rect.top,
+      w: rect.width,
+      h: rect.height,
+    };
+    document.addEventListener("pointermove", onRoadPanelPointerMove);
+    document.addEventListener("pointerup", onRoadPanelPointerUp);
+    document.addEventListener("pointercancel", onRoadPanelPointerUp);
+  };
+
+  // Same direct-DOM-mutation approach as the Legend drag above — avoids a
+  // full MapContainer re-render on every pointermove pixel.
+  const onRoadPanelPointerMove = (e) => {
+    if (!roadPanelDraggingRef.current) return;
+    const o = roadPanelDragOriginRef.current;
+    const nextLeft = o.left + (e.clientX - o.x);
+    const nextTop = o.top + (e.clientY - o.y);
+    const maxLeft = Math.max(0, window.innerWidth - o.w);
+    const maxTop = Math.max(0, window.innerHeight - o.h);
+    const clampedLeft = Math.min(Math.max(0, nextLeft), maxLeft);
+    const clampedTop = Math.min(Math.max(0, nextTop), maxTop);
+    o.lastLeft = clampedLeft;
+    o.lastTop = clampedTop;
+    if (o.el) {
+      o.el.style.position = "absolute";
+      o.el.style.left = `${clampedLeft}px`;
+      o.el.style.top = `${clampedTop}px`;
+      o.el.style.right = "auto";
+    }
+  };
+
+  const onRoadPanelPointerUp = () => {
+    roadPanelDraggingRef.current = false;
+    const o = roadPanelDragOriginRef.current;
+    if (o && o.lastLeft !== undefined) {
+      setRoadPanelPos({ left: o.lastLeft, top: o.lastTop });
+    }
+    document.removeEventListener("pointermove", onRoadPanelPointerMove);
+    document.removeEventListener("pointerup", onRoadPanelPointerUp);
+    document.removeEventListener("pointercancel", onRoadPanelPointerUp);
   };
 
   // =====================================================
@@ -4834,7 +4895,7 @@ if (mode === "CHAINAGE" && cfg1) {
 
     const filterText = String(roadFilter || "").trim();
     if (!filterText || filterText.toUpperCase() === "INCLUDE") {
-      source.updateParams({ CQL_FILTER: null, _t: Date.now() });
+      applyCqlToTileLayer(roadNetworkLayerRef.current, null, "Road_Network");
       const map = mapRef.current;
       if (map && filteredRoadLayerRef.current) {
         map.removeLayer(filteredRoadLayerRef.current);
@@ -4846,10 +4907,7 @@ if (mode === "CHAINAGE" && cfg1) {
       return;
     }
 
-    source.updateParams({
-      CQL_FILTER: roadFilter,
-      _t: Date.now(),
-    });
+    applyCqlToTileLayer(roadNetworkLayerRef.current, roadFilter, "Road_Network");
     roadWfsSourceRef.current?.clear?.();
     roadWfsExtentKeyRef.current = "";
     if (mapRef.current?.dispatchEvent) {
@@ -4980,13 +5038,7 @@ if (mode === "CHAINAGE" && cfg1) {
     }
 
     if (roadLabelsLayerRef.current) {
-      const labelsSource = roadLabelsLayerRef.current.getSource?.();
-      if (labelsSource?.updateParams) {
-        labelsSource.updateParams({
-          CQL_FILTER: roadFilter || null,
-          _t: Date.now(),
-        });
-      }
+      applyCqlToTileLayer(roadLabelsLayerRef.current, roadFilter || null, "Road_Network");
       const shouldShowLabels =
         !isNoneSelected &&
         !getIsLowBandwidth() &&
@@ -5002,19 +5054,25 @@ if (mode === "CHAINAGE" && cfg1) {
 
       // ALWAYS update filter params so that if the user toggles the layer
       // via the Legend/LayerSwitcher, it respects the current filter.
-      source.updateParams({
-        CQL_FILTER: roadFilter || null,
-        _t: Date.now(),
-      });
+      applyCqlToTileLayer(layer, roadFilter || null, "Road_Network");
 
       const isVisibleByToggle = !!layerVisibility.roadClassifications?.[key];
-      const isVisible = !isNoneSelected && isVisibleByToggle;
+      let isVisible = !isNoneSelected && isVisibleByToggle;
 
-      if (isVisible) {
-        layer.setVisible(true);
-      } else {
-        layer.setVisible(false);
+      if (isVisible && getIsLowBandwidth()) {
+        const zoom = mapRef.current?.getView()?.getZoom?.();
+        if (Number.isFinite(zoom) && zoom < LOW_BANDWIDTH_OVERLAY_MIN_ZOOM) {
+          isVisible = false;
+          showFeatureNotice({
+            feature: "Road classification layer",
+            message: `Zoom in a bit more to load "${layer.get("title") || key}" on your connection.`,
+            dedupeKey: `${city}|lowbw-roadclass|${key}`,
+            autoDismissMs: 4500,
+          });
+        }
       }
+
+      layer.setVisible(isVisible);
     });
   }, [roadFilter, layerVisibility]);
 
@@ -5115,7 +5173,19 @@ if (mode === "CHAINAGE" && cfg1) {
     });
 
     Object.entries(lcluLayersRef.current).forEach(([id, layer]) => {
-      const visible = !!layerVisibility?.lclu?.[id];
+      let visible = !!layerVisibility?.lclu?.[id];
+      if (visible && getIsLowBandwidth()) {
+        const zoom = mapRef.current?.getView()?.getZoom?.();
+        if (Number.isFinite(zoom) && zoom < LOW_BANDWIDTH_OVERLAY_MIN_ZOOM) {
+          visible = false;
+          showFeatureNotice({
+            feature: "Land use/cover layer",
+            message: `Zoom in a bit more to load "${layer.get("title") || id}" on your connection.`,
+            dedupeKey: `${city}|lowbw-lclu|${id}`,
+            autoDismissMs: 4500,
+          });
+        }
+      }
       layer.setVisible(visible);
       if (visible) {
         const source = layer.getSource?.();
@@ -5367,7 +5437,10 @@ if (mode === "CHAINAGE" && cfg1) {
             }
           })
           .catch((err) => {
-            console.error(`Road analysis fetch failed for ${id}:`, err);
+            showFeatureNotice({
+              feature: "Road analysis",
+              dedupeKey: `${city}|road-analysis|${id}`,
+            });
           });
       } else if (!enabled && existing) {
         map.removeLayer(existing);
@@ -5678,6 +5751,9 @@ if (mode === "CHAINAGE" && cfg1) {
   useEffect(() => {
     if (!mapRef.current) return;
 
+    const modeJustChanged = prevZoomEffectModeRef.current !== mode;
+    prevZoomEffectModeRef.current = mode;
+
     if (String(zoomFilter || "").trim().toUpperCase() === "INCLUDE") {
       const map = mapRef.current;
       if (selectedRoadLayerRef.current && map) {
@@ -5698,6 +5774,21 @@ if (mode === "CHAINAGE" && cfg1) {
       }
       setSelectedRoadGeometry(null);
       setRoadDimming(false);
+
+      // Redirected chainage links target a specific lat/lon marker —
+      // don't snap the view back to the generic city default over it.
+      const urlParams = new URLSearchParams(location.search);
+      const hasUrlTarget =
+        urlParams.has("latitude") && urlParams.has("longitude");
+      if (hasUrlTarget && mode === "CHAINAGE") return;
+
+      // Toggling Chainage mode on/off (via Dashboard's in-place mode
+      // switch, not a page navigation) re-runs this effect because `mode`
+      // is in its dependency array — but if zoomFilter was already empty,
+      // there's no filter being "cleared" here, just a UI mode switch, so
+      // don't discard whatever pan/zoom the user was already at.
+      if (modeJustChanged) return;
+
       const cityKey = city.toLowerCase();
       const defaultView = cityViews[cityKey] || cityViews.default;
       const view = mapRef.current.getView();
@@ -5852,7 +5943,7 @@ if (mode === "CHAINAGE" && cfg1) {
         }
       })
       .catch((err) => console.error("❌ [AutoZoom] Error:", err));
-  }, [zoomFilter, city, isMobileView, baseMap]);
+  }, [zoomFilter, city, isMobileView, baseMap, location.search, mode]);
 
 
   //chainage
@@ -5868,7 +5959,7 @@ if (mode === "CHAINAGE" && cfg1) {
 
     if (!data.exists) {
       setCurrentRoadPatchList([]);
-      setPatchInfo(null);
+      setPatchInfo({ exists: false });
       setPatchChoice(null);
       setShowPatchPanel(false);
       return;
@@ -5925,7 +6016,12 @@ if (mode === "CHAINAGE" && cfg1) {
   }
 };
   //chainage
-  const handleCreateChainage = async () => {
+  // Step 1: validate the chosen chainage range, fetch the exact segment
+  // geometries it covers (read-only preview, nothing saved yet), highlight
+  // them on the map in a distinct color, zoom to them, capture a
+  // watermarked snapshot, and open the confirm dialog. Nothing is written
+  // to the database until the user clicks Save in that dialog.
+  const handleCreateChainageRequest = async () => {
     if (!selectedRoad?.road_id || !startChainage || !endChainage) {
       alert("Select road and chainage points");
       return;
@@ -5939,49 +6035,152 @@ if (mode === "CHAINAGE" && cfg1) {
       return;
     }
 
+    const roadId = selectedRoad.road_id;
+    const cityParam = city.toLowerCase();
+
+    try {
+      const res = await fetch(
+        `/api/patch-preview/${cityParam}/${encodeURIComponent(roadId)}?start=${start}&end=${end}`
+      );
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || data.message || "Unable to load patch preview");
+      }
+      if (!data.data?.length) {
+        alert("No road segments found in this chainage range.");
+        return;
+      }
+
+      const map = mapRef.current;
+      if (patchPreviewLayerRef.current && map) {
+        map.removeLayer(patchPreviewLayerRef.current);
+        patchPreviewLayerRef.current = null;
+      }
+
+      const format = new GeoJSON();
+      const projection = map?.getView()?.getProjection();
+      const features = data.data
+        .map((row) => {
+          if (!row.geojson) return null;
+          try {
+            return format.readFeature(JSON.parse(row.geojson), {
+              dataProjection: "EPSG:4326",
+              featureProjection: projection,
+            });
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+
+      if (features.length && map) {
+        const vectorSource = new VectorSource({ features });
+        const previewLayer = new VectorLayer({
+          source: vectorSource,
+          style: new Style({
+            stroke: new Stroke({ color: "#f97316", width: 6 }),
+          }),
+        });
+        previewLayer.setZIndex(950);
+        map.addLayer(previewLayer);
+        patchPreviewLayerRef.current = previewLayer;
+
+        let extent = features[0].getGeometry().getExtent();
+        features.forEach((f) => {
+          const e = f.getGeometry().getExtent();
+          extent = [
+            Math.min(extent[0], e[0]),
+            Math.min(extent[1], e[1]),
+            Math.max(extent[2], e[2]),
+            Math.max(extent[3], e[3]),
+          ];
+        });
+        // Instant (duration 0) — the preview snapshot is captured right
+        // after this, no animation to wait out.
+        map.getView().fit(extent, { padding: [80, 80, 80, 80], maxZoom: 19 });
+      }
+
+      const { dataUrl } = await captureMapImageBlob();
+      setPatchConfirmImage(dataUrl);
+      setPatchConfirmPending({ roadId, start, end });
+      setShowPatchConfirm(true);
+    } catch (err) {
+      console.error("PATCH PREVIEW ERROR:", err);
+      alert(err.message || "Unable to preview this patch.");
+    }
+  };
+
+  // Step 2: user confirmed in the dialog — now actually write the patch.
+  const handleConfirmSavePatch = async () => {
+    if (!patchConfirmPending) return;
+    const { roadId, start, end } = patchConfirmPending;
+    const wasTableOpen = showPatchTable; // captured before refresh may change it
+    setPatchConfirmSaving(true);
+
     try {
       const payload = {
         city: city.toLowerCase(),
-        road_id: selectedRoad.road_id,
+        road_id: roadId,
         startPoint: start,
         endPoint: end,
       };
 
-      console.log("PATCH PAYLOAD:", payload);
-
       const res = await fetch("/api/create-patch", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
       const data = await res.json();
 
-if (data.alreadyExists) {
-    alert(data.message || "Patch already exists. Please select it from the checkbox list.");
+      if (data.alreadyExists) {
+        showFeatureNotice({
+          feature: "Chainage",
+          message: data.message || "Patch already exists. Please select it from the checkbox list.",
+          dedupeKey: `patch-exists|${city}|${roadId}|${Date.now()}`,
+          autoDismissMs: 5000,
+        });
+        await refreshPatchStateAfterCreate(roadId, data.patch_id);
+      } else if (!res.ok) {
+        throw new Error(data.error || data.message || "Patch creation failed");
+      } else {
+        showFeatureNotice({
+          feature: "Chainage",
+          message: `Patch created (ID: ${data.patch_id}, ${data.inserted} segment(s)).`,
+          dedupeKey: `patch-created|${city}|${data.patch_id}|${Date.now()}`,
+          autoDismissMs: 4500,
+        });
+        setPatchChoice("yes");
+        if (!wasTableOpen) onPatchTableOpenRef.current?.();
+        await refreshPatchStateAfterCreate(roadId, data.patch_id);
+      }
 
-    // optional but recommended: refresh checkbox list immediately
-    await refreshPatchStateAfterCreate(selectedRoad.road_id, data.patch_id);
-
-    return;
-}
-
-if (!res.ok) {
-    throw new Error(data.error || data.message || "Patch creation failed");
-}
-
-      alert(
-        `Patch Created\nID: ${data.patch_id}\nSegments: ${data.inserted}`
-      );
-
-      console.log("PATCH RESPONSE:", data);
-      await refreshPatchStateAfterCreate(selectedRoad.road_id, data.patch_id);
-
+      setShowCreateChainageForm(false);
+      setStartChainage("");
+      setEndChainage("");
     } catch (err) {
-      console.error("PATCH ERROR:", err);
+      console.error("PATCH SAVE ERROR:", err);
       alert(err.message);
+    } finally {
+      setPatchConfirmSaving(false);
+      setShowPatchConfirm(false);
+      setPatchConfirmPending(null);
+      setPatchConfirmImage(null);
+      if (patchPreviewLayerRef.current && mapRef.current) {
+        mapRef.current.removeLayer(patchPreviewLayerRef.current);
+        patchPreviewLayerRef.current = null;
+      }
+    }
+  };
+
+  const handleCancelPatchConfirm = () => {
+    setShowPatchConfirm(false);
+    setPatchConfirmPending(null);
+    setPatchConfirmImage(null);
+    if (patchPreviewLayerRef.current && mapRef.current) {
+      mapRef.current.removeLayer(patchPreviewLayerRef.current);
+      patchPreviewLayerRef.current = null;
     }
   };
   //chainage
@@ -6126,6 +6325,13 @@ if (!res.ok) {
 
     setSelectedPatches(updatedSelection);
 
+    // Only snapshot on the closed→open transition, not on every checkbox
+    // toggle — re-snapshotting while already open would overwrite the
+    // correct "before the table opened" state with the wrong one.
+    if (updatedSelection.length > 0 && !showPatchTable) {
+      onPatchTableOpenRef.current?.();
+    }
+
     handleShowPatches(updatedSelection, allPatchRows);
     updatePatchTableFromSelection(updatedSelection, allPatchRows);
   };
@@ -6239,14 +6445,252 @@ if (!res.ok) {
 
     if (!source) return;
 
-    console.log("🎯 Chainage filter applied:", filter);
-
     source.updateParams({
       CQL_FILTER: filter,
     });
   };
 
-  const location = useLocation();//chainage
+  // Shared by both the legacy roadLayerRef-based identify path and the
+  // general "click whatever road layer is already visible on the dashboard"
+  // path: given a resolved roadId, fetch patches/chainage data for that one
+  // road and open the patch panel — scoped to just that road, never "all
+  // roads at once."
+  const openChainageForRoadId = useCallback(async (roadId, roadProps, signal) => {
+    if (!roadId || !cfg1) return;
+    const cityParam = city.toLowerCase();
+    const roadIdText = String(roadId);
+    const cacheKey = `${cityParam}|${roadIdText}`;
+    const roadFilter =
+      typeof roadId === "number"
+        ? `${cfg1.roadIdField}=${roadId}`
+        : `${cfg1.roadIdField}='${roadIdText.replace(/'/g, "''")}'`;
+
+    const readRoadFeatures = (geojson, projection) => {
+      if (!geojson?.features?.length) return [];
+      const format = new GeoJSON();
+      return format.readFeatures(geojson, {
+        dataProjection: "EPSG:4326",
+        featureProjection: projection,
+      });
+    };
+    const fitRoadFeatures = (features) => {
+      if (!features.length || !mapRef.current) return;
+      let extent = features[0].getGeometry().getExtent();
+      features.forEach((f) => {
+        const e = f.getGeometry().getExtent();
+        extent = [
+          Math.min(extent[0], e[0]),
+          Math.min(extent[1], e[1]),
+          Math.max(extent[2], e[2]),
+          Math.max(extent[3], e[3]),
+        ];
+      });
+      const width = extent[2] - extent[0];
+      const height = extent[3] - extent[1];
+      const paddingFactor = 0.4;
+      mapRef.current.getView().fit([
+        extent[0] - width * paddingFactor,
+        extent[1] - height * paddingFactor,
+        extent[2] + width * paddingFactor,
+        extent[3] + height * paddingFactor,
+      ], {
+        duration: 500,
+        maxZoom: 18,
+      });
+    };
+    const loadJson = async (requestUrl, featureName) => {
+      const response = await fetch(requestUrl, { signal });
+      const payload = await response.json();
+      if (!response.ok) {
+        if (showApiUnavailableNotice(payload, featureName)) {
+          return { unavailable: true, payload };
+        }
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+      return payload;
+    };
+
+    setSelectedRoad({
+      road_id: roadProps?.road_id || roadId,
+      road_name: roadProps?.road_name,
+      category: roadProps?.category,
+      condition: roadProps?.condition,
+    });
+    setStartChainage("");
+    setEndChainage("");
+    setChainageList([]);
+    setShowCreateChainageForm(false);
+    setShowPatchPanel(false);
+    setPatchChoice(null);
+
+    try {
+      let roadData = chainageRoadDataCacheRef.current.get(cacheKey);
+      let zoomFeaturesPromise = null;
+      if (!roadData) {
+        const projection = mapRef.current?.getView()?.getProjection();
+        const wfsUrl =
+          `${GEOSERVER_BASE}/${cfg1.workspace}/ows?service=WFS&version=1.0.0&request=GetFeature` +
+          `&typeName=${encodeURIComponent(cfg1.roadLayer)}` +
+          `&outputFormat=application/json` +
+          `&CQL_FILTER=${encodeURIComponent(roadFilter)}`;
+
+        // Only patches + chainage rows gate the panel — the WFS fetch is
+        // purely for the "zoom to this road" camera animation, so it's
+        // fired in parallel but NOT awaited here. Previously all three were
+        // Promise.all'd together, so a slow WFS query (a separate GeoServer
+        // round trip) delayed the whole panel from appearing.
+        zoomFeaturesPromise = fetch(wfsUrl, { signal })
+          .then((zoomRes) => zoomRes.ok ? zoomRes.json() : null)
+          .then((zoomGeojson) => readRoadFeatures(zoomGeojson, projection))
+          .catch((err) => {
+            if (err?.name === "AbortError") throw err;
+            return [];
+          });
+
+        const [patches, chainageRows] = await Promise.all([
+          loadJson(`/api/patches/${cityParam}/${encodeURIComponent(roadIdText)}`, "Chainage patches"),
+          loadJson(`/api/chainage/${cityParam}/${encodeURIComponent(roadIdText)}`, "Chainage"),
+        ]);
+
+        roadData = { patches, chainageRows };
+        chainageRoadDataCacheRef.current.set(cacheKey, roadData);
+      }
+
+      if (signal?.aborted) return;
+
+      const patches = roadData.patches;
+      if (patches && !patches.unavailable && patches.exists) {
+        const newRoadRows = patches.data.map((row) => ({
+          ...row,
+          road_id: row.road_id || roadIdText,
+        }));
+        const currentRoadPatches = [];
+        const seenCurrent = new Set();
+
+        newRoadRows.forEach((row) => {
+          const key = getPatchKey(row);
+          if (!seenCurrent.has(key)) {
+            seenCurrent.add(key);
+            currentRoadPatches.push({
+              key,
+              patch_id: row.patch_id,
+              road_id: row.road_id,
+            });
+          }
+        });
+
+        setCurrentRoadPatchList(currentRoadPatches);
+        setAllPatchRows((prevRows) => {
+          const rowsWithoutCurrentRoad = prevRows.filter(
+            (row) => String(row.road_id) !== roadIdText
+          );
+          // patchInfo is always kept (exists:true here) so the "View
+          // Patches" button can read patchInfo?.exists to enable itself.
+          // showPatchPanel now only opens when that button is clicked, not
+          // automatically on load.
+          setPatchInfo({ ...patches, data: newRoadRows });
+          setPatchChoice(null);
+          setShowPatchPanel(false);
+          return [...rowsWithoutCurrentRoad, ...newRoadRows];
+        });
+      } else {
+        setCurrentRoadPatchList([]);
+        // Store exists:false rather than nulling — the "View Patches"
+        // button reads patchInfo?.exists to decide whether to gray itself
+        // out and show the "no patch yet" message.
+        setPatchInfo(patches && !patches.unavailable ? patches : { exists: false });
+        setPatchChoice(null);
+        setShowPatchPanel(false);
+      }
+
+      const chainageRows = Array.isArray(roadData.chainageRows) ? roadData.chainageRows : [];
+      const distances = chainageRows
+        .map((d) => Number(d.distance))
+        .filter((v) => !Number.isNaN(v));
+      setChainageList([...new Set(distances)].sort((a, b) => a - b));
+
+      // Zoom-to-road camera animation happens whenever the WFS geometry
+      // resolves, without blocking the panel/patch UI above on it.
+      if (zoomFeaturesPromise) {
+        zoomFeaturesPromise.then((features) => {
+          if (!signal?.aborted) fitRoadFeatures(features || []);
+        }).catch(() => {});
+      }
+
+      const chainageSource = chainageLayerRef.current?.getSource?.();
+      if (chainageSource) {
+        chainageSource.updateParams({
+          CQL_FILTER: roadFilter,
+          STYLES: "chainage_distance_label",
+        });
+        chainageSource.refresh();
+        chainageLayerRef.current.setVisible(true);
+      }
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      showFeatureNotice({
+        feature: "Chainage",
+        message: "Chainage data could not be loaded for this road. Please try again or select another road.",
+        dedupeKey: `${city}|chainage-click`,
+      });
+    }
+  }, [city, cfg1, showApiUnavailableNotice, showFeatureNotice]);
+
+  // Chainage "armed" prompt: entering chainage mode no longer loads any
+  // heavy layer — it just arms click-to-inspect and tells the user what to
+  // do next, GIS "start editing"-style. Dismisses itself after a few
+  // seconds, and re-appears each time chainage mode is (re-)armed.
+  //
+  // Two cases:
+  // 1. A road was already selected on the dashboard (selectedRoadId prop,
+  //    from the normal click/table flow) before Chainage was armed — auto-
+  //    load its chainage/segmented layer immediately instead of making the
+  //    user click the same road again, then guide them toward marking a
+  //    patch (the actual civil-engineer task) rather than "select a road."
+  // 2. Nothing is selected yet — ask for a road, as before.
+  useEffect(() => {
+    if (!mapReady || mode !== "CHAINAGE") return;
+
+    if (
+      selectedRoadId &&
+      (!selectedRoad || String(selectedRoad.road_id) !== String(selectedRoadId))
+    ) {
+      openChainageForRoadId(selectedRoadId, {
+        road_id: selectedRoadId,
+        road_name: selectedRoadName,
+      });
+      return; // setSelectedRoad() inside will re-run this effect once loaded
+    }
+
+    if (selectedRoad) {
+      showFeatureNotice({
+        feature: "Chainage",
+        message: `Select a Start Chainage and End Chainage point along ${
+          selectedRoad.road_name || "the selected road"
+        } to mark the patch extent, then click Create.`,
+        dedupeKey: `chainage-patch-guide|${city}|${selectedRoad.road_id}|${Date.now()}`,
+        autoDismissMs: 6000,
+      });
+      return;
+    }
+
+    showFeatureNotice({
+      feature: "Chainage",
+      message: "Please select a road on the map to view or create chainage patches.",
+      dedupeKey: `chainage-armed|${city}|${Date.now()}`,
+      autoDismissMs: 4500,
+    });
+  }, [
+    mapReady,
+    mode,
+    city,
+    selectedRoad,
+    selectedRoadId,
+    selectedRoadName,
+    showFeatureNotice,
+    openChainageForRoadId,
+  ]);
+
   //chainage
   useEffect(() => {
     if (!mapReady || mode !== "CHAINAGE") return;
@@ -6261,26 +6705,55 @@ if (!res.ok) {
 
 
     if (!isNaN(lat) && !isNaN(lon)) {
-      const map = mapRef.current;
+  const map = mapRef.current;
+  const targetCoord = fromLonLat([lon, lat]);
 
-      map.once("rendercomplete", () => {
-        view.animate({
-          center: fromLonLat([lon, lat]),
-          zoom: 16,
-          duration: 800,
-        });
-      });
-    }
+  // Defensive: under React StrictMode's mount/cleanup/remount cycle, the
+  // marker-layer-creation effect can settle after this one runs. Make sure
+  // the layer is actually attached to the live map before relying on it.
+  if (
+    urlLocationMarkerLayerRef.current &&
+    !map.getLayers().getArray().includes(urlLocationMarkerLayerRef.current)
+  ) {
+    map.addLayer(urlLocationMarkerLayerRef.current);
+  }
+
+  urlLocationMarkerSourceRef.current.clear();
+
+  urlLocationMarkerSourceRef.current.addFeature(
+    new Feature({
+      geometry: new Point(targetCoord),
+    })
+  );
+
+  map.once("rendercomplete", () => {
+    view.animate({
+      center: targetCoord,
+      zoom: 16,
+      duration: 800,
+    });
+  });
+
+  map.renderSync();
+}
 
     let filterParts = [];
 
-    if (zone) filterParts.push(`zone_no='Zone ${zone}'`);
+    // zone_no's stored format varies by city (some store "Zone 1", others
+    // just "1") — match either so this doesn't silently fail for a city
+    // whose chainage segment table uses the plain-numeric format.
+    if (zone) filterParts.push(`(zone_no='Zone ${zone}' OR zone_no='${zone}')`);
     if (ward) filterParts.push(`ward_no='${ward}'`);
 
     if (filterParts.length > 0) {
       const filter = filterParts.join(" AND ");
 
       applyChainageFilter(filter); // ✅ CORRECT
+      // Deep-link (e.g. mobile field-task) entry with a zone/ward assignment —
+      // showing this filtered road subset is the intended behavior here,
+      // unlike the generic "Chainage" button which stays armed/invisible
+      // until a specific road is clicked.
+      roadLayerRef.current?.setVisible(true);
     }
 
   }, [mapReady, location.search, mode]);
@@ -6674,7 +7147,7 @@ const getSelectedRoadIdsOnly = () => {
       return;
     }
 
-    map.once("rendercomplete", () => {
+    map.once("rendercomplete", async () => {
       try {
         const size = map.getSize();
 
@@ -6730,6 +7203,11 @@ const getSelectedRoadIdsOnly = () => {
         context.setTransform(1, 0, 0, 1, 0, 0);
         context.globalAlpha = 1;
 
+        // RSAC logo bottom-right, falls back to "© RSAC-UP | URIDA" text —
+        // reuses the same watermark utility already used by Dashboard's
+        // PDF/Excel export, rather than a second implementation here.
+        await drawWatermark(canvas, rsacBanner);
+
         const dataUrl = canvas.toDataURL("image/png");
 
         canvas.toBlob((blob) => {
@@ -6762,6 +7240,26 @@ const getSelectedRoadIdsOnly = () => {
         style={{ width: "100%", height: "100%", background: "#e0e0e0" }} // Added background color for fallback
       />
 
+      {featureNotice && (
+        <div className="feature-progress-notice" role="status" aria-live="polite">
+          <div className="feature-progress-notice__content">
+            <div className="feature-progress-notice__title">{featureNotice.feature}</div>
+            <div className="feature-progress-notice__message">{featureNotice.message}</div>
+            {featureNotice.layerName && (
+              <div className="feature-progress-notice__meta">Layer: {featureNotice.layerName}</div>
+            )}
+          </div>
+          <button
+            type="button"
+            className="feature-progress-notice__close"
+            onClick={() => setFeatureNotice(null)}
+            aria-label="Close message"
+          >
+            x
+          </button>
+        </div>
+      )}
+
       <MapNavigation
         map={mapReady ? mapRef.current : null}
         isTableOpen={tableHasRows && !tableMinimized}
@@ -6782,19 +7280,37 @@ const getSelectedRoadIdsOnly = () => {
       >
         <MapLegend
           city={city}
+          mode={mode}
+          hasSelectedChainageRoad={!!selectedRoad}
           layerVisibility={layerVisibility}
           roadFilter={roadFilter}
           onApplyFilter={onRoadFilterChange}
           amenityCounts={amenityLegendCounts}
           otherCounts={otherLegendCounts}
           dssLegend={dssLegend}
+          zoneBoundaryColor={zoneBoundaryColor}
+          wardBoundaryColor={wardBoundaryColor}
         />
       </div>
 
       {selectedRoad && (  //chainage
-        <div className="road-panel">
-          <div className="road-panel-header">
-            <h3>ROAD DETAILS</h3>
+        <div
+          className="road-panel"
+          style={
+            roadPanelPos.left !== null
+              ? { position: "absolute", top: roadPanelPos.top, left: roadPanelPos.left, right: "auto" }
+              : undefined
+          }
+        >
+          <div
+            className="road-panel-header"
+            onPointerDown={onRoadPanelPointerDown}
+            style={{ cursor: "move", touchAction: "none" }}
+          >
+            <div className="road-panel-title">
+              <h3>Chainage</h3>
+              <span className="road-panel-subtitle">Road Details</span>
+            </div>
 
             <div className="road-panel-actions">
               <button
@@ -6847,6 +7363,7 @@ const getSelectedRoadIdsOnly = () => {
     // clear current road panel data
     setSelectedRoad(null);
     setPanelMinimized(false);
+    setShowCreateChainageForm(false);
     setPatchChoice(null);
     setPatchInfo(null);
     setShowPatchPanel(false);
@@ -6877,6 +7394,7 @@ const getSelectedRoadIdsOnly = () => {
       setPatchTableData([]);
       setShowPatchTable(false);
       setIsTableMinimized(false);
+      onPatchTableCloseRef.current?.();
     }
   }}
 >
@@ -6914,7 +7432,45 @@ const getSelectedRoadIdsOnly = () => {
         <strong>{selectedRoad.material}</strong>
       </div> */}
 
+              <div className="patch-action-buttons">
+                <button
+                  className="patch-action-btn patch-action-btn--create"
+                  onClick={() => setShowCreateChainageForm((v) => !v)}
+                >
+                  {showCreateChainageForm ? "Close Create Patch" : "Create Patch"}
+                </button>
+                <button
+                  className={`patch-action-btn patch-action-btn--view${
+                    !patchInfo?.exists ? " patch-action-btn--disabled-look" : ""
+                  }`}
+                  onClick={() => {
+                    if (!patchInfo?.exists) {
+                      showFeatureNotice({
+                        feature: "Chainage",
+                        message: "No patch has been created on this road yet. Click Create Patch to add one.",
+                        dedupeKey: `chainage-no-patch|${city}|${selectedRoad.road_id}|${Date.now()}`,
+                        autoDismissMs: 4500,
+                      });
+                      return;
+                    }
+                    if (showPatchPanel) {
+                      setShowPatchPanel(false);
+                      setPatchChoice(null);
+                      handleHidePatches();
+                      return;
+                    }
+                    setShowPatchPanel(true);
+                    setPatchChoice("yes");
+                    handleShowPatches(selectedPatches, allPatchRows);
+                    updatePatchTableFromSelection(selectedPatches, allPatchRows);
+                  }}
+                >
+                  {showPatchPanel ? "Hide Patches" : "View Patches"}
+                </button>
+              </div>
 
+              {showCreateChainageForm && (
+              <div className="chainage-create-form">
               <div className="chainage-selection">
 
                 <div className="chainage-group">
@@ -6952,62 +7508,18 @@ const getSelectedRoadIdsOnly = () => {
               <button
                 className="chainage-create-btn"
                 disabled={!startChainage || !endChainage || Number(startChainage) >= Number(endChainage)}
-                // onClick={() => handleCreateChainage()}
-                onClick={handleCreateChainage}
+                onClick={handleCreateChainageRequest}
               >
                 CREATE
               </button>
-
+              </div>
+              )}
 
             </div>
           )}
-          {showPatchPanel && patchInfo && (
+          {showPatchPanel && patchInfo?.exists && (
             <div className="patch-panel">
-
-              <div className="patch-text">
-                VIEW PATCHES
-              </div>
-
-              <div className="patch-actions">
-                <button
-                  className={`patch-btn yes ${patchChoice === "yes" ? "active" : ""}`}
-                  onClick={() => {
-                    setPatchChoice("yes");
-
-                    handleShowPatches(selectedPatches, allPatchRows);
-                    updatePatchTableFromSelection(selectedPatches, allPatchRows);
-                  }}
-                >
-                  Yes
-                </button>
-
-                <button
-                  className={`patch-btn no ${patchChoice === "no" ? "active" : ""}`}
-                  onClick={() => {
-                    setPatchChoice("no");
-
-                    const currentRoadKeys = currentRoadPatchList.map((patch) => patch.key);
-
-                    const updatedSelection = selectedPatches.filter(
-                      (key) => !currentRoadKeys.includes(key)
-                    );
-
-                    setSelectedPatches(updatedSelection);
-
-                    if (updatedSelection.length > 0) {
-                      handleShowPatches(updatedSelection, allPatchRows);
-                      updatePatchTableFromSelection(updatedSelection, allPatchRows);
-                    } else {
-                      handleHidePatches();
-                      setPatchTableData([]);
-                      setShowPatchTable(false);
-                    }
-                  }}
-                >
-                  No
-                </button>
-              </div>
-              {patchChoice === "yes" && currentRoadPatchList.length > 0 && (
+              {currentRoadPatchList.length > 0 && (
                 <div className="patch-list-panel">
 
                   <div className="patch-list-title">PATCHES</div>
@@ -7062,6 +7574,16 @@ const getSelectedRoadIdsOnly = () => {
                 title={isTableMinimized ? "Maximize" : "Minimize"}
               >
                 {isTableMinimized ? "▢" : "—"}
+              </button>
+              <button
+                onClick={() => {
+                  setShowPatchTable(false);
+                  setIsTableMinimized(false);
+                  onPatchTableCloseRef.current?.();
+                }}
+                title="Close patch table"
+              >
+                ✕
               </button>
             </div>
           </div>
@@ -7128,8 +7650,14 @@ const getSelectedRoadIdsOnly = () => {
         </div>
       )}
 
-      {mode === "CHAINAGE" && (
+      {mode === "CHAINAGE" && projectId && userId && (
         <div className="chainage-search-wrapper">
+          {/* Only shown for the KMC field-task deep link (project_id/user_id
+              present) — that page has none of the normal Dashboard chrome,
+              so this search is its only way to find a road. On the regular
+              Dashboard ("Chainage" button clicked on an already-loaded
+              city), the toolbar's own search is already available, so this
+              duplicate control stays hidden. */}
 
           {/* 🔘 Button */}
           <button
@@ -7143,6 +7671,7 @@ const getSelectedRoadIdsOnly = () => {
           <div className={`chainage-search-expand ${showSearchPanel ? "open" : ""}`}>
             <ChainageSearchPanel
               city={city}
+              onFeatureUnavailable={(payload) => showApiUnavailableNotice(payload, "Chainage search")}
               onSelectRoad={(road) => {
                 const filter = `road_id='${road.road_id}'`;
                 applyRoadFilterImmediate(filter);
@@ -7169,20 +7698,51 @@ const getSelectedRoadIdsOnly = () => {
 
       )}
 
-      {/* Popup Overlay Structure */}
-      <div ref={popupRef} className="ol-popup">
-        <a
-          href="#"
-          ref={popupCloserRef}
-          className="ol-popup-closer"
-          onClick={(e) => {
-            e.preventDefault();
-            try { closePopup(); } catch (err) { console.error("Popup close error:", err); }
-            return false;
-          }}
-        ></a>
-        <div ref={popupContentRef} className="ol-popup-content"></div>
-      </div>
+      {/* Popup overlay is now built imperatively via document.createElement
+          (see the map-init effect) and attached directly to popupRef.current
+          — not rendered here as JSX. See comment there for why. */}
+      {showPatchConfirm && (
+        <div className="submit-confirm-overlay">
+          <div className="submit-confirm-box">
+
+            <h3>CONFIRM PATCH</h3>
+
+            <div className="submit-info">
+              <p><b>Road:</b> {selectedRoad?.road_name || selectedRoad?.road_id}</p>
+              <p><b>Road ID:</b> {patchConfirmPending?.roadId}</p>
+              <p><b>Chainage Range:</b> {patchConfirmPending?.start}m to {patchConfirmPending?.end}m</p>
+            </div>
+
+            <div className="submit-map-preview">
+              {patchConfirmImage ? (
+                <img src={patchConfirmImage} alt="Patch Segment Snapshot" />
+              ) : (
+                <p>Map snapshot not available</p>
+              )}
+            </div>
+
+            <div className="submit-confirm-actions">
+              <button
+                className="cancel-btn"
+                onClick={handleCancelPatchConfirm}
+                disabled={patchConfirmSaving}
+              >
+                Cancel
+              </button>
+
+              <button
+                className="final-submit-btn"
+                onClick={handleConfirmSavePatch}
+                disabled={patchConfirmSaving}
+              >
+                {patchConfirmSaving ? "Saving..." : "Save"}
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
       {showSubmitConfirm && (
         <div className="submit-confirm-overlay">
           <div className="submit-confirm-box">

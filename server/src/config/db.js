@@ -29,7 +29,10 @@ export const pool = new Pool({
 });
 
 pool.connect()
-  .then(() => console.log('✅ Connected to PostgreSQL'))
+  .then((client) => {
+    console.log('✅ Connected to PostgreSQL');
+    client.release();
+  })
   .catch(err => console.error('❌ Database connection error:', err));
 
 pool.on("error", (err) => {

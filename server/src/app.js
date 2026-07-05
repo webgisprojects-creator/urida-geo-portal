@@ -15,6 +15,10 @@ import roadNetworkRoutes from './roadNetwork.js';
 import { auditLogger, tryVerifyToken } from './middleware/authMiddleware.js';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import chainageRoutes from "./routes/chainage.js";//chainage
+import tileRoutes, { startTileCacheEvictionSchedule } from "./routes/tiles.js";
+import telemetryRoutes from "./routes/telemetry.js";
+import wfsCacheRoutes from "./routes/wfsCache.js";
+import { startCacheWarmer } from "./services/cacheWarmer.js";
 
 // Use __dirname-relative path so this works regardless of which directory
 // the process is started from (project root, server/, or anywhere else).
@@ -148,6 +152,13 @@ app.use(helmet({
 }));
 app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=(), usb=(), fullscreen=(self)');
+  if (req.path.startsWith('/static/')) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    return next();
+  }
+  if (req.path.startsWith('/api/tiles/')) {
+    return next();
+  }
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.setHeader('Pragma', 'no-cache');
   next();
@@ -159,7 +170,13 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/road-networks', roadNetworkRoutes);
 app.use(chainageRoutes);//chainage
+app.use(tileRoutes);
+app.use(wfsCacheRoutes);
+app.use(telemetryRoutes);
 app.use('/api', cityRoutes);
+
+startTileCacheEvictionSchedule();
+startCacheWarmer();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

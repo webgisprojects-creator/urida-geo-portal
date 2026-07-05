@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from "react";
+import { getGeoserverBase } from "../utils/geoserverBase";
 
-const GEOSERVER_BASE = window.location.port === "8060"
-    ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-    : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+const GEOSERVER_BASE = getGeoserverBase();
 
 const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl }) => {
     const [legendItems, setLegendItems] = useState(isManual ? items : []);
@@ -48,7 +47,6 @@ const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl }) => {
 
                 setLegendItems(parsedItems);
             } catch (err) {
-                console.warn("Fallback to image-based legend for:", layerName);
                 if (isMounted) {
                     setLegendItems([{
                         label: label,
@@ -71,7 +69,7 @@ const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl }) => {
                         }
                     }
                 } catch (countErr) {
-                    console.error("Error fetching feature counts:", countErr);
+                    if (isMounted) setFeatureCount(null);
                 }
 
                 if (isMounted) setLoading(false);

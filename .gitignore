@@ -37,6 +37,10 @@ test_*
 debug_*
 find_roads.js
 output.xml
+scripts/test-db-nagarnigams.mjs
+scripts/test-geoserver-layers.mjs
+scripts/build-local-context.mjs
+.codex/
 *.zip
 *.rar
 *.7z
@@ -44,8 +48,19 @@ output.xml
 # ─── Caches ───────────────────────────────────────────────────
 .npm/
 .cache/
+server/tile-cache/
+server/boundary-cache/
+server/wfs-cache/
+
+# ─── graphify (local knowledge graph, regenerate with /graphify) ──
+graphify-out/
+.graphify_*
+.graphify_python
 
 # Local backup files created during server hotfixes
 *.bak
 *.bak.*
+
+# ─── Internal infra docs (kept local, not in git history) ─────
+URIDA_Production_Server_Baseline_Report.xlsx
 

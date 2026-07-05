@@ -826,6 +826,25 @@ right-btn {
   transform: scale(1.05);
 }
 
+/* Chainage / Patch Creation button states */
+.map-btn.active {
+  background: linear-gradient(to bottom, #16a34a, #15803d);
+  border-color: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.35), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.map-btn--disabled-look {
+  background: linear-gradient(to bottom, #475569, #334155);
+  border-color: #64748b;
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.map-btn--disabled-look:hover {
+  background: linear-gradient(to bottom, #475569, #334155);
+  transform: none;
+}
+
 .controls-panel {
   position: absolute;
   top: 0;
@@ -1777,6 +1796,24 @@ right-btn {
   border-radius: 2px;
 }
 
+/* The bottom road table (.bottom-table, z-index 100001) intentionally sits
+   above everything so it's never hidden while open — but that meant the
+   summary panel's own bottom edge could visually disappear behind it
+   instead of the two staying properly laid out side by side. Rather than
+   fighting that stacking order, shrink the panel's own available height
+   whenever the table is open, so it never extends into the table's space
+   in the first place — reserves ~300px (the table's own max-height) plus
+   a small margin. */
+.summary-panel.table-open {
+  max-height: calc(100vh - 140px - 320px);
+}
+
+@media (max-width: 768px) {
+  .summary-panel.table-open {
+    max-height: calc(100vh - 110px - 320px);
+  }
+}
+
 .summary-panel.summary-panel-left {
   left: 20px;
   right: auto;
@@ -1813,6 +1850,32 @@ right-btn {
 
 .summary-close:hover {
   background: rgba(220, 38, 38, 1);
+  transform: scale(1.12);
+}
+
+.summary-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.summary-minimize {
+  border: none;
+  background: rgba(255, 255, 255, 0.35);
+  color: #1e2b3a;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+  line-height: 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease;
+  flex-shrink: 0;
+}
+
+.summary-minimize:hover {
+  background: rgba(255, 255, 255, 0.55);
   transform: scale(1.12);
 }
 
@@ -2474,7 +2537,11 @@ right-btn {
   }
 }
 
-/* ================= TOP LOADING STRIP ================= */
+/* ================= TOP LOADING STRIP =================
+   Shares the app's signature teal->blue header gradient (see
+   .lucknow-header above) instead of an unrelated dark box, so this reads
+   as part of the same design system on every dashboard rather than a
+   bolted-on debug overlay. */
 .top-loading-strip {
   position: fixed;
   top: 45px;
@@ -2482,9 +2549,9 @@ right-btn {
   left: 0;
   width: 100%;
   height: 3px;
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: rgba(148, 163, 184, 0.25);
   z-index: 9999;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .top-loading-strip::after {
@@ -2493,13 +2560,14 @@ right-btn {
   top: 0;
   left: 0;
   bottom: 0;
-  width: 50%;
+  width: 40%;
   background: linear-gradient(90deg,
       transparent,
-      rgba(254, 246, 1, 0.8),
-      /* Neon Yellow matching map focus */
+      rgba(54, 209, 214, 0.95),
+      rgba(91, 134, 229, 0.95),
       transparent);
-  animation: loading-strip-anim 1.5s infinite ease-in-out;
+  box-shadow: 0 0 8px 1px rgba(91, 134, 229, 0.6);
+  animation: loading-strip-anim 1.4s infinite ease-in-out;
 }
 
 @keyframes loading-strip-anim {
@@ -2508,7 +2576,56 @@ right-btn {
   }
 
   100% {
-    transform: translateX(200%);
+    transform: translateX(250%);
+  }
+}
+
+.top-loading-strip-message {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: linear-gradient(149deg,
+      rgba(54, 209, 214, 0.95) 20%,
+      rgba(91, 134, 229, 0.95) 80%);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+  max-width: min(70vw, 420px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 3px 10px rgba(30, 58, 138, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.top-loading-strip-spinner {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  border-top-color: #ffffff;
+  animation: top-loading-spin 0.7s linear infinite;
+}
+
+@keyframes top-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 768px) {
+  .top-loading-strip-message {
+    right: 6px;
+    font-size: 11px;
+    max-width: 60vw;
+    padding: 4px 10px;
   }
 }
 
@@ -2624,29 +2741,27 @@ right-btn {
 
 /*chainage*/
 .road-panel {
-  /* position: absolute;
-  left: 20px;
-  top: 7%;
-  width: 300px; */
-
   position: absolute;
-  left: 16px;
-  top: 3%;
+  /* Anchored near the left toolbar's Chainage button (left-toolbar starts
+     at top:170px/left:10px, ~45px buttons + 18px gaps; Chainage is the 5th
+     button) instead of sharing the Legend's top-left corner (top:10/left:10)
+     or the Road Net Summary panel's top-right corner, which used to collide. */
+  left: 70px;
+  top: 190px;
   width: clamp(220px, 28vw, 300px); /* responsive width */
   max-width: 90vw;
   z-index: 1000;
-  border: 1px solid rgba(59, 130, 246, 0.3);
-  border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
-  background: rgba(15, 23, 42, 0.95);
-  backdrop-filter: blur(14px);
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  /* Same teal → blue → purple gradient glass theme as .summary-panel
+     (ROAD NET SUMMARY), for visual consistency across panels. */
+  background: linear-gradient(155deg, rgba(40, 195, 200, 0.82) 0%, rgba(72, 120, 220, 0.82) 50%, rgba(100, 80, 200, 0.72) 100%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.45);
   box-shadow:
-    0 12px 30px rgba(0, 0, 0, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  color: #fff;
-  color: #e5e7eb;
+    0 8px 32px rgba(0, 0, 0, 0.18),
+    0 1px 0 rgba(255, 255, 255, 0.25) inset;
+  color: #1e2b3a;
   font-family: system-ui, sans-serif;
   animation: slideIn 0.25s ease;
   transition: all 0.3s ease;
@@ -2668,34 +2783,69 @@ right-btn {
   justify-content: space-between;
   align-items: center;
   padding: 9px 9px;
-  border-bottom: 1px solid rgba(59, 130, 246, 0.2);
-  color: #e5e7eb;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.35);
+  color: #1e2b3a;
   font-family: system-ui, sans-serif;
 }
 
+.road-panel-title {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
 .road-panel-header h3 {
-  font-size: 13px;
-  letter-spacing: 1px;
-  color: #93c5fd;
-  margin: 0;
-}
-
-.road-panel-close {
-  background: transparent;
-  border: none;
-  color: #9ca3af;
   font-size: 14px;
-  cursor: pointer;
+  letter-spacing: 0.6px;
+  color: #1e2b3a;
+  margin: 0;
+  font-weight: 700;
 }
 
-.road-panel-actions button {
-  margin-left: 6px;
-  background: transparent;
+.road-panel-subtitle {
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  color: rgba(30, 43, 58, 0.75);
+  text-transform: uppercase;
+}
+
+/* White × on a filled red circle — matches .summary-close (ROAD NET
+   SUMMARY's close button) for consistency across panels. */
+.road-panel-close {
   border: none;
+  background: rgba(239, 68, 68, 0.9);
   color: #fff;
-  font-size: 16px;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+  line-height: 24px;
+  text-align: center;
   cursor: pointer;
-  padding: 0px 4px;
+  transition: transform 0.2s ease, background 0.2s ease;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.road-panel-close:hover {
+  transform: scale(1.08);
+  background: rgba(220, 38, 38, 0.95);
+}
+
+.road-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.road-panel-actions button:not(.road-panel-close) {
+  background: rgba(255, 255, 255, 0.35);
+  border: none;
+  color: #1e2b3a;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
 }
 
 
@@ -2722,12 +2872,13 @@ right-btn {
   justify-content: space-between;
   align-items: center;
   padding: 6px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
   font-size: 13px;
+  color: #1e2b3a;
 }
 
 .road-item span:first-child {
-  color: #9ca3af;
+  color: rgba(30, 43, 58, 0.7);
 }
 
 /* BADGES */
@@ -2769,7 +2920,7 @@ right-btn {
 .chainage-selection {
   margin-top: 15px;
   padding-top: 10px;
-  border-top: 1px solid rgba(255,255,255,0.1);
+  border-top: 1px solid rgba(255,255,255,0.35);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -2784,7 +2935,7 @@ right-btn {
 .chainage-group label {
   font-size: 12px;
   font-weight: 600;
-  color: #94a3b8;
+  color: rgba(30, 43, 58, 0.75);
   letter-spacing: 0.5px;
 }
 
@@ -2871,6 +3022,57 @@ right-btn {
   color: #64748b;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+/* Create Patch / View Patches action row */
+.patch-action-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.patch-action-btn {
+  flex: 1;
+  padding: 8px 4px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid rgba(59, 130, 246, 0.6);
+}
+
+.patch-action-btn--create {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.9), rgba(30, 64, 175, 0.9));
+  color: #ffffff;
+}
+
+.patch-action-btn--create:hover {
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+  transform: scale(1.02);
+}
+
+.patch-action-btn--view {
+  background: linear-gradient(135deg, rgba(22, 163, 74, 0.9), rgba(21, 128, 61, 0.9));
+  color: #ffffff;
+}
+
+.patch-action-btn--view:hover {
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+  transform: scale(1.02);
+}
+
+.patch-action-btn--disabled-look {
+  background: rgba(148, 163, 184, 0.15);
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #64748b;
+  cursor: not-allowed;
+}
+
+.patch-action-btn--disabled-look:hover {
+  box-shadow: none;
+  transform: none;
 }
 
 .patch-panel {
@@ -4731,5 +4933,73 @@ VERY SMALL MOBILES: up to 380px
   .patch-table-actions button {
     padding: 3px;
     font-size: 10.5px;
+  }
+}
+
+.feature-progress-notice {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40050;
+  width: min(440px, calc(100% - 28px));
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(37, 99, 235, 0.22);
+  border-left: 4px solid #2563eb;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.16);
+  color: #0f172a;
+  pointer-events: auto;
+}
+
+.feature-progress-notice__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.feature-progress-notice__title {
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.2;
+  margin-bottom: 4px;
+}
+
+.feature-progress-notice__message {
+  font-size: 13px;
+  line-height: 1.35;
+  color: #334155;
+}
+
+.feature-progress-notice__meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #64748b;
+  word-break: break-word;
+}
+
+.feature-progress-notice__close {
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(100, 116, 139, 0.24);
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.feature-progress-notice__close:hover {
+  background: #e2e8f0;
+}
+
+@media (max-width: 600px) {
+  .feature-progress-notice {
+    top: 12px;
+    padding: 10px 12px;
   }
 }

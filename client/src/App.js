@@ -26,11 +26,18 @@ function App() {
 
   useEffect(() => {
     if (session.loading || !session.user) return;
-    const idleMs = 15 * 60 * 1000;
+    const configuredIdleMs = Number(process.env.REACT_APP_SESSION_IDLE_TIMEOUT_MS);
+    const idleMs = Number.isFinite(configuredIdleMs) && configuredIdleMs > 0
+      ? configuredIdleMs
+      : 15 * 60 * 1000;
     let idleTimer = null;
     let lastPingAt = 0;
+    let lastActivityAt = Date.now();
+    let logoutStarted = false;
 
     const doLogout = async () => {
+      if (logoutStarted) return;
+      logoutStarted = true;
       try {
         await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
       } catch {
@@ -42,7 +49,9 @@ function App() {
 
     const schedule = () => {
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(doLogout, idleMs);
+      const elapsed = Date.now() - lastActivityAt;
+      const remaining = Math.max(0, idleMs - elapsed);
+      idleTimer = setTimeout(doLogout, remaining);
     };
 
     const maybePing = () => {
@@ -57,6 +66,17 @@ function App() {
     };
 
     const onActivity = () => {
+      lastActivityAt = Date.now();
+      schedule();
+      maybePing();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastActivityAt >= idleMs) {
+        doLogout();
+        return;
+      }
       schedule();
       maybePing();
     };
@@ -64,9 +84,11 @@ function App() {
     schedule();
     const events = ["mousemove", "mousedown", "keydown", "touchstart", "scroll"];
     events.forEach((evt) => window.addEventListener(evt, onActivity, { passive: true }));
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       if (idleTimer) clearTimeout(idleTimer);
       events.forEach((evt) => window.removeEventListener(evt, onActivity));
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [session.loading, session.user]);
 

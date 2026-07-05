@@ -174,7 +174,11 @@ const Header = ({
             border: '1px solid #ccc',
             borderRadius: '4px',
             padding: '5px 0',
-            zIndex: 3000,
+            // Higher than .feature-progress-notice (z-index: 40050 in
+            // Dashboard.css) — an interactive menu the user just opened
+            // must never be blocked by a passive status notice appearing
+            // on top of it.
+            zIndex: 100000,
             minWidth: '160px',
             boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
             color: 'black',

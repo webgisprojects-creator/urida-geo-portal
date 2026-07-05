@@ -1,6 +1,7 @@
 /* Dynamic map legend derived from visible layers and cityConfig metadata. */
 import React, { useMemo, useState, useEffect } from "react";
 import { cityConfig } from "../assets/configs/cityConfig";
+import { chainageCityConfig } from "../assets/configs/chainageCityConfig";
 import bankIcon from "../assets/Amenities_Icons/bank_1.png";
 import busIcon from "../assets/Amenities_Icons/bus.png";
 import graveyardIcon from "../assets/Amenities_Icons/graveyard.png";
@@ -21,9 +22,8 @@ import mosqueIcon from "../assets/Amenities_Icons/Mosque.png";
 import locationIcon from "../assets/Amenities_Icons/location.png";
 import manhole from "../assets/Amenities_Icons/manhole.jpg";
 import railwayStationIcon from "../assets/Amenities_Icons/railway_station.svg";
-const GEOSERVER_BASE = window.location.port === "8060"
-  ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-  : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+import { getGeoserverBase } from "../utils/geoserverBase";
+const GEOSERVER_BASE = getGeoserverBase();
 
 const ATTRIBUTE_MAPPING = {
   condition: "condition",
@@ -108,7 +108,7 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
 
         setLegendItems(items);
       } catch (err) {
-        console.error("Error fetching legend graphic:", err);
+        if (isMounted) setLegendItems([]);
       }
     };
 
@@ -168,7 +168,6 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
 
         setCounts(mapping);
       } catch (err) {
-        console.error("Error fetching counts:", err);
         setCounts({});
       } finally {
         if (isMounted) setLoading(false);
@@ -300,12 +299,21 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
   );
 };
 
-const BoundaryLegendItem = ({ item }) => {
-  const [legendColor, setLegendColor] = useState("#ccc");
+const BoundaryLegendItem = ({ item, colorOverride }) => {
+  const [legendColor, setLegendColor] = useState(colorOverride || "#ccc");
   const [iconUrl, setIconUrl] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!colorOverride);
 
   useEffect(() => {
+    // MapContainer already resolved (and applied to the actual rendered
+    // layer) the correct color for zone/ward boundaries — use that instead
+    // of independently fetching, which previously hit a different
+    // GeoServer endpoint and could show a different color than the map.
+    if (colorOverride) {
+      setLegendColor(colorOverride);
+      setLoading(false);
+      return;
+    }
     let isMounted = true;
 
     const fetchLegendGraphic = async () => {
@@ -336,7 +344,6 @@ const BoundaryLegendItem = ({ item }) => {
           )}&LEGEND_OPTIONS=forceLabels:off`
         );
       } catch (err) {
-        console.error("Error fetching boundary legend:", err);
         if (isMounted) {
           setLegendColor("#ccc");
           setIconUrl("");
@@ -348,7 +355,7 @@ const BoundaryLegendItem = ({ item }) => {
 
     fetchLegendGraphic();
     return () => { isMounted = false; };
-  }, [item.layer, item.label]);
+  }, [item.layer, item.label, colorOverride]);
 
   if (loading) {
     return <div style={{ fontSize: '11px', color: '#888' }}>Loading...</div>;
@@ -383,7 +390,7 @@ const BoundaryLegendItem = ({ item }) => {
   );
 };
 
-const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCounts, otherCounts, dssLegend }) => {
+const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadFilter, onApplyFilter, amenityCounts, otherCounts, dssLegend, zoneBoundaryColor, wardBoundaryColor }) => {
   // Draggable & Minimized State
   const [position, setPosition] = useState(null); // {x, y} or null
   const [isDragging, setIsDragging] = useState(false);
@@ -450,7 +457,9 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
 
   const legendItems = useMemo(() => {
     const items = [];
-    const cfg = cityConfig[city?.toLowerCase()] || {};
+    const cityKey = city?.toLowerCase();
+    const cfg = cityConfig[cityKey] || {};
+    const chainageCfg = chainageCityConfig[cityKey] || null;
 
     if (cfg.zoneLayer) {
       items.push({
@@ -466,6 +475,20 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
         label: "Ward Boundary",
         layer: cfg.wardLayer,
         boundary: true,
+      });
+    }
+
+    // Note: no legend entry for chainageCfg.roadLayer (roadLayerRef in
+    // MapContainer) — that layer is intentionally always invisible except
+    // for the zone/ward deep-link case; it exists only to answer identify
+    // clicks, never to be drawn, so it shouldn't appear in the legend either.
+
+    if (mode === "CHAINAGE" && hasSelectedChainageRoad && chainageCfg?.chainageLayer) {
+      items.push({
+        id: "chainage_points",
+        label: "Selected Road Chainage",
+        layer: chainageCfg.chainageLayer,
+        group: "chainage",
       });
     }
 
@@ -693,7 +716,7 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
     }
 
     return items;
-  }, [city, layerVisibility, roadFilter]);
+  }, [city, mode, hasSelectedChainageRoad, layerVisibility, roadFilter]);
 
   if (legendItems.length === 0) return null;
 
@@ -701,10 +724,11 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
   const hideItemLabel = legendItems.length === 1;
   const safeItems = (legendItems || []).filter(Boolean);
   const boundaryItems = safeItems.filter((item) => item.boundary);
+  const chainageItems = safeItems.filter((item) => item.group === "chainage");
   const amenityItems = safeItems.filter((item) => item.group === "amenities");
   const otherItems = safeItems.filter((item) => item.group === "others");
   const remainingItems = safeItems.filter(
-    (item) => !item.boundary && item.group !== "amenities" && item.group !== "others"
+    (item) => !item.boundary && item.group !== "chainage" && item.group !== "amenities" && item.group !== "others"
   );
   const dssGroups = Array.isArray(dssLegend) ? dssLegend.filter(Boolean) : [];
 
@@ -787,11 +811,76 @@ const MapLegend = ({ city, layerVisibility, roadFilter, onApplyFilter, amenityCo
           }}
         >
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {boundaryItems.map((item) => (
-              <div key={item.id}>
-                <BoundaryLegendItem item={item} />
+            {boundaryItems.length > 0 && (
+              <div>
+                <div
+                  style={{
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    marginBottom: "6px",
+                    color: "#1e2b3a",
+                    letterSpacing: "0.15px",
+                  }}
+                >
+                  Administrative Boundaries
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {boundaryItems.map((item) => (
+                    <div key={item.id}>
+                      <BoundaryLegendItem
+                        item={item}
+                        colorOverride={
+                          item.id === "zone_boundary"
+                            ? zoneBoundaryColor
+                            : item.id === "ward_boundary"
+                              ? wardBoundaryColor
+                              : undefined
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
+            )}
+            {chainageItems.length > 0 && (
+              <div>
+                <div
+                  style={{
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    marginBottom: "6px",
+                    color: "#1e2b3a",
+                    letterSpacing: "0.15px",
+                  }}
+                >
+                  Chainage
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {chainageItems.map((item) => (
+                    <div key={item.id}>
+                      <img
+                        src={`${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(
+                          item.layer
+                        )}&LEGEND_OPTIONS=forceLabels:on;fontName:Arial;fontSize:11;fontAntiAliasing:true`}
+                        alt={item.label}
+                        style={{
+                          maxWidth: "100%",
+                          display: "block",
+                          background: "rgba(255,255,255,0.88)",
+                          borderRadius: "6px",
+                          padding: "4px 6px",
+                          border: "1px solid rgba(0,0,0,0.08)",
+                        }}
+                        onError={(e) => {
+                          const img = e.currentTarget;
+                          if (img) img.style.display = "none";
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {dssGroups.length > 0 && (
               <div>
                 <div

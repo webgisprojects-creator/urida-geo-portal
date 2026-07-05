@@ -3,6 +3,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { exportToPDF, exportToExcel, exportToKML, captureMapCanvas, drawWatermark } from "../utils/gisExport";
+import { getIsLowBandwidth } from "../utils/networkStatus";
+import { logEvent } from "../utils/telemetry";
 import { saveAs } from "file-saver";
 
 import "../assets/styles/Dashboard.css";
@@ -16,12 +18,24 @@ import SummaryTable from "../components/SummaryTable";
 import ChartPanel from "../components/ChartPanel";
 
 import { cityConfig } from "../assets/configs/cityConfig.js";
-const GEOSERVER_BASE = window.location.port === "8060"
-  ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-  : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+import { getGeoserverBase } from "../utils/geoserverBase";
+const GEOSERVER_BASE = getGeoserverBase();
 
 // ⭐ Internal Component for Filter Dropdown
 const NUMERIC_COLS = ['yoc', 'row_meter', 'carriage_w', 'length_km'];
+
+// Keeps the top-loading-strip message short and readable regardless of how
+// many things happen to be loading at once — a long comma-joined list of
+// layer titles can overflow no matter how generous the CSS truncation is,
+// so cap it at two names and summarize the rest instead of ellipsis-cutting
+// mid-word.
+function formatLoadingMessage(labels) {
+  const list = (labels || []).filter(Boolean);
+  if (!list.length) return "Loading, please wait…";
+  if (list.length === 1) return `Loading ${list[0]}, please wait…`;
+  if (list.length === 2) return `Loading ${list[0]} and ${list[1]}, please wait…`;
+  return `Loading ${list[0]}, ${list[1]} and ${list.length - 2} more, please wait…`;
+}
 
 const RangeSlider = ({ col, min, max, value, onChange }) => {
   const [lo, setLo] = React.useState(value?.[0] ?? min);
@@ -375,6 +389,10 @@ const DashboardPage = () => {
   const queryParams = new URLSearchParams(location.search);
   const city = (queryParams.get("city") || "Lucknow").toLowerCase();
 
+  useEffect(() => {
+    logEvent("dashboard_opened", { city });
+  }, [city]);
+
   const [showRoadSearch, setShowRoadSearch] = useState(false);
   // const [roadOptions, setRoadOptions] = useState([]);
   const [selectedRoad, setSelectedRoad] = useState("");
@@ -384,6 +402,28 @@ const DashboardPage = () => {
   const [baseFilter, setBaseFilter] = useState(""); // ⭐ NEW: Base filter from Sidebar/Search
   const [queryVersion, setQueryVersion] = useState(0);
   const [showChainage, setShowChainage] = useState(false); //chainage
+  // In-place Chainage mode toggle — replaces navigating to a separate
+  // /chainage page. "/chainage" deep links (e.g. from the mobile field-task
+  // app) redirect here with ?mode=CHAINAGE preserved, so this also picks
+  // that up on load. //chainage
+  const [mode, setMode] = useState(() =>
+    new URLSearchParams(location.search).get("mode") === "CHAINAGE" ? "CHAINAGE" : "DASHBOARD"
+  ); //chainage
+  const handleChainageToggle = () => {
+    setMode((m) => {
+      if (m === "CHAINAGE") return "DASHBOARD";
+      if (!hasVisibleRoadLayer) {
+        mapRef.current?.showFeatureNotice?.({
+          feature: "Chainage",
+          message: "Please open a road layer first — patch creation only works on a road layer.",
+          dedupeKey: `chainage-no-road-layer|${city}|${Date.now()}`,
+          autoDismissMs: 4500,
+        });
+        return m;
+      }
+      return "CHAINAGE";
+    });
+  }; //chainage
 
   // ⭐ NEW: Generic Layer Filters (for Attribute Query)
   const [layerFilters, setLayerFilters] = useState({});
@@ -406,6 +446,15 @@ const DashboardPage = () => {
     roadClassifications: {},
     specializedOptions: {}, // e.g. { sewage: 'diameter' }
   });
+  // Chainage/patch creation only makes sense once some road layer is on the
+  // map — it needs a road to click. Covers the main Road Network toggle, any
+  // road-classification (category) layer, and the "INCLUDE" sentinel
+  // baseFilter uses when roads are shown via a filter/summary-chart click. //chainage
+  const hasVisibleRoadLayer =
+    !!layerVisibility?.network?.roads ||
+    Object.values(layerVisibility?.roadClassifications || {}).some(Boolean) ||
+    baseFilter === "INCLUDE" ||
+    (!!roadFilter && roadFilter.trim() !== ""); //chainage
   const [currentPage, setCurrentPage] = useState(1);
   const [recordsPerPage] = useState(100);
   const [isTableMinimized, setIsTableMinimized] = useState(false);
@@ -434,6 +483,42 @@ const DashboardPage = () => {
   const [specializedAllRows, setSpecializedAllRows] = useState([]);
   const [specializedColumnFilters, setSpecializedColumnFilters] = useState({});
   const [isLoading, setIsLoading] = useState(false); // ⭐ NEW: Global loading state
+  const [loadingLabels, setLoadingLabels] = useState([]); // Friendly names of whatever's currently loading
+  // Reference-counted loading registry: any number of independent things
+  // (map tiles/layers, table fetches, future features) can be loading at
+  // once — each keeps its own key so one finishing early doesn't hide the
+  // indicator while another is still in flight. To show a spinner/loading
+  // strip for a new feature, just call beginLoading('myKey', 'Friendly
+  // label') / endLoading('myKey') around it; no other wiring needed.
+  const loadingRegistryRef = useRef(new Map());
+  const loadingStartedAtRef = useRef(new Map());
+  const recomputeLoading = useCallback(() => {
+    const labels = Array.from(new Set(loadingRegistryRef.current.values()));
+    setLoadingLabels(labels);
+    setIsLoading(labels.length > 0);
+  }, []);
+  const beginLoading = useCallback((key, label) => {
+    loadingRegistryRef.current.set(key, label || "Loading");
+    loadingStartedAtRef.current.set(key, performance.now());
+    // "map" is logged with per-layer detail by mapLoadingTracker.js already
+    // — logging it again here would just be a redundant, less-detailed
+    // duplicate of the same event.
+    if (key !== "map") logEvent("table_load_start", { key, label });
+    recomputeLoading();
+  }, [recomputeLoading]);
+  const endLoading = useCallback((key) => {
+    loadingRegistryRef.current.delete(key);
+    const startedAt = loadingStartedAtRef.current.get(key);
+    loadingStartedAtRef.current.delete(key);
+    if (key !== "map" && startedAt !== undefined) {
+      logEvent("table_load_end", { key, durationMs: Math.round(performance.now() - startedAt) });
+    }
+    recomputeLoading();
+  }, [recomputeLoading]);
+  const handleMapLoadingChange = useCallback((loading, labels) => {
+    if (loading) beginLoading("map", (labels && labels.length ? labels : ["map"]).join(", "));
+    else endLoading("map");
+  }, [beginLoading, endLoading]);
   const [isDownloading, setIsDownloading] = useState(false); // ⭐ Download in progress
   const [activeFilterColumn, setActiveFilterColumn] = useState(null);
   const [filterPosition, setFilterPosition] = useState(null);
@@ -839,10 +924,28 @@ const DashboardPage = () => {
   const [showRoadNetworkPanel, setShowRoadNetworkPanel] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [showChartPanel, setShowChartPanel] = useState(false);
+  // Minimize keeps the panel mounted (filters/zones/layers preserved) but
+  // visually hidden; only an explicit Close actually resets everything.
+  const [chartPanelMinimized, setChartPanelMinimized] = useState(false);
+  const handleChartPanelToggle = () => {
+    logEvent("chart_panel_toggle", { wasOpen: showChartPanel, wasMinimized: chartPanelMinimized });
+    setShowChartPanel((prev) => {
+      if (prev && chartPanelMinimized) {
+        setChartPanelMinimized(false); // was minimized — restore, don't close
+        return true;
+      }
+      if (prev) return false; // was open — toolbar click closes it fully
+      setChartPanelMinimized(false);
+      return true; // was closed — open fresh
+    });
+  };
   const [streetViewVisible, setStreetViewVisible] = useState(false);
 
   const toggleSidebar = () => {
-    setIsSidebarOpen((prev) => !prev);
+    setIsSidebarOpen((prev) => {
+      logEvent("sidebar_toggle", { opening: !prev });
+      return !prev;
+    });
   };
 
   const loadSpecializedNetworkTable = useCallback(
@@ -891,11 +994,12 @@ const DashboardPage = () => {
       setShouldFetchTable(true);
       setIsTableMinimized(false);
 
-      setIsLoading(true);
+      beginLoading("specializedTable", specCfg.label || formatGenericColumnLabel(networkId));
       try {
+        const pageLimit = getIsLowBandwidth() ? 500 : 2000;
         const url = `/api/road-networks/${cityKey}/specialized-details?network=${encodeURIComponent(
           networkId
-        )}&option=${encodeURIComponent(optionKey)}&layer=${encodeURIComponent(layerName)}&page=1&limit=2000`;
+        )}&option=${encodeURIComponent(optionKey)}&layer=${encodeURIComponent(layerName)}&page=1&limit=${pageLimit}`;
         const res = await fetch(url);
         const payload = await res.json();
         if (!res.ok) throw new Error(payload?.error || `HTTP ${res.status}`);
@@ -919,7 +1023,7 @@ const DashboardPage = () => {
       } catch (err) {
         console.error("Specialized network table load error:", err);
       } finally {
-        setIsLoading(false);
+        endLoading("specializedTable");
       }
     },
     [city, tableDataset.kind, tableDataset.networkId]
@@ -939,6 +1043,7 @@ const DashboardPage = () => {
       "option:",
       option
     );
+    logEvent("layer_toggle", { group, id, checked, option });
     if (group === "roadClassifications") {
       if (id === "none") {
         setLayerVisibility((prev) => ({
@@ -1119,9 +1224,13 @@ const DashboardPage = () => {
     tableFetchIdRef.current = fetchId;
     const controller = new AbortController();
 
-    setIsLoading(true);
+    beginLoading("roadTable", "Road Network data");
+    // Explicit limit (server defaults to 1000 rows when omitted) so a
+    // detected slow connection pulls a smaller first batch instead of the
+    // full 1000-row page every time the filter changes.
+    const roadTableLimit = getIsLowBandwidth() ? 300 : 1000;
     fetch(
-      `/api/road-networks/${city}/details?filter=${encodeURIComponent(roadFilter)}`,
+      `/api/road-networks/${city}/details?filter=${encodeURIComponent(roadFilter)}&limit=${roadTableLimit}`,
       { signal: controller.signal }
     )
       .then((res) => res.json())
@@ -1133,12 +1242,12 @@ const DashboardPage = () => {
           total_roads: data.total || (data.data || []).length,
           total_length_km: data.total_length_km || 0
         });
-        setIsLoading(false);
+        endLoading("roadTable");
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
         console.error("Table load error:", err);
-        setIsLoading(false);
+        endLoading("roadTable");
       });
     return () => controller.abort();
   }, [roadFilter, city, shouldFetchTable, analysisResults]);
@@ -1151,10 +1260,14 @@ const DashboardPage = () => {
 
   // Pagination controls
   // const paginate = (pageNumber) => setCurrentPage(pageNumber);
-  const goToPreviousPage = () =>
+  const goToPreviousPage = () => {
+    logEvent("table_page_change", { direction: "previous" });
     setCurrentPage((prev) => Math.max(prev - 1, 1));
-  const goToNextPage = () =>
+  };
+  const goToNextPage = () => {
+    logEvent("table_page_change", { direction: "next" });
     setCurrentPage((prev) => Math.min(prev + 1, totalPages));
+  };
 
   const getRowSelectionId = (row) =>
     row?.road_id ??
@@ -1239,6 +1352,16 @@ const DashboardPage = () => {
     }
     return false;
   };
+
+  // Table-state stacking around the chainage patch table: reuses the same
+  // snapshot/restore mechanism as the road-detail table's Back/Close flow
+  // above, just triggered from the patch table's own open/close instead. //chainage
+  const handlePatchTableOpen = () => {
+    prevTableStateRef.current = capturePrevState();
+  }; //chainage
+  const handlePatchTableClose = () => {
+    restorePrevTableState();
+  }; //chainage
 
 
   const buildSelectionFilter = useCallback((ids) => {
@@ -1390,6 +1513,7 @@ const DashboardPage = () => {
     let roadId = road.road_id ?? null;
     const gisId = road.gis_id ?? null;
     const roadName = road.road_name ?? null;
+    logEvent("road_selected_on_map", { roadId, gisId });
 
     console.log("[handleRoadSelectedFromMap] received:", JSON.stringify(road), "roadId:", roadId, "gisId:", gisId, "tableRows:", tableRows.length);
 
@@ -1468,7 +1592,7 @@ const DashboardPage = () => {
           const alreadyInTable = tableRows.some((r) => String(r.road_id) === idStr);
           if (!alreadyInTable) {
             const filter = roadId ? `road_id='${roadId}'` : `gis_id='${gisId}'`;
-            setIsLoading(true);
+            beginLoading("roadDetailFetch", "Road details");
             fetch(`/api/road-networks/${city}/details?filter=${encodeURIComponent(filter)}`)
               .then((res) => res.json())
               .then((data) => {
@@ -1481,11 +1605,11 @@ const DashboardPage = () => {
                     return [fetchedRoad, ...prev];
                   });
                 }
-                setIsLoading(false);
+                endLoading("roadDetailFetch");
               })
               .catch((err) => {
                 console.error("[handleRoadSelectedFromMap] multi-select fetch failed:", err);
-                setIsLoading(false);
+                endLoading("roadDetailFetch");
               });
           }
         }
@@ -1538,6 +1662,7 @@ const DashboardPage = () => {
   };
 
   const handleBaseMapChange = (selectedBaseMap) => {
+    logEvent("basemap_switch", { from: baseMap, to: selectedBaseMap });
     const map =
       mapRef.current?.instance || mapRef.current?.map || mapRef.current;
     if (!map || typeof map.getLayers !== "function") {
@@ -1722,6 +1847,8 @@ const DashboardPage = () => {
   // ⭐ Handle Download Actions — delegates to gisExport utility
   const handleDownloadAction = async (action) => {
     console.log("Download action triggered:", action);
+    const downloadStartedAt = performance.now();
+    logEvent("download_start", { action });
 
     setIsDownloading(true);
     try {
@@ -1827,7 +1954,9 @@ const DashboardPage = () => {
     } catch (err) {
       console.error("Download error:", err);
       alert(`Export failed: ${err.message}`);
+      logEvent("download_error", { action, message: err.message });
     } finally {
+      logEvent("download_end", { action, durationMs: Math.round(performance.now() - downloadStartedAt) });
       setIsDownloading(false);
     }
   };
@@ -1847,7 +1976,14 @@ const DashboardPage = () => {
         isDownloading={isDownloading}
       />
 
-      {isLoading && <div className="top-loading-strip" />}
+      {isLoading && (
+        <div className="top-loading-strip">
+          <span className="top-loading-strip-message">
+            <span className="top-loading-strip-spinner" aria-hidden="true" />
+            {formatLoadingMessage(loadingLabels)}
+          </span>
+        </div>
+      )}
 
       {isSidebarOpen && (
         <Sidebar
@@ -1864,7 +2000,7 @@ const DashboardPage = () => {
           drainageController={{
             setLayerVisibility,
             tableDataset,
-            setIsLoading,
+            setIsLoading: (v) => (v ? beginLoading("drainFilter", "Drain data") : endLoading("drainFilter")),
             setSelectedRoadId,
             setSelectedRoadIds,
             setIsMultiSelectMode,
@@ -1897,6 +2033,7 @@ const DashboardPage = () => {
         <MapContainer
           ref={mapRef}
           city={city}
+          mode={mode} //chainage
           baseMap={baseMap} // ⭐ Passed for adaptive colors
           layerVisibility={layerVisibility}
           streetViewVisible={streetViewVisible}
@@ -1917,13 +2054,19 @@ const DashboardPage = () => {
           onAnalysisDataLoaded={handleAnalysisDataLoaded} // ⭐ NEW
           onRoadSelected={handleRoadSelectedFromMap}
           onPopupClosed={handlePopupClosed}
-          onMapLoadingChange={setIsLoading} // ⭐ NEW: Map loading prop
+          onMapLoadingChange={handleMapLoadingChange} // ⭐ NEW: Map loading prop
           showChainage={showChainage} //chainage
+          onPatchTableOpen={handlePatchTableOpen} //chainage
+          onPatchTableClose={handlePatchTableClose} //chainage
         />
 
         {/* ⭐ TOOLBAR — updated */}
         <MapToolbar
           city={city}
+          mapRef={mapRef}
+          onChainageToggle={handleChainageToggle} //chainage
+          chainageActive={mode === "CHAINAGE"} //chainage
+          chainageDisabled={!hasVisibleRoadLayer} //chainage
           showRoadNetworkPanel={showRoadNetworkPanel} // ⭐ Pass state
           onToggleRoadNetworkPanel={setShowRoadNetworkPanel} // ⭐ Pass setter
           baseMap={baseMap}
@@ -1983,17 +2126,23 @@ const DashboardPage = () => {
           onCloseSearch={() => setShowRoadSearch(false)}
           onLatLngSearch={handleLatLngSearch}
           onPlaceSearch={handlePlaceSearch}
-          onDataAnalysis={() => setShowChartPanel((prev) => !prev)}
+          onDataAnalysis={handleChartPanelToggle}
           onQuery={handleQuery}
-          onSummary={() => setShowChartPanel((prev) => !prev)} // Re-routed to new consolidated ChartPanel
+          onSummary={handleChartPanelToggle} // Re-routed to new consolidated ChartPanel
         />
 
 
         {showChartPanel && (
+          <div style={chartPanelMinimized ? { display: "none" } : undefined}>
           <ChartPanel
             city={city}
-            isOpen={showChartPanel}
-            onClose={() => setShowChartPanel(false)}
+            isOpen={!chartPanelMinimized}
+            tableOpen={tableRows.length > 0 && !isTableMinimized}
+            onClose={() => {
+              setShowChartPanel(false);
+              setChartPanelMinimized(false);
+            }}
+            onMinimize={() => setChartPanelMinimized(true)}
             panelSide="left"
             onChartClick={(col, val) => {
               if (val) {
@@ -2017,6 +2166,7 @@ const DashboardPage = () => {
             onClassificationChange={handleClassificationChange}
             roadWmsSource={mapRef.current?.getRoadWmsSource?.()}
           />
+          </div>
         )}
       </div>
 
@@ -2194,6 +2344,15 @@ const DashboardPage = () => {
               <button
                 className="table-close-btn"
                 onClick={() => {
+                  if (mode === "CHAINAGE") {
+                    mapRef.current?.showFeatureNotice?.({
+                      feature: "Chainage",
+                      message: "Please switch off Chainage mode before closing this table.",
+                      dedupeKey: `chainage-table-close-blocked|${city}|${Date.now()}`,
+                      autoDismissMs: 4500,
+                    });
+                    return;
+                  }
                   if (restorePrevTableState()) return;
 
                   // Securely hide the table and reset selection state
