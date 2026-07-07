@@ -58,6 +58,9 @@ server/mbtiles/
 # Local assistant/session state
 .claude/
 server/_tmp_*.mjs
+server/server/
+server/servernew/
+servernew/
 
 # Local audit/report artifacts
 2026-Q2-Nagar Vikas Road Updation-WebApp-SecurityTest-Report-v2.0.pdf
