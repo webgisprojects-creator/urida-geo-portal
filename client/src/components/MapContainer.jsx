@@ -4470,9 +4470,6 @@ if (cfg1) {
 
   // Keep callback refs always up-to-date so closures never use stale references
 
-  
-  
-
   // Helper to close popup internally
   const closePopup = () => {
     try {
