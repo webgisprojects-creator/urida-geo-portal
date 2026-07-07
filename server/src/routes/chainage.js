@@ -5,14 +5,24 @@ import { verifyToken } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// Every route here reads or writes real patch/chainage data and was
+// Every route below reads or writes real patch/chainage data and was
 // reachable with no auth at all (unlike roadNetwork.js/cityRoutes.js, which
 // both gate themselves the same way). Every real path into this feature —
 // including the KMC mobile deep-link — already goes through the app's
 // normal login first (client/src/App.js's <Protected> wraps /chainage and
 // redirects unauthenticated visitors to log in before they ever reach this
 // UI), so requiring a valid session here is transparent to real users.
-router.use(verifyToken);
+//
+// verifyToken is applied per-route below, NOT as a blanket `router.use()`.
+// This router (like tiles.js/wfsCache.js) is mounted at the app root with
+// no path prefix (`app.use(chainageRoutes)` in app.js), because its own
+// routes are already fully-qualified (/api/chainage/..., /api/create-patch,
+// etc.) — a blanket `router.use(verifyToken)` here would run for *every*
+// request that reaches this router, including the bare `/` page-shell
+// request and every other router's routes mounted after it in app.js
+// (confirmed live: it broke the app shell and would have also gated
+// telemetry.js's deliberately-public endpoint). Route-level middleware only
+// runs when that specific route actually matches.
 
 const requiredDbEnv = ["DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASS"];
 
@@ -83,7 +93,7 @@ const chainageDbConfig = {
         segmentIdColumn: "segment_id",
     },
 };
-router.get("/api/chainage/:city/:roadId", async (req, res) => {
+router.get("/api/chainage/:city/:roadId", verifyToken, async (req, res) => {
     const city = String(req.params.city || "").toLowerCase().trim();
     const roadId = String(req.params.roadId || "").trim();
 
@@ -118,7 +128,7 @@ router.get("/api/chainage/:city/:roadId", async (req, res) => {
     }
 });
 
-// router.post("/api/create-patch", async (req, res) => {
+// router.post("/api/create-patch", verifyToken, async (req, res) => {
 //     const { city, road_id, startPoint, endPoint } = req.body;
 
 //     const cityKey = city?.toLowerCase();
@@ -206,7 +216,7 @@ router.get("/api/chainage/:city/:roadId", async (req, res) => {
 // road/chainage range, without writing anything — used to show the user an
 // exact map/image preview before they confirm "Save" on /api/create-patch,
 // which runs the same range query but inside an insert transaction.
-router.get("/api/patch-preview/:city/:roadId", async (req, res) => {
+router.get("/api/patch-preview/:city/:roadId", verifyToken, async (req, res) => {
     const cityKey = String(req.params.city || "").toLowerCase().trim();
     const roadId = String(req.params.roadId || "").trim();
     const cfg = chainageDbConfig[cityKey];
@@ -251,7 +261,7 @@ router.get("/api/patch-preview/:city/:roadId", async (req, res) => {
     }
 });
 
-router.post("/api/create-patch", async (req, res) => {
+router.post("/api/create-patch", verifyToken, async (req, res) => {
     const { city, road_id, startPoint, endPoint } = req.body;
 
     const cityKey = city?.toLowerCase();
@@ -348,7 +358,7 @@ if (existingPatchRes.rows.length > 0) {
     }
 });
 
-router.get("/api/patches/:city/:roadId", async (req, res) => {
+router.get("/api/patches/:city/:roadId", verifyToken, async (req, res) => {
     const city = String(req.params.city || "").toLowerCase().trim();
     const roadId = String(req.params.roadId || "").trim();
 
@@ -378,7 +388,7 @@ router.get("/api/patches/:city/:roadId", async (req, res) => {
     }
 });
 
-router.post("/api/patch-segments", async (req, res) => {
+router.post("/api/patch-segments", verifyToken, async (req, res) => {
     const { city, patchIds } = req.body;
 
     const cfg = chainageDbConfig[city?.toLowerCase()];
@@ -411,7 +421,7 @@ router.post("/api/patch-segments", async (req, res) => {
     }
 });
 
-// router.get("/api/chainage-search/:city", async (req, res) => {
+// router.get("/api/chainage-search/:city", verifyToken, async (req, res) => {
 //     const city = req.params.city?.toLowerCase();
 //     const q = req.query.q || "";
 
@@ -435,7 +445,7 @@ router.post("/api/patch-segments", async (req, res) => {
 //     }
 // });
 
-router.get("/api/chainage-search/:city", async (req, res) => {
+router.get("/api/chainage-search/:city", verifyToken, async (req, res) => {
     const city = req.params.city?.toLowerCase();
     const q = req.query.q || "";
 
@@ -475,7 +485,7 @@ router.get("/api/chainage-search/:city", async (req, res) => {
     }
 });
 
-router.post("/api/map-project-patches", async (req, res) => {
+router.post("/api/map-project-patches", verifyToken, async (req, res) => {
     const { city, project_id, user_id, patchIds } = req.body;
 
     const cityKey = city?.toLowerCase();
@@ -522,7 +532,7 @@ router.post("/api/map-project-patches", async (req, res) => {
 });
 
 
-router.post("/api/grouped-patches-by-selection", async (req, res) => {
+router.post("/api/grouped-patches-by-selection", verifyToken, async (req, res) => {
     const { city, project_id, patchIds } = req.body;
 
     const cityKey = city?.toLowerCase();

@@ -23,6 +23,34 @@ const idleTimeoutMs = Number(process.env.SESSION_IDLE_TIMEOUT_MS || 15 * 60 * 10
 const absoluteTimeoutMs = Number(process.env.SESSION_ABSOLUTE_TIMEOUT_MS || 30 * 60 * 1000);
 let activeTokensReady = false;
 
+// verifyToken runs on *every* request, including tile/GWC/WFS traffic —
+// which fires in large simultaneous bursts (a single pan/zoom triggers 9+
+// requests at once). Without this cache, every one of those requests did
+// its own SELECT + UPDATE against active_tokens, and a 200-concurrent-user
+// load test confirmed the real-world cost: GeoServer and Postgres both
+// stayed near-idle throughout, but median request latency was ~20s anyway
+// — the bottleneck was entirely the app's own DB_POOL_MAX=5 connection
+// pool being saturated by redundant session-lookup queries, not real work.
+// Caching a validated session for a few seconds turns "N requests in this
+// window" into "1 DB round trip per token per window", which is what
+// actually fixes the bottleneck rather than just widening the pool (which
+// would still pay a DB round trip on every single tile request).
+const SESSION_CACHE_TTL_MS = Number(process.env.SESSION_CACHE_TTL_MS || 5000);
+const sessionCache = new Map(); // tokenHash -> { entry, userId, cachedAt }
+
+const invalidateSessionCache = (token) => {
+  if (!token) return;
+  sessionCache.delete(hashToken(token));
+};
+
+const invalidateSessionCacheForUser = (userId) => {
+  if (!userId) return;
+  const id = String(userId);
+  for (const [tokenHash, cached] of sessionCache.entries()) {
+    if (cached.userId === id) sessionCache.delete(tokenHash);
+  }
+};
+
 export const parseCookies = (cookieHeader) => {
   if (!cookieHeader) return {};
   return cookieHeader.split(';').reduce((acc, part) => {
@@ -56,6 +84,7 @@ export const blacklistToken = (token, expSeconds) => {
   if (!token) return;
   const expMs = expSeconds ? expSeconds * 1000 : Date.now() + 5 * 60 * 1000;
   tokenBlacklist.set(token, expMs);
+  invalidateSessionCache(token);
 };
 
 const hashToken = (token) =>
@@ -141,6 +170,7 @@ export const updateActiveTokenStatus = async (token, status) => {
        WHERE token_hash = $2`,
       [status, tokenHash]
     );
+    invalidateSessionCache(token);
   } catch (err) {
     console.error('active_tokens status update failed:', err?.message || err);
     throw err;
@@ -152,10 +182,63 @@ export const clearActiveTokensForUser = async (userId) => {
   await ensureActiveTokensTable();
   try {
     await pool.query(`DELETE FROM active_tokens WHERE user_id = $1`, [String(userId)]);
+    invalidateSessionCacheForUser(userId);
   } catch (err) {
     console.error('active_tokens user purge failed:', err?.message || err);
     throw err;
   }
+};
+
+// Called at login, before the new session is created. Allows up to
+// `maxSessions` concurrent devices per account (e.g. phone + browser) —
+// logging in on a 3rd device evicts only the single oldest still-active
+// session (by issued_at), not every other session, so a second device
+// doesn't kick out a first one that's still within the allowed count.
+export const enforceSessionLimit = async (userId, maxSessions) => {
+  if (!userId) return;
+  await ensureActiveTokensTable();
+  try {
+    const { rows } = await pool.query(
+      `SELECT token_hash FROM active_tokens
+       WHERE user_id = $1 AND status = 'active'
+       ORDER BY issued_at ASC`,
+      [String(userId)]
+    );
+    const overflow = rows.length - (maxSessions - 1);
+    if (overflow <= 0) return;
+    const toEvict = rows.slice(0, overflow).map((r) => r.token_hash);
+    await pool.query(
+      `UPDATE active_tokens SET status = 'session_limit_evicted' WHERE token_hash = ANY($1)`,
+      [toEvict]
+    );
+    for (const tokenHash of toEvict) sessionCache.delete(tokenHash);
+  } catch (err) {
+    console.error('enforceSessionLimit failed:', err?.message || err);
+    throw err;
+  }
+};
+
+// Shared by verifyToken/tryVerifyToken: looks up an active_tokens row,
+// serving a short-lived in-memory cached copy when available instead of
+// hitting Postgres on every single request (see SESSION_CACHE_TTL_MS
+// above for why this exists). The idle/absolute-timeout checks below may
+// read a `last_activity_time` that's up to SESSION_CACHE_TTL_MS stale,
+// which is negligible against timeouts measured in minutes.
+const loadSessionEntry = async (token, tokenHash) => {
+  const cached = sessionCache.get(tokenHash);
+  if (cached && Date.now() - cached.cachedAt < SESSION_CACHE_TTL_MS) {
+    return { entry: cached.entry, fromCache: true };
+  }
+  await ensureActiveTokensTable();
+  const { rows } = await pool.query(
+    `SELECT token_hash, user_id, issued_at, expires_at, last_activity_time, status
+     FROM active_tokens
+     WHERE token_hash = $1`,
+    [tokenHash]
+  );
+  const entry = rows[0] || null;
+  sessionCache.set(tokenHash, { entry, userId: entry?.user_id, cachedAt: Date.now() });
+  return { entry, fromCache: false };
 };
 
 export const verifyToken = async (req, res, next) => {
@@ -180,15 +263,8 @@ export const verifyToken = async (req, res, next) => {
     if (tokenBlacklist.has(token)) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
-    await ensureActiveTokensTable();
     const tokenHash = hashToken(token);
-    const { rows } = await pool.query(
-      `SELECT token_hash, user_id, issued_at, expires_at, last_activity_time, status
-       FROM active_tokens
-       WHERE token_hash = $1`,
-      [tokenHash]
-    );
-    const entry = rows[0];
+    const { entry, fromCache } = await loadSessionEntry(token, tokenHash);
     if (!entry || entry.status !== 'active') {
       return res.status(401).json({ message: 'Unauthorized' });
     }
@@ -207,10 +283,17 @@ export const verifyToken = async (req, res, next) => {
       await updateActiveTokenStatus(token, 'session_expired');
       return res.status(401).json({ message: 'Unauthorized' });
     }
-    await pool.query(
-      `UPDATE active_tokens SET last_activity_time = $1 WHERE token_hash = $2`,
-      [now, tokenHash]
-    );
+    // Only actually touch the DB when this request is the one that did a
+    // real fetch (cache miss) — every request riding the cached entry
+    // within the same TTL window skips this write entirely, which is the
+    // other half of the fix (a busy tile-loading burst used to fire one
+    // UPDATE per request; now at most one per SESSION_CACHE_TTL_MS window).
+    if (!fromCache) {
+      await pool.query(
+        `UPDATE active_tokens SET last_activity_time = $1 WHERE token_hash = $2`,
+        [now, tokenHash]
+      );
+    }
     req.user = decoded;
     req.token = token;
     next();
@@ -241,15 +324,8 @@ export const tryVerifyToken = async (req, res, next) => {
     if (tokenBlacklist.has(token)) {
       return next();
     }
-    await ensureActiveTokensTable();
     const tokenHash = hashToken(token);
-    const { rows } = await pool.query(
-      `SELECT token_hash, user_id, issued_at, expires_at, last_activity_time, status
-       FROM active_tokens
-       WHERE token_hash = $1`,
-      [tokenHash]
-    );
-    const entry = rows[0];
+    const { entry, fromCache } = await loadSessionEntry(token, tokenHash);
     if (!entry || entry.status !== 'active') {
       return next();
     }
@@ -268,10 +344,12 @@ export const tryVerifyToken = async (req, res, next) => {
       await updateActiveTokenStatus(token, 'session_expired');
       return next();
     }
-    await pool.query(
-      `UPDATE active_tokens SET last_activity_time = $1 WHERE token_hash = $2`,
-      [now, tokenHash]
-    );
+    if (!fromCache) {
+      await pool.query(
+        `UPDATE active_tokens SET last_activity_time = $1 WHERE token_hash = $2`,
+        [now, tokenHash]
+      );
+    }
     req.user = decoded;
     req.token = token;
     next();
@@ -323,6 +401,12 @@ export const auditLogger = (req, res, next) => {
         path: req.originalUrl,
         status: res.statusCode,
         durationMs: Math.round(durationMs),
+        // HIT/MISS/STALE from tiles.js/wfsCache.js when present — lets a
+        // load test (or anyone reading audit.log) tell "slow because this
+        // was a genuine cache miss doing real upstream work" apart from
+        // "slow even though it was already cached", which would point at a
+        // different problem (disk I/O, event-loop contention) instead.
+        cache: res.get('X-Cache') || undefined,
         username: req.user?.username || 'anonymous',
         role: req.user?.role || 'none',
         ip: req.ip,

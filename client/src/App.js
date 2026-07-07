@@ -27,9 +27,15 @@ function App() {
   useEffect(() => {
     if (session.loading || !session.user) return;
     const configuredIdleMs = Number(process.env.REACT_APP_SESSION_IDLE_TIMEOUT_MS);
-    const idleMs = Number.isFinite(configuredIdleMs) && configuredIdleMs > 0
+    const defaultIdleMs = Number.isFinite(configuredIdleMs) && configuredIdleMs > 0
       ? configuredIdleMs
       : 15 * 60 * 1000;
+    // The shared field-task "chainage" account is used across many short
+    // KMC visits spread through a shift — the app's normal idle default
+    // would log someone out mid-task far too aggressively for how this
+    // account is actually used in the field.
+    const isChainageAccount = String(session.user?.username || "").toLowerCase() === "chainage";
+    const idleMs = isChainageAccount ? 30 * 60 * 1000 : defaultIdleMs;
     let idleTimer = null;
     let lastPingAt = 0;
     let lastActivityAt = Date.now();
@@ -138,8 +144,17 @@ function App() {
   if (!user) {
     const redirectPath = location.pathname + location.search;
 
-    // Only chainage should preserve redirect params
-    if (location.pathname === "/chainage") {
+    // Field-task deep links (KMC/iGile redirects) can point either at the
+    // legacy /chainage shim or directly at /dashboard?...&mode=CHAINAGE —
+    // both carry the same kind of one-shot context (project_id, zone, ward,
+    // latitude, longitude, user_id, title) that must survive the login
+    // round trip, or the task is silently lost the moment someone hits the
+    // link while logged out. Only these field-task links preserve their
+    // full query string on redirect; other routes keep the old behavior.
+    const isFieldTaskLink =
+      location.pathname === "/chainage" ||
+      new URLSearchParams(location.search).get("mode") === "CHAINAGE";
+    if (isFieldTaskLink) {
       return (
         <Navigate
           to={`/?redirect=${encodeURIComponent(redirectPath)}`}

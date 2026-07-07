@@ -47,10 +47,20 @@ scripts/build-local-context.mjs
 
 # ─── Caches ───────────────────────────────────────────────────
 .npm/
+.npm-cache/
 .cache/
 server/tile-cache/
 server/boundary-cache/
 server/wfs-cache/
+server/mbtiles/
+server/mbtiles/
+
+# Local assistant/session state
+.claude/
+server/_tmp_*.mjs
+
+# Local audit/report artifacts
+2026-Q2-Nagar Vikas Road Updation-WebApp-SecurityTest-Report-v2.0.pdf
 
 # ─── graphify (local knowledge graph, regenerate with /graphify) ──
 graphify-out/

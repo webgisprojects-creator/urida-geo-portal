@@ -1,6 +1,7 @@
 // src/components/MapContainer.jsx
 /* OpenLayers map engine: base layers, WMS/WFS overlays, popups, drawing, legend, analysis layers. */
 import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import "ol/ol.css";
 
 import OLMap from "ol/Map";
@@ -21,14 +22,14 @@ import { defaults as defaultControls } from "ol/control";
 import { Style, Stroke, Fill, Circle as CircleStyle, Icon } from "ol/style";
 import Point from "ol/geom/Point";
 import GeometryCollection from "ol/geom/GeometryCollection";
-import { bbox as bboxStrategy } from "ol/loadingstrategy";
-import { attachLayerClip, extractClipRings } from "../utils/mapClip";
+import { bbox as bboxStrategy, all as allStrategy } from "ol/loadingstrategy";
+import { attachInvertedMask, extractClipRings } from "../utils/mapClip";
+import { attachBasemapErrorNotifier } from "../utils/basemapHealth";
 import { attachMapLoadingTracker } from "../utils/mapLoadingTracker";
 import { getIsLowBandwidth } from "../utils/networkStatus";
 import MapNavigation from "./MapNavigation"; // ⭐ NEW: Google Maps style navigation suite
 import TextStyle from "ol/style/Text";//chainage
 import { chainageCityConfig } from "../assets/configs/chainageCityConfig";//chainage
-import ChainageSearchPanel from "./ChainageSearchPanel";//chainage
 import { useLocation } from "react-router-dom";//chainage
 
 // Import Icons
@@ -69,7 +70,6 @@ const EMPTY_ARRAY = [];
 const GEOSERVER_BASE = getGeoserverBase();
 
 const WARD_ZONE_WMS = `${GEOSERVER_BASE}/Ward_Boundary_New/wms`;
-const WARD_ZONE_WFS = `${GEOSERVER_BASE}/wfs`;
 const AMENITIES_WMS = `${GEOSERVER_BASE}/Amenities/wms`;
 const AMENITIES_WFS = `${GEOSERVER_BASE}/wfs`; // Use Global WFS Endpoint for robustness
 const CHAINAGE_WMS = `${GEOSERVER_BASE}/Chainage/wms`;
@@ -80,54 +80,21 @@ const DEFAULT_MAX_ZOOM = 20;
 const ROAD_DIM_OPACITY = 0.6;
 const ROAD_LABEL_STYLE = "Road_Network:urida_road_labels";
 
-const buildBoundaryLabelSld = (layerName, labelAttr, color) => `
-<StyledLayerDescriptor version="1.0.0"
-  xmlns="http://www.opengis.net/sld"
-  xmlns:ogc="http://www.opengis.net/ogc"
-  xmlns:xlink="http://www.w3.org/1999/xlink"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <NamedLayer>
-    <Name>${layerName}</Name>
-    <UserStyle>
-      <FeatureTypeStyle>
-        <Rule>
-          <PolygonSymbolizer>
-            <Fill>
-              <CssParameter name="fill">#ffffff</CssParameter>
-              <CssParameter name="fill-opacity">0</CssParameter>
-            </Fill>
-            <Stroke>
-              <CssParameter name="stroke">${color}</CssParameter>
-              <CssParameter name="stroke-width">2</CssParameter>
-              <CssParameter name="stroke-opacity">1</CssParameter>
-            </Stroke>
-          </PolygonSymbolizer>
-          <TextSymbolizer>
-            <Label>
-              <ogc:PropertyName>${labelAttr}</ogc:PropertyName>
-            </Label>
-            <Font>
-              <CssParameter name="font-family">Arial</CssParameter>
-              <CssParameter name="font-size">14</CssParameter>
-              <CssParameter name="font-weight">bold</CssParameter>
-            </Font>
-            <Halo>
-              <Radius>2</Radius>
-              <Fill>
-                <CssParameter name="fill">${color}</CssParameter>
-                <CssParameter name="fill-opacity">0.9</CssParameter>
-              </Fill>
-            </Halo>
-            <Fill>
-              <CssParameter name="fill">#ffffff</CssParameter>
-            </Fill>
-          </TextSymbolizer>
-        </Rule>
-      </FeatureTypeStyle>
-    </UserStyle>
-  </NamedLayer>
-</StyledLayerDescriptor>
-`;
+// For VectorSources this app populates itself (fetch + .clear() + .addFeatures()),
+// not via OL's own url/loader convenience. Without an explicit loader, OL still
+// calls `loadFeatures()` on every viewport change, finds the extent untracked,
+// fires `featuresloadstart`, then invokes the default no-op loader — which never
+// calls back, so `featuresloadend`/`featuresloaderror` never fire. Every titled
+// layer wrapping one of these sources was consequently reported "stuck loading"
+// by mapLoadingTracker's 12s watchdog on every pan/zoom, even though the data
+// itself loaded fine via the app's own fetch. A same-tick no-op loader plus the
+// "load everything at once" strategy makes OL mark the whole extent as already
+// loaded after the first (instant) call, so it stops re-firing loadstart at all.
+const manualVectorSourceOptions = () => ({
+  loader: (extent, resolution, projection, success) => success([]),
+  strategy: allStrategy,
+});
+
 const TILE_CACHE_BASE = (process.env.REACT_APP_TILE_CACHE_BASE || "").replace(/\/$/, "");
 
 // `boundary` (a GeoServer `workspace:layer` typeName) asks the tile proxy
@@ -200,6 +167,18 @@ const stripEmptyWmsParams = (params) => {
 const getGwcCachedTileUrl = (layerName, z, x, y) =>
   `${TILE_CACHE_BASE}/api/gwc-tiles/${encodeURIComponent(layerName)}/${z}/${x}/${y}.png`;
 
+// GWC can't apply an ad-hoc CQL_FILTER (it only ever serves its own
+// pre-seeded tile grid), so a filtered request used to always mean bypassing
+// every cache and hitting GeoServer's raw WMS renderer directly — the exact
+// case a field-task view is *always* in, since it's permanently scoped to a
+// zone/ward filter for the whole session. That filter doesn't change
+// mid-session and is often shared across everyone assigned to the same
+// ward, so it's cacheable too — just keyed by filter+style as well as
+// layer/z/x/y (server/src/routes/tiles.js, `/api/wms-tile-cache`).
+const getFilteredWmsCachedTileUrl = (layerName, cqlFilter, styles, z, x, y) =>
+  `${TILE_CACHE_BASE}/api/wms-tile-cache/${encodeURIComponent(layerName)}/${z}/${x}/${y}.png` +
+  `?cqlFilter=${encodeURIComponent(cqlFilter || "")}&styles=${encodeURIComponent(styles || "")}`;
+
 const makeTileWmsSource = ({
   layerName,
   workspace,
@@ -213,6 +192,14 @@ const makeTileWmsSource = ({
       TILED: true,
       FORMAT: "image/png",
       TRANSPARENT: true,
+      // Forced explicitly — OL's TileWMS defaults to WMS 1.3.0 (CRS= param),
+      // but GeoServer's /gwc/service/wms endpoint only recognizes the older
+      // SRS= param name and returns "400: No SRS specified" under 1.3.0.
+      // Confirmed directly via a real browser session: every request that
+      // bypasses the cache proxy (any CQL_FILTER/SLD_BODY-carrying layer —
+      // this is exactly the fallback path used for Zone/Ward boundary
+      // coloring) failed 100% of the time until this was pinned to 1.1.1.
+      VERSION: "1.1.1",
       ...params,
     }),
     serverType: "geoserver",
@@ -224,16 +211,17 @@ const makeTileWmsSource = ({
       : (tile, src) => {
         const image = tile.getImage();
         image.crossOrigin = "anonymous";
-        // The GWC tile-cache proxy (server/src/routes/tiles.js) has no way to
-        // pass through CQL_FILTER or SLD_BODY — it only caches by
-        // layer/z/x/y. Any layer with a live filter or a dynamically-applied
-        // style must bypass the cache and hit GeoServer directly, the same
-        // way CQL-filtered requests already do, or the cached tile would
-        // silently ignore the filter/style.
+        // SLD_BODY is arbitrary inline style XML (used for the dynamic
+        // zone/ward boundary coloring) — much less stable/reusable across
+        // requests than a CQL_FILTER, and low-volume enough that it isn't
+        // worth caching in this pass, so it still bypasses straight to
+        // GeoServer. CQL_FILTER (every field-task zone/ward-scoped view) is
+        // stable for a whole session and now has its own cache below.
         const liveParams = source.getParams();
-        const hasLiveFilter = !!(liveParams?.CQL_FILTER || liveParams?.SLD_BODY);
+        const cqlFilter = liveParams?.CQL_FILTER;
+        const hasSldBody = !!liveParams?.SLD_BODY;
         const coord = tile.getTileCoord?.();
-        if (hasLiveFilter || !coord) {
+        if (hasSldBody || !coord) {
           image.src = src;
           return;
         }
@@ -242,9 +230,11 @@ const makeTileWmsSource = ({
         image.onerror = () => {
           if (triedFallback) return;
           triedFallback = true;
-          image.src = src; // fall back to the direct (uncached) GWC URL
+          image.src = src; // fall back to the direct (uncached) URL
         };
-        image.src = getGwcCachedTileUrl(layerName, z, x, y);
+        image.src = cqlFilter
+          ? getFilteredWmsCachedTileUrl(layerName, cqlFilter, liveParams?.STYLES, z, x, y)
+          : getGwcCachedTileUrl(layerName, z, x, y);
       },
   });
   return source;
@@ -982,6 +972,10 @@ const MapContainer = forwardRef(({
   onPopupClosed,
   onPatchTableOpen, //chainage
   onPatchTableClose, //chainage
+  onFieldTaskRoadHighlight, //chainage
+  onMapExtentChange, // live extent sync for the bottom table
+  fieldTaskWardList = null, //chainage
+  isMultiSelectModeProp = false, //chainage - Dashboard's table Multi toggle
   baseMap, // ⭐ NEW: For adaptive colors
   isSidebarOpen = false,
   tableHasRows = false,
@@ -1010,6 +1004,9 @@ const MapContainer = forwardRef(({
     setRoadPanelPos({ top: null, left: null });
   }, [city]);
   const [coordPos, setCoordPos] = useState({ bottom: 32, left: "50%" });
+  // [minLon, minLat, maxLon, maxLat] of the current viewport, kept for the
+  // Legend's own dynamic road-count items - see the extent-sync effect below.
+  const [legendExtent, setLegendExtent] = useState(null);
   const [amenityLegendCounts, setAmenityLegendCounts] = useState({});
   const [otherLegendCounts, setOtherLegendCounts] = useState({});
   const amenityLegendCountsRef = useRef({});
@@ -1051,6 +1048,16 @@ const MapContainer = forwardRef(({
   const onRoadSelectedRef = useRef(onRoadSelected);
   const onPatchTableOpenRef = useRef(onPatchTableOpen); //chainage
   const onPatchTableCloseRef = useRef(onPatchTableClose); //chainage
+  const onFieldTaskRoadHighlightRef = useRef(onFieldTaskRoadHighlight); //chainage
+  const onMapExtentChangeRef = useRef(onMapExtentChange);
+  // Bridges for useImperativeHandle (defined earlier in this file than
+  // openChainageForRoadId/handleCreateMultiRoadPatchRequest themselves,
+  // which the ref's factory function would otherwise reference before
+  // their `const` declarations run) — same pattern as the callback refs
+  // above, just pointing at functions local to this component instead of
+  // props from Dashboard.
+  const openChainageForRoadIdRef = useRef(null); //chainage
+  const handleCreateMultiRoadPatchRequestRef = useRef(null); //chainage
   // Kept current every render (not just at mount) so the map-click handler,
   // which reads these refs from a stable closure registered once, always
   // calls the latest callback from Dashboard instead of whatever closure
@@ -1059,6 +1066,8 @@ const MapContainer = forwardRef(({
   onRoadSelectedRef.current = onRoadSelected;
   onPatchTableOpenRef.current = onPatchTableOpen;
   onPatchTableCloseRef.current = onPatchTableClose;
+  onFieldTaskRoadHighlightRef.current = onFieldTaskRoadHighlight;
+  onMapExtentChangeRef.current = onMapExtentChange;
   // Lags one run behind `mode` — only updated inside the AutoZoom effect
   // below, so it lets that effect tell "mode just changed" apart from
   // "zoomFilter changed" even though both are in its dependency array.
@@ -1107,6 +1116,7 @@ const MapContainer = forwardRef(({
   const amenityFetchAbortRef = useRef(null);
   const otherFetchAbortRef = useRef(null);
   const roadWfsAbortRef = useRef(null);
+  const autoZoomDetailsAbortRef = useRef(null);
   const amenityMoveTimerRef = useRef(null);
   const otherMoveTimerRef = useRef(null);
   const roadMoveTimerRef = useRef(null);
@@ -1149,7 +1159,6 @@ const MapContainer = forwardRef(({
   const [patchTableData, setPatchTableData] = useState([]);//chainage
   const [showPatchTable, setShowPatchTable] = useState(false);//chainage
   const [isTableMinimized, setIsTableMinimized] = useState(false);//chainage
-  const [showSearchPanel, setShowSearchPanel] = useState(false);//chainage
   const hasExternalZoomRef = useRef(false);//chainage
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);//chainage
 const [mapImage, setMapImage] = useState(null);//chainage
@@ -1163,11 +1172,25 @@ const patchPreviewLayerRef = useRef(null);//chainage
   const [currentRoadPatchList, setCurrentRoadPatchList] = useState([]);//chainage
   const chainageRoadDataCacheRef = useRef(new Map());//chainage
 
+  // Multi-road patch creation (field-task mode) — a patch spanning several
+  // connected roads. Selection itself happens in Dashboard's table (its
+  // Multi/Apply controls, filtered to /adjacent-roads candidates); this
+  // component only runs the preview -> confirm -> save flow once Dashboard
+  // hands it a finished road list. Reuses /api/create-patch per-road
+  // underneath (same DB write path as the single-road flow above) rather
+  // than a new schema — a patch ties to exactly one road_id in the DB, so a
+  // 3-road patch is 3 rows created together, not 1 row spanning 3 roads.
+  // //chainage
+  const [multiRoadSelection, setMultiRoadSelection] = useState([]);//chainage - [{road_id, road_name}], set right before preview/confirm
+  const [showMultiRoadConfirm, setShowMultiRoadConfirm] = useState(false);//chainage
+  const [multiRoadConfirmImage, setMultiRoadConfirmImage] = useState(null);//chainage
+  const [multiRoadConfirmSaving, setMultiRoadConfirmSaving] = useState(false);//chainage
+  const multiRoadPreviewLayerRef = useRef(null);//chainage
+
   const URL_LOCATION_PIN_SVG = `data:image/svg+xml;utf8,${encodeURIComponent(`
 <svg xmlns="http://www.w3.org/2000/svg" width="42" height="56" viewBox="0 0 42 56">
-  <path d="M21 2C10.5 2 3 9.7 3 20.3C3 34.5 21 54 21 54S39 34.5 39 20.3C39 9.7 31.5 2 21 2Z"
-    fill="#E74C3C" stroke="#B91C1C" stroke-width="2"/>
-  <circle cx="21" cy="20" r="7" fill="#FFFFFF" stroke="#B91C1C" stroke-width="2"/>
+  <path d="M21 2C10.5 2 3 9.7 3 20.3C3 34.5 21 54 21 54S39 34.5 39 20.3C39 9.7 31.5 2 21 2Z" fill="#E74C3C" stroke="#B91C1C" stroke-width="2"/>
+  <circle cx="21" cy="20" r="7" fill="#FFFFFF" stroke="#B91C1C" stroke-width="2"/>
 </svg>
 `)}`;
 const urlLocationMarkerSourceRef = useRef(new VectorSource());//chainage
@@ -1178,6 +1201,22 @@ const location = useLocation();//chainage
 // forcing that whole effect (and the map) to rebuild when mode toggles.
 const modeRef = useRef(mode);//chainage
 modeRef.current = mode;//chainage
+// Same distinguishing signal Dashboard.jsx uses: mode=CHAINAGE alone can
+// also mean someone manually toggled the generic Chainage button, not
+// necessarily a KMC/iGile field-task redirect — project_id+user_id only
+// ever come from the actual redirect link. Declared here (rather than
+// nearer its other chainage-URL-param siblings further down) so it's
+// available to openChainageForRoadId, defined earlier in this file.
+const isFieldTaskMode = mode === "CHAINAGE" && (() => {
+  const p = new URLSearchParams(location.search);
+  return !!(p.get("project_id") && p.get("user_id"));
+})();//chainage
+// The one ward a field-task redirect actually assigns work in — neighboring
+// wards (fieldTaskWardList) are loaded for context/labels only, per
+// openChainageForRoadId's ward-membership gate below.
+const fieldTaskTargetWard = isFieldTaskMode
+  ? Number(new URLSearchParams(location.search).get("ward"))
+  : NaN;//chainage
 
   useEffect(() => {
     const handleResize = () => {
@@ -1264,18 +1303,60 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
     return true;
   }, [city, showFeatureNotice]);
 
+  const showLayerUnavailableNotice = useCallback((payload = {}) => {
+    const {
+      feature = "Map layer",
+      layerName,
+      reason,
+      autoDismissMs = 8000,
+      dedupeKey,
+    } = payload;
+    const resolvedReason = reason || "The requested layer is currently unavailable. You can continue using the map with the other layers.";
+    showFeatureNotice({
+      feature,
+      layerName,
+      dedupeKey: dedupeKey || `${city}|layer|${layerName || feature}`,
+      message: resolvedReason,
+      autoDismissMs,
+    });
+  }, [city, showFeatureNotice]);
+
+  // Dashboard's road/patch table is a bottom-anchored overlay, not part of
+  // the map's own box layout, so a plain view.fit() has no idea it's
+  // covering part of the screen — a road near the bottom of the fitted
+  // extent can end up centered right underneath it. Measure its *actual*
+  // rendered height (rather than the fixed 90/260/320 guesses this used to
+  // fall back to) so this stays correct regardless of table content,
+  // window size, or zoom level; the old guesses remain only as a fallback
+  // for the brief window before the table has actually painted.
+  const getTableCoverageHeight = () => {
+    if (!tableHasRows) return 0;
+    const tableEl = document.querySelector(".table-wrapper");
+    const measured = tableEl?.getBoundingClientRect?.().height;
+    if (measured && measured > 0) return measured;
+    return tableMinimized ? 90 : (isMobileView ? 260 : 320);
+  };
+
   const getAutoZoomPadding = (isIdentifierFilter) => {
     if (isIdentifierFilter) {
+      // A single road selected from the table (road_id=X) used a flat 12px
+      // pad on every side, ignoring the bottom table entirely - the fitted
+      // view had no idea roughly a third of the screen was covered, so the
+      // "zoomed to" road could land centered right behind it. Keep the tight
+      // left/right/top (this fit is deliberately close-in for one road) but
+      // still reserve real, measured space for the table at the bottom,
+      // same as every other auto-zoom path below.
       const pad = 12;
-      return [pad, pad, pad, pad];
+      const bottom = tableHasRows ? Math.max(pad, getTableCoverageHeight()) : pad;
+      return [pad, pad, bottom, pad];
     }
 
     if (isMobileView) {
-      const bottom = tableHasRows ? (tableMinimized ? 90 : 260) : 70;
+      const bottom = tableHasRows ? getTableCoverageHeight() : 70;
       return [120, 20, bottom, 20];
     }
 
-    const bottom = tableHasRows ? (tableMinimized ? 90 : 320) : 40;
+    const bottom = tableHasRows ? getTableCoverageHeight() : 40;
     const left = isSidebarOpen ? 320 : 40;
     const top = 50;
     const right = 40;
@@ -1631,7 +1712,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
             searchAreaSourceRef.current.addFeature(feature);
             const extent = feature.getGeometry?.().getExtent?.();
             if (extent && view) {
-              view.fit(extent, { padding: [40, 40, 40, 40], duration: 450, maxZoom: targetZoom });
+              view.fit(extent, { padding: getAutoZoomPadding(false), duration: 450, maxZoom: targetZoom });
             }
           }
         } catch { }
@@ -1643,7 +1724,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
         const feature = new Feature({ geometry });
         searchAreaSourceRef.current.addFeature(feature);
         if (view) {
-          view.fit(extent, { padding: [40, 40, 40, 40], duration: 450, maxZoom: targetZoom });
+          view.fit(extent, { padding: getAutoZoomPadding(false), duration: 450, maxZoom: targetZoom });
         }
       }
     }
@@ -2194,14 +2275,20 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
     const cacheKey = `${layerName}|${projection.getCode()}`;
     const cached = boundaryFeatureCacheRef.current.get(cacheKey);
     if (cached) return cached;
+    const [workspace, ...layerParts] = String(layerName).split(":");
+    const layerId = layerParts.join(":");
+    if (!workspace || !layerId) {
+      showFeatureNotice({
+        feature: "Boundary layer",
+        layerName,
+        dedupeKey: `${city}|boundary-layer-name|${layerName}`,
+      });
+      return [];
+    }
     if (boundaryFetchAbortRef.current) boundaryFetchAbortRef.current.abort();
     const controller = new AbortController();
     boundaryFetchAbortRef.current = controller;
-    const url =
-      `${WARD_ZONE_WFS}?service=WFS&version=1.1.0&request=GetFeature` +
-      `&typeName=${encodeURIComponent(layerName)}` +
-      `&outputFormat=application/json` +
-      `&srsName=${encodeURIComponent(projection.getCode())}`;
+    const url = `/api/boundary-geojson/${encodeURIComponent(workspace)}/${encodeURIComponent(layerId)}`;
     try {
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok || controller.signal.aborted) return [];
@@ -2230,6 +2317,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
     const activeBaseMap = baseMap || "osm";
 
     // ---------- BASE MAPS ----------
+
     // 1️⃣ Create all base layers (migrated from HomePage.js)
     const osmLayer = new TileLayer({
       title: "OpenStreetMap",
@@ -2343,35 +2431,158 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       fold: "open",
     });
 
+    // Basemap outage detection: a burst of tile errors on any style
+    // triggers one probe of the tile proxy to classify the failure
+    // (deployment network blocking the provider vs the provider's own
+    // outage) and tells the user the right story via the same notice UI
+    // used for other feature failures. See utils/basemapHealth.js.
+    [
+      [osmLayer, "osm", "OpenStreetMap"],
+      [positronLayer, "positron", "CartoDB Positron"],
+      [satelliteLayer, "satellite", "Satellite"],
+      [labelsLayer, "labels", "Satellite Labels"],
+      [tonerLayer, "toner", "Toner"],
+      [topoLayer, "topo", "Topo"],
+    ].forEach(([layer, styleKey, displayName]) => {
+      attachBasemapErrorNotifier(
+        layer.getSource(),
+        styleKey,
+        displayName,
+        `${TILE_CACHE_BASE}/api/tiles/${styleKey}/6/45/27.png`,
+        (reason, message) =>
+          showFeatureNotice({
+            feature: `${displayName} basemap`,
+            message,
+            dedupeKey: `basemap-health|${styleKey}|${reason}`,
+            autoDismissMs: 12000,
+          })
+      );
+    });
+
     // ---------- ADMIN LAYERS ----------
-    const zoneBoundary = cfg.zoneLayer
-      ? new TileLayer({
-        title: "Zone Boundary",
-        source: makeTileWmsSource({
-          layerName: cfg.zoneLayer,
-          workspace: "Ward_Boundary_New",
-          cacheable: true,
-        }),
-      })
-      : null;
+    // Zone/Ward boundaries used to be a WMS TileLayer styled per-request via
+    // a dynamic SLD_BODY — which meant every single tile, on every pan/zoom,
+    // was a guaranteed cache miss (GWC/WMS caches key on the request's exact
+    // parameters, and the style string was unique per city/color lookup).
+    // Confirmed via real telemetry: 10-17s average per view, continuously
+    // re-fetched. These boundaries are small (a handful to a few dozen
+    // polygons per city) and change essentially never, so instead: fetch the
+    // raw features once per city (cached server-side, see
+    // /api/boundary-geojson in tiles.js) and style/label them entirely in
+    // the browser. GeoServer/GWC still does the heavy lifting for every
+    // layer that has a fixed, reusable style (Road Network tiles, basemaps).
+    const boundaryFeatureFormat = new GeoJSON();
+    // Polygon outline/fill and the number label are now two separate
+    // VectorLayers sharing one VectorSource per boundary type (adding
+    // features to the source populates both automatically), instead of one
+    // combined stroke+text style on a single layer. A single layer's
+    // zIndex can't interleave with another layer's content, so there was
+    // no way to have Ward's outline draw over Zone's outline while Zone's
+    // own number still draws over Ward's number — that needs Zone-fill <
+    // Ward-fill < Ward-label < Zone-label as four independently-ordered
+    // layers, not two.
+    const createBoundaryLayer = (source, title, zIndex, declutter = false) => {
+      const layer = new VectorLayer({ title, source, declutter });
+      layer.setZIndex(zIndex);
+      return layer;
+    };
+    const zoneSource = cfg.zoneLayer ? new VectorSource(manualVectorSourceOptions()) : null;
+    const wardSource = cfg.wardLayer ? new VectorSource(manualVectorSourceOptions()) : null;
+    // Zone is the coarser, larger boundary — a little extra stroke width
+    // keeps it visibly distinguishable now that it deliberately renders
+    // behind Ward's own outline (previously both used the same 2px width).
+    const zoneBoundary = zoneSource && createBoundaryLayer(zoneSource, "Zone Boundary", 39970);
+    const wardBoundary = wardSource && createBoundaryLayer(wardSource, "Ward Boundary", 39975);
+    // declutter:true within each label layer still only fights collisions
+    // among that layer's own labels (Zone vs Zone, Ward vs Ward) — cross-
+    // layer visibility (Zone's number never hidden by Ward's) is guaranteed
+    // by zIndex alone, same reasoning the old single-layer comment made.
+    // No title (unlike the fill layers below) - this is a visual split of
+    // the same Zone/Ward Boundary a user already sees, not a separate
+    // layer to expose anywhere, matching mapLoadingTracker.js's existing
+    // "untitled helper layers shouldn't clutter the loading message" rule.
+    // Label layers deliberately sit in their own top tier (50000s), above
+    // every other layer in this map (including the selected-road/chainage
+    // tier at 40000) - labels must never be hidden behind a data layer,
+    // regardless of which combination of toggles a user has active.
+    const wardLabelLayer = wardSource && createBoundaryLayer(wardSource, undefined, 50001, true);
+    const zoneLabelLayer = zoneSource && createBoundaryLayer(zoneSource, undefined, 50002, true);
 
-    const wardBoundary = cfg.wardLayer
-      ? new TileLayer({
-        title: "Ward Boundary",
-        source: makeTileWmsSource({
-          layerName: cfg.wardLayer,
-          workspace: "Ward_Boundary_New",
-          cacheable: true,
+    const makeBoundaryFillStyle = (color, strokeWidth) => () =>
+      new Style({
+        stroke: new Stroke({ color, width: strokeWidth }),
+        fill: new Fill({ color: "rgba(255,255,255,0)" }),
+      });
+    const makeBoundaryLabelStyle = (labelAttr, color) => (feature) =>
+      new Style({
+        text: new TextStyle({
+          text: String(feature.get(labelAttr) ?? ""),
+          font: "bold 14px Arial",
+          fill: new Fill({ color: "#ffffff" }),
+          stroke: new Stroke({ color, width: 4 }),
+          overflow: true,
+          geometry: (f) => f.getGeometry()?.getInteriorPoint?.() || f.getGeometry(),
         }),
-      })
-      : null;
+      });
 
-    const applyBoundaryLabelStyle = async (layer, layerName, labelAttr, fallbackColor) => {
+    const loadBoundaryLayer = async (layer, labelLayer, layerName, labelAttr, fallbackColor, strokeWidth = 2) => {
       if (!layer || !layerName) return null;
+      const [workspace, layerId] = layerName.split(":");
       const color = (await fetchLegendColor(layerName)) || fallbackColor;
-      const source = layer.getSource();
-      if (source?.updateParams) {
-        updateWmsParams(source, { SLD_BODY: buildBoundaryLabelSld(layerName, labelAttr, color) });
+      layer.setStyle(makeBoundaryFillStyle(color, strokeWidth));
+      labelLayer?.setStyle(makeBoundaryLabelStyle(labelAttr, color));
+      try {
+        const res = await fetch(
+          `/api/boundary-geojson/${encodeURIComponent(workspace)}/${encodeURIComponent(layerId)}`
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const geojson = await res.json();
+        let features = boundaryFeatureFormat.readFeatures(geojson, {
+          dataProjection: "EPSG:3857",
+          featureProjection: "EPSG:3857",
+        });
+
+        // A field-task deep link is scoped to one zone — every other zone's
+        // polygons/labels are pure visual noise for someone sent here to
+        // work on one patch. The ward layer, though, shows every ward
+        // *within* that zone (not just the URL's own ward) so the assigned
+        // ward's position relative to its neighbors is still visible —
+        // only the road layer itself stays scoped down to the target ward
+        // plus whichever wards actually border it, to keep load down.
+        const params = new URLSearchParams(location.search);
+        if (params.get("mode") === "CHAINAGE") {
+          const rawZone = params.get("zone");
+          const zoneNum = rawZone ? Number(rawZone) : NaN;
+          if (labelAttr === "zone_no") {
+            if (Number.isFinite(zoneNum)) {
+              features = features.filter((f) => Number(f.get("zone_no")) === zoneNum);
+            }
+          } else {
+            const hasZoneAttr = features.some((f) => Number.isFinite(Number(f.get("zone_no"))));
+            if (Number.isFinite(zoneNum) && hasZoneAttr) {
+              features = features.filter((f) => Number(f.get("zone_no")) === zoneNum);
+            } else {
+              // Fallback for ward layers with no zone_no attribute at all
+              // (e.g. Agra) — better to show just the assigned ward than
+              // either the whole city or nothing.
+              const rawWard = params.get("ward");
+              const wardNum = rawWard ? Number(rawWard) : NaN;
+              if (Number.isFinite(wardNum)) {
+                features = features.filter((f) => Number(f.get("ward_no")) === wardNum);
+              }
+            }
+          }
+        }
+
+        layer.getSource()?.addFeatures(features);
+      } catch (err) {
+        console.error(`Boundary layer load failed (${layerName}):`, err.message);
+        showLayerUnavailableNotice({
+          feature: "Boundary layer",
+          layerName,
+          reason: `The boundary layer ${layerName} could not be loaded. The map will continue without it.`,
+          dedupeKey: `${city}|boundary-layer|${layerName}`,
+        });
       }
       return color;
     };
@@ -2386,9 +2597,15 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
 
     if (!getIsLowBandwidth()) {
       const applyBoundaryLabelStyles = async () => {
+        // Zone stroke is deliberately much wider than ward's (not just
+        // 1px more) - at the exact edge where a zone and ward boundary
+        // coincide, the thinner ward line needs to sit visibly inside a
+        // clearly wider zone line peeking out from behind it, or the
+        // "zone is behind ward" z-order is invisible to the eye even
+        // though it's technically correct in the layer stack.
         const [zoneColor, wardColor] = await Promise.all([
-          applyBoundaryLabelStyle(zoneBoundary, cfg.zoneLayer, "zone_no", "#e11d48"),
-          applyBoundaryLabelStyle(wardBoundary, cfg.wardLayer, "ward_no", "#16a34a"),
+          loadBoundaryLayer(zoneBoundary, zoneLabelLayer, cfg.zoneLayer, "zone_no", "#e11d48", 6),
+          loadBoundaryLayer(wardBoundary, wardLabelLayer, cfg.wardLayer, "ward_no", "#16a34a", 2),
         ]);
         if (zoneColor) setZoneBoundaryColor(zoneColor);
         if (wardColor) setWardBoundaryColor(wardColor);
@@ -2398,18 +2615,30 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
 
     const adminLayers = new LayerGroup({
       title: "Administrative Layers",
-      layers: [zoneBoundary, wardBoundary].filter(Boolean),
+      layers: [zoneBoundary, wardBoundary, wardLabelLayer, zoneLabelLayer].filter(Boolean),
       fold: "open",
     });
-    // Zone boundary (and its zone-number labels, baked into the same WMS
-    // style) renders above ward boundary — zones are the coarser,
-    // higher-priority grouping, so their numbers shouldn't get buried under
-    // the much denser ward outlines when both are visible together.
-    if (wardBoundary) wardBoundary.setZIndex(20010);
-    if (zoneBoundary) zoneBoundary.setZIndex(20020);
     adminLayers.setZIndex(20000);
 
     // ---------- MAIN ROAD NETWORK (SEARCH) ----------
+    // Field-task deep links already know their target zone/ward synchronously
+    // from the URL at this point — bake it into the very first WMS request
+    // instead of constructing this layer unfiltered (whole city) and only
+    // narrowing it a moment later once a separate effect gets a chance to
+    // run. That gap was a real, observed burst of unfiltered "every road in
+    // Kanpur" tile requests on first load.
+    let initialRoadCql = null;
+    {
+      const initParams = new URLSearchParams(location.search);
+      if (initParams.get("mode") === "CHAINAGE") {
+        const initZone = Number(initParams.get("zone"));
+        const initWard = Number(initParams.get("ward"));
+        const parts = [];
+        if (Number.isFinite(initZone)) parts.push(`zone_no=${initZone}`);
+        if (Number.isFinite(initWard)) parts.push(`ward_no=${initWard}`);
+        if (parts.length) initialRoadCql = parts.join(" AND ");
+      }
+    }
     let roadNetworkLayer = null;
     let roadLabelsLayer = null;
     if (cfg.roadLayer) {
@@ -2420,6 +2649,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
           layerName: cfg.roadLayer,
           workspace: "Road_Network",
           cacheable: true,
+          params: initialRoadCql ? { CQL_FILTER: initialRoadCql } : {},
         }),
       });
       roadNetworkLayer.setZIndex(40);
@@ -2432,17 +2662,20 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
           cacheable: true,
           params: {
             STYLES: ROAD_LABEL_STYLE,
+            ...(initialRoadCql ? { CQL_FILTER: initialRoadCql } : {}),
           },
         }),
       });
-      roadLabelsLayer.setZIndex(60);
+      // Same top label tier as wardLabelLayer/zoneLabelLayer (50000s) -
+      // labels must never be hidden behind a data layer.
+      roadLabelsLayer.setZIndex(50000);
     }
     roadNetworkLayerRef.current = roadNetworkLayer;
     roadLabelsLayerRef.current = roadLabelsLayer;
 
     let roadWfsLayer = null;
     if (cfg.roadLayer) {
-      const roadWfsSource = new VectorSource();
+      const roadWfsSource = new VectorSource(manualVectorSourceOptions());
       roadWfsLayer = new VectorLayer({
         title: "Road Network Detail",
         visible: true,
@@ -2482,7 +2715,10 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
           projection: "EPSG:4326",
         }),
       });
-      segmentedRoadsLayer.setZIndex(44);
+      // Above the admin zone/ward boundary layers (zIndex ~39970-39985) -
+      // this is the visual representation of the currently-selected road
+      // during chainage/patch creation and must never render behind them.
+      segmentedRoadsLayer.setZIndex(40000);
     }
     if (chainageLayerName) {
       chainageLayer = new ImageLayer({
@@ -2601,7 +2837,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
     const amenityLayers = {};
     const isDark = baseMap === "satellite" || baseMap === "toner";
     Object.entries(cfg.amenities || {}).forEach(([id]) => {
-      const source = new VectorSource();
+      const source = new VectorSource(manualVectorSourceOptions());
       amenityLayers[id] = new VectorLayer({
         title: `Amenity: ${id}`,
         visible: !!layerVisibility.amenities?.[id],
@@ -2619,7 +2855,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
 
     const osmAmenityLayers = {};
     Object.entries(cfg.amenities || {}).forEach(([id]) => {
-      const source = new VectorSource();
+      const source = new VectorSource(manualVectorSourceOptions());
       osmAmenityLayers[id] = new VectorLayer({
         title: `Amenity: ${id}`,
         visible: !!layerVisibility.amenities?.[id],
@@ -2645,7 +2881,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
 
     const otherLayers = {};
     Object.entries(cfg.others || {}).forEach(([id]) => {
-      const source = new VectorSource();
+      const source = new VectorSource(manualVectorSourceOptions());
       otherLayers[id] = new VectorLayer({
         title: `Other: ${id}`,
         visible: !!layerVisibility.others?.[id],
@@ -2663,7 +2899,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
 
     const osmOtherLayers = {};
     Object.entries(cfg.others || {}).forEach(([id]) => {
-      const source = new VectorSource();
+      const source = new VectorSource(manualVectorSourceOptions());
       osmOtherLayers[id] = new VectorLayer({
         title: `Other: ${id}`,
         visible: !!layerVisibility.others?.[id],
@@ -2707,7 +2943,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
     if (streetLayer) streetLayer.setZIndex(70);
     streetLayerRef.current = streetLayer;
 
-    const searchAreaSource = new VectorSource();
+    const searchAreaSource = new VectorSource(manualVectorSourceOptions());
     const searchAreaLayer = new VectorLayer({
       title: "Search Area",
       visible: true,
@@ -2721,11 +2957,28 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
     searchAreaSourceRef.current = searchAreaSource;
     searchAreaLayerRef.current = searchAreaLayer;
 
+    // "Tinted window" mask — a permanent, instantly-applied translucent
+    // "glass" fill painted over everywhere *outside* the city's zone/ward
+    // boundary. Not a second image/tile layer of any kind (a single static
+    // raster looks fine zoomed out but turns into unreadable blown-up
+    // pixels/text the moment a user zooms into a city - confirmed live,
+    // reverted). Just a soft, permanent translucency so the cut-off doesn't
+    // look like a blank void, while the real in-boundary map stays the
+    // fast, high-priority, fully-detailed layer it always was. Costs zero
+    // network requests of its own: pure canvas drawing reusing geometry
+    // already fetched for the boundary layer below.
+    const maskLayer = new VectorLayer({
+      title: "Focus Mask",
+      source: new VectorSource(),
+    });
+    maskLayer.setZIndex(20);
+
     // ---------- MAP ----------
     const map = new OLMap({
       target: mapElement.current,
       layers: [
         baseMaps,
+        maskLayer,
         adminLayers,
         roadNetworkLayer,
         roadWfsLayer,
@@ -2743,18 +2996,25 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       view: new View({
         ...(cityViews[cityKey] || cityViews.default),
         maxZoom: baseMap === "satellite" ? SATELLITE_MAX_ZOOM : DEFAULT_MAX_ZOOM,
+        // Without this, any area with no rendered tile yet (still loading,
+        // or genuinely outside every layer's extent) falls back to
+        // OpenLayers' own default fill — reported as stark black bars
+        // during initial load/panning. A neutral light gray, matching the
+        // skeleton-loading placeholders already used elsewhere in this
+        // file, reads as "still loading" instead of looking broken.
+        background: "#e5e7eb",
       }),
       controls: defaultControls({ zoom: true, rotate: false }),
     });
 
-    // Clip every base raster layer to the current city's zone/ward boundary
-    // shape (not just its rectangular extent) — cityClipRingsRef starts
-    // null on a fresh map instance and is populated shortly after by the
-    // boundary-loading effect below, so layers simply render unclipped
-    // until then rather than using a stale previous city's shape.
-    [osmLayer, positronLayer, satelliteLayer, labelsLayer, tonerLayer, topoLayer].forEach(
-      (layer) => attachLayerClip(layer, map, cityClipRingsRef)
-    );
+    // Dim everywhere outside the current city's zone/ward boundary shape
+    // (not just its rectangular extent) via a single tint overlay, rather
+    // than hard-clipping the base layers away to nothing out there —
+    // cityClipRingsRef starts null on a fresh map instance and is populated
+    // shortly after by the boundary-loading effect below, so the map
+    // simply renders untinted until then rather than using a stale
+    // previous city's shape.
+    attachInvertedMask(maskLayer, map, cityClipRingsRef, "rgba(120,120,120,0.28)");
 
     //chainage
     // Built whenever the city has chainage config at all, regardless of
@@ -2808,7 +3068,10 @@ if (cfg1) {
     visible: false,
   });
 
-  chainageLayerRef.current.setZIndex(120);
+  // Above the admin zone/ward boundary layers (zIndex ~39970-39985) - this
+  // renders the selected road's chainage/distance points during patch
+  // creation and must never be hidden behind a boundary line.
+  chainageLayerRef.current.setZIndex(40000);
 
   map.addLayer(roadLayerRef.current);
   map.addLayer(chainageLayerRef.current);
@@ -3214,6 +3477,13 @@ if (cfg1) {
           return;
         }
         const title = layer.get("title");
+        // Zone/Ward Boundary are outline+label only (client-rendered vector
+        // polygons covering the whole city) — purely visual, never a click
+        // target. Without this guard every click anywhere inside a
+        // zone/ward polygon (i.e. almost every click) would win this
+        // hit-test ahead of the actual road underneath it, since these
+        // polygons cover virtually the entire visible map.
+        if (title === "Zone Boundary" || title === "Ward Boundary") return;
         vectorFeature = feature;
         vectorLayerTitle = title || "Feature";
         vectorIsRoad = layer === selectedRoadLayerRef.current;
@@ -3384,17 +3654,14 @@ if (cfg1) {
           candidates.push({ layer: roadLayerRef.current, isRoad: true });
         }
       } else {
-        // Add visible Amenities
-        Object.values(amenityLayersRef.current).forEach(l => {
-          if (l.getVisible()) candidates.push({ layer: l, isRoad: false });
-        });
-
-        // Add visible Others
-        Object.values(otherLayersRef.current).forEach(l => {
-          if (l.getVisible()) candidates.push({ layer: l, isRoad: false });
-        });
-
-        // Add visible Roads
+        // Roads first: this is a road-network directory, so a road click is
+        // the overwhelmingly common case, and each candidate here is tried
+        // sequentially (stops at the first hit) — checking amenities/others
+        // before roads meant every road click paid for those lookups first
+        // even when the click landed squarely on a road, since a
+        // GetFeatureInfo request still round-trips even when it comes back
+        // empty. Roads (and whatever's actively selected for chainage) go
+        // first now; amenities/others/specialized stay as fallback checks.
         if (activeClassLayer) {
           candidates.push({ layer: activeClassLayer, isRoad: true });
         } else if (roadNetworkLayerRef.current && roadNetworkLayerRef.current.getVisible()) {
@@ -3406,6 +3673,17 @@ if (cfg1) {
         if (chainageLayerRef.current && chainageLayerRef.current.getVisible()) {
           candidates.push({ layer: chainageLayerRef.current, isRoad: false });
         }
+
+        // Add visible Amenities
+        Object.values(amenityLayersRef.current).forEach(l => {
+          if (l.getVisible()) candidates.push({ layer: l, isRoad: false });
+        });
+
+        // Add visible Others
+        Object.values(otherLayersRef.current).forEach(l => {
+          if (l.getVisible()) candidates.push({ layer: l, isRoad: false });
+        });
+
         Object.values(specializedLayersRef.current).forEach((layer) => {
           if (layer.getVisible()) {
             candidates.push({ layer, isRoad: false });
@@ -3778,7 +4056,7 @@ if (cfg1) {
           if (geometry && view?.animate) {
               const extent = geometry.getExtent();
               view.fit(extent, {
-                  padding: [50, 50, 50, 50],
+                  padding: getAutoZoomPadding(false),
                   duration: 800,
                   maxZoom: 19
               });
@@ -3986,6 +4264,8 @@ if (cfg1) {
     const view = map.getView();
 
     const fitToBoundary = async () => {
+      // Boundary features now come through /api/boundary-geojson, the same
+      // server-cached path used by the visible boundary vector layers.
       // Reuses fetchBoundaryFeatures (WFS, already fetched/cached for the
       // clip-mask effect below) instead of a separate WMS GetCapabilities
       // call — one less ~2s network round trip before the extent
@@ -4236,6 +4516,14 @@ if (cfg1) {
       handlePlaceSearch(place);
     },
     showFeatureNotice: (payload) => showFeatureNotice(payload),
+    // Lets Dashboard's table drive chainage the same way a map click does —
+    // selecting a road (single mode) or finishing a multi-road selection
+    // (Apply) both funnel through here instead of duplicating the
+    // patches/chainage-fetch logic in Dashboard.jsx. //chainage
+    openChainageForRoadId: (roadId, roadProps, signal) =>
+      openChainageForRoadIdRef.current?.(roadId, roadProps, signal),
+    createMultiRoadPatch: (roadInfos) =>
+      handleCreateMultiRoadPatchRequestRef.current?.(roadInfos),
   }));
 
   useEffect(() => {
@@ -4466,7 +4754,13 @@ if (cfg1) {
             url += `&cqlFilter=${encodeURIComponent(filterText)}`;
           }
           fetch(url, { signal: controller.signal })
-            .then((res) => res.json())
+            .then(async (res) => {
+              if (!res.ok) {
+                const payload = await res.json().catch(() => ({}));
+                throw new Error(payload?.error || `HTTP ${res.status}`);
+              }
+              return res.json();
+            })
             .then((data) => {
               if (controller.signal.aborted) return;
               if (!roadWfsLayerRef.current) return;
@@ -4474,9 +4768,10 @@ if (cfg1) {
             })
             .catch((err) => {
               if (controller.signal.aborted) return;
-              showFeatureNotice({
+              showLayerUnavailableNotice({
                 feature: "Road network detail",
                 layerName,
+                reason: err?.message || "Road network detail could not be loaded right now. You can continue using the map.",
                 dedupeKey: `${city}|road-wfs|${layerName}`,
               });
             });
@@ -4496,6 +4791,42 @@ if (cfg1) {
       if (roadWfsAbortRef.current) roadWfsAbortRef.current.abort();
     };
   }, [mapReady, city]);
+
+  // Live extent sync for the bottom table: report the current viewport
+  // (EPSG:4326) up to Dashboard, debounced, so the table can filter itself
+  // down to just the roads on screen instead of paging through the whole
+  // filtered set. Deliberately its own effect/listener, independent of the
+  // layer-visibility-gated handleMoveEnd above (which does nothing at all
+  // when no amenity/other/road layer is visible) - the table can be open
+  // and in use regardless of which map layers are toggled on.
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    let timer = null;
+    const reportExtent = () => {
+      const view = map.getView();
+      const size = map.getSize();
+      if (!size) return;
+      const extent3857 = view.calculateExtent(size);
+      const [minLon, minLat] = toLonLat([extent3857[0], extent3857[1]], view.getProjection());
+      const [maxLon, maxLat] = toLonLat([extent3857[2], extent3857[3]], view.getProjection());
+      const next = [minLon, minLat, maxLon, maxLat];
+      onMapExtentChangeRef.current?.(next);
+      // Also kept locally so the Legend's own dynamic road-count items can
+      // stay extent-aware, the same as the bottom table.
+      setLegendExtent(next);
+    };
+    const handleExtentMoveEnd = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(reportExtent, getIsLowBandwidth() ? 650 : 400);
+    };
+    reportExtent();
+    map.on("moveend", handleExtentMoveEnd);
+    return () => {
+      if (timer) clearTimeout(timer);
+      map.un("moveend", handleExtentMoveEnd);
+    };
+  }, [mapReady]);
 
   // =====================================================
   // GENERIC LAYER FILTERS (WFS)
@@ -5021,13 +5352,25 @@ if (cfg1) {
     const isAnyClassLayerVisible = Object.keys(layers).some(
       key => !!layerVisibility.roadClassifications?.[key] && key !== "none"
     );
+    // A specialized network view (e.g. "Roads Near Parks", under the
+    // Analysis tab — analysisLayersRef, a completely separate collection
+    // from specializedLayersRef despite the similar name) is its own scoped
+    // road picture, same idea as a classification layer — selecting a road
+    // from it (which sets a truthy roadFilter/baseFilter, same as any other
+    // road selection) shouldn't force the *entire* unfiltered road network
+    // on top of it. Read the layers' own current visibility rather than
+    // re-deriving from layerVisibility state, since that's the same source
+    // of truth those layers' own effects already keep in sync.
+    const isAnySpecializedLayerVisible =
+      Object.values(specializedLayersRef.current).some((layer) => !!layer?.getVisible?.()) ||
+      Object.values(analysisLayersRef.current).some((layer) => !!layer?.getVisible?.());
 
     // Manage base road layer visibility
     if (roadNetworkLayerRef.current) {
       if (isNoneSelected) {
         roadNetworkLayerRef.current.setVisible(false);
-      } else if (isAnyClassLayerVisible) {
-        // If a classification layer is active, HIDE the base layer
+      } else if (isAnyClassLayerVisible || isAnySpecializedLayerVisible) {
+        // If a classification or specialized layer is active, HIDE the base layer
         roadNetworkLayerRef.current.setVisible(false);
       } else {
         // Otherwise, show it if network.roads is enabled OR if there's a filter
@@ -5043,6 +5386,7 @@ if (cfg1) {
         !isNoneSelected &&
         !getIsLowBandwidth() &&
         !isAnyClassLayerVisible &&
+        !isAnySpecializedLayerVisible &&
         (!!roadNetworkLayerRef.current?.getVisible?.() || !!roadFilter);
       roadLabelsLayerRef.current.setVisible(shouldShowLabels);
     }
@@ -5728,7 +6072,10 @@ if (cfg1) {
           });
         },
       });
-      selectedLayer.setZIndex(100);
+      // Above the admin zone/ward boundary layers (zIndex ~39970-39985) so
+      // a selected road's highlight is never hidden where it crosses a
+      // zone or ward line.
+      selectedLayer.setZIndex(40000);
       map.addLayer(selectedLayer);
       selectedRoadLayerRef.current = selectedLayer;
 
@@ -5829,7 +6176,16 @@ if (cfg1) {
         zoomFilter
       )}&include_geom=true`;
 
-    fetch(apiUrl)
+    // Selecting a new road (especially in a different zone/ward) before the
+    // previous selection's fetch resolves used to leave both requests
+    // racing — whichever happened to finish last would silently win and
+    // render, even if it was the now-stale selection. Cancel the previous
+    // one outright instead.
+    if (autoZoomDetailsAbortRef.current) autoZoomDetailsAbortRef.current.abort();
+    const detailsController = new AbortController();
+    autoZoomDetailsAbortRef.current = detailsController;
+
+    fetch(apiUrl, { signal: detailsController.signal })
       .then((res) => {
         if (!res.ok) {
           throw new Error(`Road details request failed: ${res.status} ${res.statusText}`);
@@ -5942,7 +6298,13 @@ if (cfg1) {
           }
         }
       })
-      .catch((err) => console.error("❌ [AutoZoom] Error:", err));
+      .catch((err) => {
+        if (err?.name === "AbortError") return;
+        console.error("❌ [AutoZoom] Error:", err);
+      });
+    return () => {
+      if (autoZoomDetailsAbortRef.current) autoZoomDetailsAbortRef.current.abort();
+    };
   }, [zoomFilter, city, isMobileView, baseMap, location.search, mode]);
 
 
@@ -6183,6 +6545,173 @@ if (cfg1) {
       patchPreviewLayerRef.current = null;
     }
   };
+
+  // ===== Multi-road patch creation (field-task mode) =====
+  //chainage
+  // Step 1: preview — every selected road's *full* length (start=0,
+  // end=a-value-past-any-real-segment-count, so the existing ">start
+  // AND<=end" range query on the segments table matches every segment
+  // without needing a separate "what's this road's max segment" lookup).
+  const FULL_ROAD_END_SENTINEL = 999999;//chainage
+  // Multi-road selection itself happens in Dashboard's table (its own
+  // Multi/Apply controls, filtered to adjacent-road candidates via
+  // /adjacent-roads) — this only takes the finished list of {road_id,
+  // road_name} and runs the same preview -> confirm -> save flow the
+  // single-road form already uses, just once per road instead of once
+  // total. Exposed to Dashboard via the ref (see useImperativeHandle).
+  const handleCreateMultiRoadPatchRequest = useCallback(async (roadInfos) => {//chainage
+    const roads = Array.isArray(roadInfos) ? roadInfos : [];
+    if (roads.length < 2) {
+      showFeatureNotice({
+        feature: "Chainage",
+        message: "Select at least one more connected road before creating a multi-road patch.",
+        dedupeKey: `multi-road-too-few|${Date.now()}`,
+        autoDismissMs: 4000,
+      });
+      return;
+    }
+    setMultiRoadSelection(roads);
+    const cityParam = city.toLowerCase();
+    try {
+      const previews = await Promise.all(
+        roads.map((r) =>
+          fetch(`/api/patch-preview/${cityParam}/${encodeURIComponent(r.road_id)}?start=0&end=${FULL_ROAD_END_SENTINEL}`)
+            .then((res) => (res.ok ? res.json() : { data: [] }))
+            .catch(() => ({ data: [] }))
+        )
+      );
+
+      const map = mapRef.current;
+      if (multiRoadPreviewLayerRef.current && map) {
+        map.removeLayer(multiRoadPreviewLayerRef.current);
+        multiRoadPreviewLayerRef.current = null;
+      }
+
+      const format = new GeoJSON();
+      const projection = map?.getView()?.getProjection();
+      const allFeatures = [];
+      previews.forEach((payload) => {
+        (payload?.data || []).forEach((row) => {
+          if (!row.geojson) return;
+          try {
+            allFeatures.push(
+              format.readFeature(JSON.parse(row.geojson), {
+                dataProjection: "EPSG:4326",
+                featureProjection: projection,
+              })
+            );
+          } catch {
+            /* skip unparsable segment geometry */
+          }
+        });
+      });
+
+      if (!allFeatures.length) {
+        showFeatureNotice({
+          feature: "Chainage",
+          message: "No road segments found for the selected roads.",
+          dedupeKey: `multi-road-no-segments|${Date.now()}`,
+          autoDismissMs: 4000,
+        });
+        return;
+      }
+
+      if (map) {
+        const vectorSource = new VectorSource({ features: allFeatures });
+        const previewLayer = new VectorLayer({
+          source: vectorSource,
+          style: new Style({ stroke: new Stroke({ color: "#f97316", width: 6 }) }),
+        });
+        previewLayer.setZIndex(950);
+        map.addLayer(previewLayer);
+        multiRoadPreviewLayerRef.current = previewLayer;
+
+        let extent = allFeatures[0].getGeometry().getExtent();
+        allFeatures.forEach((f) => {
+          const e = f.getGeometry().getExtent();
+          extent = [
+            Math.min(extent[0], e[0]),
+            Math.min(extent[1], e[1]),
+            Math.max(extent[2], e[2]),
+            Math.max(extent[3], e[3]),
+          ];
+        });
+        map.getView().fit(extent, { padding: [80, 80, 80, 80], maxZoom: 19 });
+      }
+
+      const { dataUrl } = await captureMapImageBlob();
+      setMultiRoadConfirmImage(dataUrl);
+      setShowMultiRoadConfirm(true);
+    } catch (err) {
+      console.error("MULTI-ROAD PATCH PREVIEW ERROR:", err);
+      showFeatureNotice({
+        feature: "Chainage",
+        message: err?.message || "Unable to preview this multi-road patch.",
+        dedupeKey: `multi-road-preview-error|${Date.now()}`,
+        autoDismissMs: 4500,
+      });
+    }
+  }, [city, showFeatureNotice]);//chainage
+  handleCreateMultiRoadPatchRequestRef.current = handleCreateMultiRoadPatchRequest; //chainage
+
+  // Step 2: confirmed — same DB write as the single-road flow
+  // (/api/create-patch), just called once per selected road. Each call is
+  // independent (its own patch_id, tied to that one road), so a partial
+  // failure part-way through still leaves the roads before it correctly
+  // saved rather than rolling back the whole batch.
+  const handleConfirmSaveMultiRoadPatch = useCallback(async () => {//chainage
+    setMultiRoadConfirmSaving(true);
+    const cityParam = city.toLowerCase();
+    const results = { created: 0, alreadyExists: 0, failed: 0 };
+    for (const road of multiRoadSelection) {
+      try {
+        const res = await fetch("/api/create-patch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            city: cityParam,
+            road_id: road.road_id,
+            startPoint: 0,
+            endPoint: FULL_ROAD_END_SENTINEL,
+          }),
+        });
+        const data = await res.json();
+        if (data.alreadyExists) results.alreadyExists += 1;
+        else if (!res.ok) results.failed += 1;
+        else results.created += 1;
+      } catch {
+        results.failed += 1;
+      }
+    }
+
+    showFeatureNotice({
+      feature: "Chainage",
+      message: `Multi-road patch: ${results.created} created, ${results.alreadyExists} already existed, ${results.failed} failed (${multiRoadSelection.length} roads total).`,
+      dedupeKey: `multi-road-saved|${Date.now()}`,
+      autoDismissMs: 6000,
+    });
+
+    if (!showPatchTable) onPatchTableOpenRef.current?.();
+
+    setMultiRoadConfirmSaving(false);
+    setShowMultiRoadConfirm(false);
+    setMultiRoadConfirmImage(null);
+    setMultiRoadSelection([]);
+    if (multiRoadPreviewLayerRef.current && mapRef.current) {
+      mapRef.current.removeLayer(multiRoadPreviewLayerRef.current);
+      multiRoadPreviewLayerRef.current = null;
+    }
+  }, [multiRoadSelection, city, showFeatureNotice, showPatchTable]);//chainage
+
+  const handleCancelMultiRoadConfirm = useCallback(() => {//chainage
+    setShowMultiRoadConfirm(false);
+    setMultiRoadConfirmImage(null);
+    if (multiRoadPreviewLayerRef.current && mapRef.current) {
+      mapRef.current.removeLayer(multiRoadPreviewLayerRef.current);
+      multiRoadPreviewLayerRef.current = null;
+    }
+  }, []);//chainage
+
   //chainage
   // const handleShowPatches = () => {
   //   if (!patchInfo?.data?.length) return;
@@ -6311,6 +6840,7 @@ if (cfg1) {
     ];
 
     mapRef.current.getView().fit(finalExtent, {
+      padding: getAutoZoomPadding(false),
       duration: 700,
       maxZoom: 19,
     });
@@ -6457,6 +6987,30 @@ if (cfg1) {
   // roads at once."
   const openChainageForRoadId = useCallback(async (roadId, roadProps, signal) => {
     if (!roadId || !cfg1) return;
+
+    // Field-task redirects load neighboring wards for context (labels
+    // visible, so the assigned ward's position relative to them makes
+    // sense) but patch creation only belongs to the one ward actually
+    // assigned — clicking a road that's purely in a neighbor is a no-op
+    // with an explanation, not a silent success. The road dataset is
+    // already segmented by ward (one ward_no per road_id), so a real road
+    // that continues from the assigned ward into a neighbor is a *separate*
+    // row tagged with the assigned ward's own number — this attribute check
+    // alone already lets that case through without needing a separate
+    // geometry crossing test.
+    if (isFieldTaskMode && Number.isFinite(fieldTaskTargetWard)) {
+      const roadWardNo = Number(roadProps?.ward_no);
+      if (Number.isFinite(roadWardNo) && roadWardNo !== fieldTaskTargetWard) {
+        showFeatureNotice({
+          feature: "Chainage",
+          message: `This road belongs to Ward ${roadWardNo}, outside your assigned Ward ${fieldTaskTargetWard}. Patch creation is only available within your assigned ward.`,
+          dedupeKey: `chainage-outside-ward|${roadWardNo}`,
+          autoDismissMs: 4500,
+        });
+        return;
+      }
+    }
+
     const cityParam = city.toLowerCase();
     const roadIdText = String(roadId);
     const cacheKey = `${cityParam}|${roadIdText}`;
@@ -6494,6 +7048,7 @@ if (cfg1) {
         extent[2] + width * paddingFactor,
         extent[3] + height * paddingFactor,
       ], {
+        padding: getAutoZoomPadding(false),
         duration: 500,
         maxZoom: 18,
       });
@@ -6510,12 +7065,28 @@ if (cfg1) {
       return payload;
     };
 
+    // Entering Chainage for a road supersedes whatever the regular
+    // (non-chainage) road-select highlight/zoom flow was doing — that
+    // flow's own visualization (selectedRoadLayerRef) isn't what chainage
+    // shows anyway (chainageLayerRef/segmentedRoadsLayer are), so an
+    // in-flight fetch for it is now pure wasted work competing for the
+    // same network/DB capacity chainage needs right now. Cancel it
+    // outright rather than letting both race.
+    if (autoZoomDetailsAbortRef.current) autoZoomDetailsAbortRef.current.abort();
+
     setSelectedRoad({
       road_id: roadProps?.road_id || roadId,
       road_name: roadProps?.road_name,
       category: roadProps?.category,
       condition: roadProps?.condition,
     });
+    // Table-row highlight only — deliberately not the full onRoadSelected
+    // callback (handleRoadSelectedFromMap), which resets baseFilter/zoomFilter
+    // in ways that would fight field-task mode's own ward-scoped default
+    // filter. This keeps map-click -> table-highlight symmetric with the
+    // already-working table-row-click -> map-open-chainage direction,
+    // without dragging in the non-field-task selection side effects.
+    onFieldTaskRoadHighlightRef.current?.(roadProps?.road_id || roadId);
     setStartChainage("");
     setEndChainage("");
     setChainageList([]);
@@ -6634,7 +7205,8 @@ if (cfg1) {
         dedupeKey: `${city}|chainage-click`,
       });
     }
-  }, [city, cfg1, showApiUnavailableNotice, showFeatureNotice]);
+  }, [city, cfg1, showApiUnavailableNotice, showFeatureNotice, isFieldTaskMode, fieldTaskTargetWard]);
+  openChainageForRoadIdRef.current = openChainageForRoadId; //chainage
 
   // Chainage "armed" prompt: entering chainage mode no longer loads any
   // heavy layer — it just arms click-to-inspect and tells the user what to
@@ -6703,60 +7275,77 @@ if (cfg1) {
     const lon = parseFloat(params.get("longitude"));
     const view = mapRef.current?.getView();
 
-
     if (!isNaN(lat) && !isNaN(lon)) {
-  const map = mapRef.current;
-  const targetCoord = fromLonLat([lon, lat]);
+  const map = mapRef.current;
+  const targetCoord = fromLonLat([lon, lat]);
 
-  // Defensive: under React StrictMode's mount/cleanup/remount cycle, the
-  // marker-layer-creation effect can settle after this one runs. Make sure
-  // the layer is actually attached to the live map before relying on it.
-  if (
-    urlLocationMarkerLayerRef.current &&
-    !map.getLayers().getArray().includes(urlLocationMarkerLayerRef.current)
-  ) {
-    map.addLayer(urlLocationMarkerLayerRef.current);
-  }
+  // Defensive: under React StrictMode's mount/cleanup/remount cycle, the
+  // marker-layer-creation effect can settle after this one runs. Make sure
+  // the layer is actually attached to the live map before relying on it.
+  if (
+    urlLocationMarkerLayerRef.current &&
+    !map.getLayers().getArray().includes(urlLocationMarkerLayerRef.current)
+  ) {
+    map.addLayer(urlLocationMarkerLayerRef.current);
+  }
 
-  urlLocationMarkerSourceRef.current.clear();
+  urlLocationMarkerSourceRef.current.clear();
 
-  urlLocationMarkerSourceRef.current.addFeature(
-    new Feature({
-      geometry: new Point(targetCoord),
-    })
-  );
+  urlLocationMarkerSourceRef.current.addFeature(
+    new Feature({
+      geometry: new Point(targetCoord),
+    })
+  );
 
-  map.once("rendercomplete", () => {
-    view.animate({
-      center: targetCoord,
-      zoom: 16,
-      duration: 800,
-    });
-  });
-
-  map.renderSync();
+  // This zoom-to-marker is the field-task page's #1 priority and must not
+  // wait on anything else. `rendercomplete` only fires once every layer —
+  // including the multi-second Road Network/Road Labels loads — has fully
+  // finished, which inverts that priority by blocking the one thing meant
+  // to happen first behind everything that is allowed to happen later.
+  // Animate immediately instead.
+  view.animate({
+    center: targetCoord,
+    zoom: 16,
+    duration: 800,
+  });
 }
 
     let filterParts = [];
 
-    // zone_no's stored format varies by city (some store "Zone 1", others
-    // just "1") — match either so this doesn't silently fail for a city
-    // whose chainage segment table uses the plain-numeric format.
-    if (zone) filterParts.push(`(zone_no='Zone ${zone}' OR zone_no='${zone}')`);
-    if (ward) filterParts.push(`ward_no='${ward}'`);
+    // zone_no/ward_no are numeric columns in the DB — a quoted non-numeric
+    // literal (e.g. the old "Zone N" text hedge) throws a hard SQL error
+    // ("invalid input syntax for type integer") that fails the whole
+    // request, so only ever push a bare numeric comparison here.
+    const zoneNum = Number(zone);
+    if (zone && Number.isFinite(zoneNum)) filterParts.push(`zone_no=${zoneNum}`);
+
+    // Roads load for the URL's ward plus whatever wards actually border it
+    // (fieldTaskWardList, resolved via /adjacent-wards in Dashboard) rather
+    // than the single ward alone — a lone ward with no surrounding roads
+    // reads as broken, and the whole zone is unnecessary load. Falls back
+    // to the single ward if the adjacency list hasn't resolved yet.
+    const wardNums = Array.isArray(fieldTaskWardList) && fieldTaskWardList.length
+      ? fieldTaskWardList.map(Number).filter(Number.isFinite)
+      : (() => {
+          const wardNum = Number(ward);
+          return ward && Number.isFinite(wardNum) ? [wardNum] : [];
+        })();
+    if (wardNums.length === 1) filterParts.push(`ward_no=${wardNums[0]}`);
+    else if (wardNums.length > 1) filterParts.push(`ward_no IN (${wardNums.join(",")})`);
 
     if (filterParts.length > 0) {
       const filter = filterParts.join(" AND ");
 
+      // Only keeps roadLayerRef's own CQL_FILTER in sync for GetFeatureInfo
+      // identify purposes — it stays hidden (visible:false, as constructed).
+      // The visible, ward-scoped road rendering for field-task mode is
+      // roadNetworkLayer/roadLabelsLayer (already CQL-scoped from
+      // construction, see the [city]-only effect above); making this layer
+      // ALSO visible drew the exact same roads twice, once from each layer.
       applyChainageFilter(filter); // ✅ CORRECT
-      // Deep-link (e.g. mobile field-task) entry with a zone/ward assignment —
-      // showing this filtered road subset is the intended behavior here,
-      // unlike the generic "Chainage" button which stays armed/invisible
-      // until a specific road is clicked.
-      roadLayerRef.current?.setVisible(true);
     }
 
-  }, [mapReady, location.search, mode]);
+  }, [mapReady, location.search, mode, fieldTaskWardList]);
 
   const params = new URLSearchParams(location.search);//chainage
   const projectId = params.get("project_id");//chainage
@@ -7147,7 +7736,22 @@ const getSelectedRoadIdsOnly = () => {
       return;
     }
 
-    map.once("rendercomplete", async () => {
+    let settled = false;
+    // GeoServer WMS tile responses have been observed taking several
+    // seconds each under load; a fresh fit()/zoom onto an extent whose
+    // tiles aren't cached yet can leave `rendercomplete` waiting on that
+    // whole batch. A confirm-dialog preview doesn't need pixel-perfect
+    // basemap/road tiles to be useful, so cap the wait and snapshot
+    // whatever's already rendered rather than blocking indefinitely.
+    const fallbackTimer = setTimeout(() => {
+      map.renderSync();
+      runCapture();
+    }, 4000);
+
+    const runCapture = async () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(fallbackTimer);
       try {
         const size = map.getSize();
 
@@ -7225,8 +7829,9 @@ const getSelectedRoadIdsOnly = () => {
       } catch (err) {
         reject(err);
       }
-    });
+    };
 
+    map.once("rendercomplete", runCapture);
     map.renderSync();
   });
 };
@@ -7263,6 +7868,7 @@ const getSelectedRoadIdsOnly = () => {
       <MapNavigation
         map={mapReady ? mapRef.current : null}
         isTableOpen={tableHasRows && !tableMinimized}
+        restrictedMode={isFieldTaskMode}
       />
 
       {/* Legend Container */}
@@ -7287,9 +7893,11 @@ const getSelectedRoadIdsOnly = () => {
           onApplyFilter={onRoadFilterChange}
           amenityCounts={amenityLegendCounts}
           otherCounts={otherLegendCounts}
+          extent={legendExtent}
           dssLegend={dssLegend}
           zoneBoundaryColor={zoneBoundaryColor}
           wardBoundaryColor={wardBoundaryColor}
+          restrictedMode={isFieldTaskMode}
         />
       </div>
 
@@ -7362,6 +7970,11 @@ const getSelectedRoadIdsOnly = () => {
 
     // clear current road panel data
     setSelectedRoad(null);
+    // Also clear Dashboard's own selectedRoadId (field-task mode) -
+    // otherwise the "armed mode" effect below sees selectedRoadId still
+    // set with no matching selectedRoad and immediately reopens this same
+    // panel via openChainageForRoadId, making the close button a no-op.
+    onFieldTaskRoadHighlightRef.current?.(null);
     setPanelMinimized(false);
     setShowCreateChainageForm(false);
     setPatchChoice(null);
@@ -7468,6 +8081,15 @@ const getSelectedRoadIdsOnly = () => {
                   {showPatchPanel ? "Hide Patches" : "View Patches"}
                 </button>
               </div>
+
+              {isFieldTaskMode && isMultiSelectModeProp && (
+                // Multi-road selection itself happens in the table below
+                // (its own Multi/Apply controls) — this is just a pointer so
+                // it's obvious why clicking roads on the map has paused.
+                <div style={{ fontSize: 12, padding: "8px 10px", background: "rgba(255,255,255,0.5)", borderRadius: 8, marginBottom: 8 }}>
+                  Multi-road patch mode is on — select connected roads from the table below, then press Apply.
+                </div>
+              )}
 
               {showCreateChainageForm && (
               <div className="chainage-create-form">
@@ -7650,58 +8272,24 @@ const getSelectedRoadIdsOnly = () => {
         </div>
       )}
 
-      {mode === "CHAINAGE" && projectId && userId && (
-        <div className="chainage-search-wrapper">
-          {/* Only shown for the KMC field-task deep link (project_id/user_id
-              present) — that page has none of the normal Dashboard chrome,
-              so this search is its only way to find a road. On the regular
-              Dashboard ("Chainage" button clicked on an already-loaded
-              city), the toolbar's own search is already available, so this
-              duplicate control stays hidden. */}
-
-          {/* 🔘 Button */}
-          <button
-            className="chainage-search-toggle"
-            onClick={() => setShowSearchPanel(prev => !prev)}
-          >
-            {showSearchPanel ? "✖" : "🔍"}
-          </button>
-
-          {/* 📦 Expand Panel */}
-          <div className={`chainage-search-expand ${showSearchPanel ? "open" : ""}`}>
-            <ChainageSearchPanel
-              city={city}
-              onFeatureUnavailable={(payload) => showApiUnavailableNotice(payload, "Chainage search")}
-              onSelectRoad={(road) => {
-                const filter = `road_id='${road.road_id}'`;
-                applyRoadFilterImmediate(filter);
-
-                if (road.lon && road.lat) {
-                  const center = fromLonLat([road.lon, road.lat]);
-
-                  mapRef.current.getView().animate({
-                    center,
-                    zoom: 17,
-                    duration: 500,
-                  });
-                }
-
-                // 🔥 auto close after select
-                setShowSearchPanel(false);
-              }}
-            />
-          </div>
-
-        </div>
-
-
-
-      )}
+      {/* The field-task deep link used to be a separate, chrome-less page,
+          which is why it needed its own search control here — it now runs
+          inside the full Dashboard (same as any other city view), whose own
+          toolbar search already covers road-ID lookup and ward-scoping, so
+          this duplicate (it was rendering directly on top of the toolbar's
+          own search icon) has been removed rather than left hidden. */}
 
       {/* Popup overlay is now built imperatively via document.createElement
           (see the map-init effect) and attached directly to popupRef.current
           — not rendered here as JSX. See comment there for why. */}
-      {showPatchConfirm && (
+      {showPatchConfirm && createPortal(
+        // Portaled straight to <body> — this dialog used to render inside
+        // .map-container-wrapper, which has its own `position:relative;
+        // z-index:1`. That ancestor is a stacking context of its own, so no
+        // z-index on this overlay could ever outrank siblings outside it
+        // (e.g. .bottom-table's z-index:100001) — the road table would sit
+        // on top and swallow clicks meant for Save/Cancel whenever both
+        // were open at once.
         <div className="submit-confirm-overlay">
           <div className="submit-confirm-box">
 
@@ -7740,10 +8328,56 @@ const getSelectedRoadIdsOnly = () => {
             </div>
 
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {showSubmitConfirm && (
+      {showMultiRoadConfirm && createPortal(
+        <div className="submit-confirm-overlay">
+          <div className="submit-confirm-box">
+
+            <h3>CONFIRM MULTI-ROAD PATCH</h3>
+
+            <div className="submit-info">
+              <p className="submit-info-roadlist">
+                <b>Roads ({multiRoadSelection.length}):</b>
+                <span>{multiRoadSelection.map((r) => r.road_name || r.road_id).join(" → ")}</span>
+              </p>
+              <p>Each road's full length will be added as its own patch.</p>
+            </div>
+
+            <div className="submit-map-preview">
+              {multiRoadConfirmImage ? (
+                <img src={multiRoadConfirmImage} alt="Multi-road Patch Snapshot" />
+              ) : (
+                <p>Map snapshot not available</p>
+              )}
+            </div>
+
+            <div className="submit-confirm-actions">
+              <button
+                className="cancel-btn"
+                onClick={handleCancelMultiRoadConfirm}
+                disabled={multiRoadConfirmSaving}
+              >
+                Cancel
+              </button>
+
+              <button
+                className="final-submit-btn"
+                onClick={handleConfirmSaveMultiRoadPatch}
+                disabled={multiRoadConfirmSaving}
+              >
+                {multiRoadConfirmSaving ? "Saving..." : "Save"}
+              </button>
+            </div>
+
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showSubmitConfirm && createPortal(
         <div className="submit-confirm-overlay">
           <div className="submit-confirm-box">
 
@@ -7798,7 +8432,8 @@ const getSelectedRoadIdsOnly = () => {
             </div>
 
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
 

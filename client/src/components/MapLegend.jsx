@@ -66,7 +66,7 @@ const OTHER_ICON_MAP = {
 };
 
 // Component to fetch and render dynamic legend
-const DynamicLegendItem = ({ item, city, roadFilter }) => {
+const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
   const [legendItems, setLegendItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [counts, setCounts] = useState({});
@@ -77,9 +77,10 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
 
     const fetchLegendGraphic = async () => {
       try {
+        const styleParam = item.style ? `&STYLE=${encodeURIComponent(item.style)}` : "";
         const wmsUrl = `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=application/json&LAYER=${encodeURIComponent(
           item.layer
-        )}`;
+        )}${styleParam}`;
 
         const res = await fetch(wmsUrl);
         const json = await res.json();
@@ -98,7 +99,7 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
 
           // Helper to get rule-specific icon if needed, but color block is usually enough and cleaner
           // We can also use the GetLegendGraphic RULE param for the icon
-          let iconUrl = `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(item.layer)}&LEGEND_OPTIONS=forceLabels:off`;
+          let iconUrl = `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(item.layer)}${styleParam}&LEGEND_OPTIONS=forceLabels:off`;
           if (rule.name) {
             iconUrl += `&RULE=${encodeURIComponent(rule.name)}`;
           }
@@ -114,7 +115,7 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
 
     fetchLegendGraphic();
     return () => { isMounted = false; };
-  }, [item.layer]);
+  }, [item.layer, item.style]);
 
   // 2. Fetch Summary Counts (Table Data)
   useEffect(() => {
@@ -135,6 +136,13 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
         if (roadFilter) {
           params.set("filter", roadFilter);
         }
+        // Live extent sync: keep this badge's count matching the map's
+        // current viewport, same as the bottom table - without this it
+        // stayed static (zone/ward/category-scoped only) while everything
+        // else on screen updated on pan/zoom.
+        if (Array.isArray(extent) && extent.length === 4) {
+          params.set("bbox", extent.join(","));
+        }
 
         // Use the summary API which aggregates counts based on spatial filter
         const url = `/api/road-networks/${city.toLowerCase()}/summary?${params.toString()}`;
@@ -151,8 +159,13 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
           const map = {};
           if (Array.isArray(arr)) {
             arr.forEach(obj => {
-              // normalize label
-              map[obj.label.toLowerCase()] = obj.count;
+              // normalize label — zone_no/ward_no come back as numbers (both
+              // columns are INTEGER in the DB), not strings, so this must
+              // coerce before lowercasing or every zone/ward count silently
+              // throws and the whole map ends up empty (which is what was
+              // making the legend fall back to showing every zone/ward
+              // swatch unfiltered instead of just the ones actually present).
+              map[String(obj.label).toLowerCase()] = obj.count;
             });
           }
           return map;
@@ -176,7 +189,7 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
 
     fetchCounts();
     return () => { isMounted = false; };
-  }, [city, item.attribute, roadFilter, item.noCounts]);
+  }, [city, item.attribute, roadFilter, item.noCounts, extent]);
 
   if (loading && legendItems.length === 0) return <div style={{ fontSize: '11px', color: '#888' }}>Loading...</div>;
 
@@ -186,13 +199,21 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
   // Create a merged list
   let displayItems = [];
 
-  // Special handling for Ward breakdown when WMS legend is generic (single symbol)
-  // If we have detailed ward counts but only a generic legend item, we explode the counts into legend items.
-  const isWard = item.attribute === "ward_no";
+  // Special handling for Ward/Zone breakdown when WMS legend is generic
+  // (single symbol) - if we have detailed counts but only a generic legend
+  // item, we explode the counts into legend items instead of falling
+  // through to the plain WMS rule title. That title is frequently just the
+  // bare zone/ward number with no context ("1" instead of "Zone No. 1"),
+  // which reads as meaningless on its own next to a count.
+  const explodeAttributeLabel = item.attribute === "ward_no"
+    ? "Ward No."
+    : item.attribute === "zone_no"
+      ? "Zone No."
+      : null;
   const hasManyCounts = Object.keys(counts).length > 0;
   const hasFewLegendItems = legendItems.length <= 1; // Usually 1 generic item like "gold line"
 
-  if (isWard && hasManyCounts && hasFewLegendItems) {
+  if (explodeAttributeLabel && hasManyCounts && hasFewLegendItems) {
     // Explode counts into legend items using the generic style
     let template = legendItems[0];
 
@@ -203,7 +224,7 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
     }
 
     displayItems = Object.entries(counts).map(([label, count]) => ({
-      label: `Ward No. ${label}`, // e.g. "Ward No. 1"
+      label: `${explodeAttributeLabel} ${label}`, // e.g. "Zone No. 1" / "Ward No. 1"
       name: label, // e.g. "1" (used for filter)
       color: template.color,
       iconUrl: template.iconUrl,
@@ -219,10 +240,17 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
     });
 
   } else {
-    // Standard matching: match WMS legend items to counts
+    // Standard matching: match WMS legend items to counts. GeoServer's own
+    // rule titles for a zone/ward layer are frequently just the bare number
+    // ("1"), one rule per zone/ward with its own real color - preserve that
+    // per-item color/icon, only relabel the bare-numeric title so it still
+    // reads as "Zone No. 1" instead of a meaningless "1".
     displayItems = legendItems.map(lItem => {
       const count = counts[lItem.label.toLowerCase()] || 0;
-      return { ...lItem, count };
+      const label = explodeAttributeLabel && /^\d+$/.test(String(lItem.label).trim())
+        ? `${explodeAttributeLabel} ${lItem.label.trim()}`
+        : lItem.label;
+      return { ...lItem, label, count };
     });
   }
 
@@ -290,7 +318,11 @@ const DynamicLegendItem = ({ item, city, roadFilter }) => {
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', flex: 1, fontSize: '11px' }}>
               <span>{lItem.label}</span>
-              {!item.noCounts && <span style={{ fontWeight: 'bold', marginLeft: '4px' }}>{lItem.count}</span>}
+              {!item.noCounts && (
+                <span style={{ fontWeight: 'bold', marginLeft: '4px' }}>
+                  {lItem.count.toLocaleString()} {lItem.count === 1 ? "road" : "roads"}
+                </span>
+              )}
             </div>
           </div>
         )
@@ -390,12 +422,36 @@ const BoundaryLegendItem = ({ item, colorOverride }) => {
   );
 };
 
-const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadFilter, onApplyFilter, amenityCounts, otherCounts, dssLegend, zoneBoundaryColor, wardBoundaryColor }) => {
+// Shared section-title treatment - bold, uppercase, underlined - so every
+// group in the legend (Administrative Boundaries, Chainage, DSS, Amenities,
+// Others, per-item labels) reads as a clearly separated block instead of
+// blending together under the same plain small-caption style.
+const SectionTitle = ({ children }) => (
+  <div
+    style={{
+      fontSize: "11px",
+      fontWeight: 700,
+      marginBottom: "8px",
+      paddingBottom: "5px",
+      color: "#16233a",
+      letterSpacing: "0.4px",
+      textTransform: "uppercase",
+      borderBottom: "1px solid rgba(255, 255, 255, 0.4)",
+    }}
+  >
+    {children}
+  </div>
+);
+
+const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadFilter, onApplyFilter, amenityCounts, otherCounts, extent, dssLegend, zoneBoundaryColor, wardBoundaryColor, restrictedMode = false }) => {
   // Draggable & Minimized State
   const [position, setPosition] = useState(null); // {x, y} or null
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [minimized, setMinimized] = useState(false);
+  // Field-task redirects target a small mobile screen — start collapsed so
+  // it doesn't eat map space until someone actually wants to check it;
+  // normal dashboard use is unaffected (still starts expanded).
+  const [minimized, setMinimized] = useState(restrictedMode);
   const [isMobileView, setIsMobileView] = useState(window.innerWidth <= 768);
 
   const legendRef = React.useRef(null);
@@ -488,6 +544,12 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
         id: "chainage_points",
         label: "Selected Road Chainage",
         layer: chainageCfg.chainageLayer,
+        // Must match the STYLES override MapContainer actually applies to
+        // this layer once a road is selected (see chainageSource.updateParams
+        // in openChainageForRoadId) — the layer's own default GeoServer style
+        // renders differently, which is what made the legend swatch not
+        // match what's actually drawn on the map.
+        style: "chainage_distance_label",
         group: "chainage",
       });
     }
@@ -739,10 +801,15 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
       style={{
         position: "fixed",
         // If we have a position state, use it (dragged mode)
-        // Otherwise, fallback to initial bottom-right (anchored mode)
+        // Otherwise, fallback to initial bottom-right (anchored mode).
+        // Field-task mode always shows the bottom data table, which the
+        // normal mobile bottom-anchored legend sits directly underneath
+        // (invisible and unreachable) — anchor to the top instead, same as
+        // desktop, since there's no toolbar row competing for that space
+        // on this restricted layout.
         left: position ? position.x : undefined,
-        top: position ? position.y : (isMobileView ? undefined : "70px"),
-        bottom: position ? undefined : (isMobileView ? "80px" : undefined),
+        top: position ? position.y : (isMobileView && !restrictedMode ? undefined : "70px"),
+        bottom: position ? undefined : (isMobileView && !restrictedMode ? "80px" : undefined),
         right: position ? undefined : "10px",
 
         background: "linear-gradient(149deg, rgba(54, 209, 214, 0.78) 15%, rgba(91, 134, 229, 0.78) 55%)",
@@ -775,22 +842,29 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
           touchAction: "none",
         }}
       >
-        <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 600, color: "#203148", letterSpacing: "0.2px" }}>{headerTitle}</h4>
+        <h4 style={{ margin: 0, display: "flex", alignItems: "center", gap: "7px", fontSize: "13px", fontWeight: 700, color: "#203148", letterSpacing: "0.2px" }}>
+          <i className="fas fa-layer-group" style={{ fontSize: "12px", opacity: 0.75 }} />
+          {headerTitle}
+        </h4>
         <div style={{ display: "flex", gap: "6px" }}>
           <button
             onClick={(e) => {
               e.stopPropagation(); // Prevent drag start
               setMinimized(!minimized);
             }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.4)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             title={minimized ? "Expand" : "Minimize"}
             style={{
               border: "none",
               background: "transparent",
+              borderRadius: "5px",
               cursor: "pointer",
               color: "#1f2a3a",
               padding: 0,
               width: "20px",
               height: "20px",
+              transition: "background 0.15s ease",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -813,17 +887,7 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
             {boundaryItems.length > 0 && (
               <div>
-                <div
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    marginBottom: "6px",
-                    color: "#1e2b3a",
-                    letterSpacing: "0.15px",
-                  }}
-                >
-                  Administrative Boundaries
-                </div>
+                <SectionTitle>Administrative Boundaries</SectionTitle>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                   {boundaryItems.map((item) => (
                     <div key={item.id}>
@@ -844,17 +908,7 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
             )}
             {chainageItems.length > 0 && (
               <div>
-                <div
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    marginBottom: "6px",
-                    color: "#1e2b3a",
-                    letterSpacing: "0.15px",
-                  }}
-                >
-                  Chainage
-                </div>
+                <SectionTitle>Chainage</SectionTitle>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                   {chainageItems.map((item) => (
                     <div key={item.id}>
@@ -883,17 +937,7 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
             )}
             {dssGroups.length > 0 && (
               <div>
-                <div
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    marginBottom: "6px",
-                    color: "#1e2b3a",
-                    letterSpacing: "0.15px",
-                  }}
-                >
-                  DSS
-                </div>
+                <SectionTitle>DSS</SectionTitle>
                 <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                   {dssGroups.map((group) => (
                     <div key={group.id}>
@@ -940,17 +984,7 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
             )}
             {amenityItems.length > 0 && (
               <div>
-                <div
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    marginBottom: "6px",
-                    color: "#1e2b3a",
-                    letterSpacing: "0.15px",
-                  }}
-                >
-                  Amenities
-                </div>
+                <SectionTitle>Amenities</SectionTitle>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                   {amenityItems.map((item) => {
                     if (!item) return null;
@@ -1003,17 +1037,7 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
             )}
             {otherItems.length > 0 && (
               <div>
-                <div
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    marginBottom: "6px",
-                    color: "#1e2b3a",
-                    letterSpacing: "0.15px",
-                  }}
-                >
-                  Others
-                </div>
+                <SectionTitle>Others</SectionTitle>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                   {otherItems.map((item) => {
                     if (!item) return null;
@@ -1067,20 +1091,10 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
             {remainingItems.filter(Boolean).map((item) => (
               <div key={item.id}>
                 {!hideItemLabel && !item.boundary && (
-                  <div
-                    style={{
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      marginBottom: "6px",
-                      color: "#1e2b3a",
-                      letterSpacing: "0.15px",
-                    }}
-                  >
-                    {item.label}
-                  </div>
+                  <SectionTitle>{item.label}</SectionTitle>
                 )}
                 {item.isDynamic ? (
-                  <DynamicLegendItem item={item} city={city} roadFilter={roadFilter} />
+                  <DynamicLegendItem item={item} city={city} roadFilter={roadFilter} extent={extent} />
                 ) : (
                   <img
                     src={`${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(

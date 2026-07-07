@@ -6,7 +6,10 @@ import {
   getMaskedTile,
   getGwcTileBuffer,
   fetchBoundaryRings,
+  tileBounds3857,
+  bboxIntersects,
   MERCATOR_ORIGIN,
+  probeUpstreamConnectivity,
 } from "../routes/tiles.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -26,8 +29,53 @@ const UP_BOUNDARY = "Ward_38:Up_District";
 // Cities are viewed much closer than the whole state, so they get a deeper
 // zoom range; the UP-wide home view stays shallow. Matches the zoom bands
 // actually reachable from each page's default `zoom`/max extent.
-const CITY_ZOOM_RANGE = { min: 11, max: 16 };
-const UP_ZOOM_RANGE = { min: 6, max: 10 };
+// Env-tunable (TILE_WARM_CITY_MAX_ZOOM / TILE_WARM_UP_MAX_ZOOM) so a
+// staging box preparing a full MBTiles package for production can warm
+// deeper than the day-to-day defaults without a code change. Be aware of
+// the real, measured cost curve before raising the city max: each +1 zoom
+// level roughly quadruples that band's tile count — the initial z16 pass
+// measured 285k tiles / ~5.2 hours / most of the cache's disk usage, so
+// z17 is ~1.1M tiles / ~20 hours / ~16GB (needs TILE_CACHE_CAP_GB raised
+// in step, or the hourly eviction sweep will evict tiles the warmer just
+// fetched). The warm is resumable across restarts (already-cached tiles
+// are millisecond stat-hits), so deep warms can be completed across
+// several sessions. Zooms beyond the warmed max still work fine live -
+// fetched on demand, cached, and included in the next MBTiles export.
+const envInt = (name, fallback) => {
+  const v = Number(process.env[name]);
+  return Number.isInteger(v) && v > 0 ? v : fallback;
+};
+const CITY_ZOOM_RANGE = { min: 11, max: envInt("TILE_WARM_CITY_MAX_ZOOM", 16) };
+const UP_ZOOM_RANGE = { min: 6, max: envInt("TILE_WARM_UP_MAX_ZOOM", 11) };
+
+// Per-style deep-warm ceiling inside city boundaries (beyond the shared
+// CITY_ZOOM_RANGE the GWC layers use). Chosen for an air-gapped deployment
+// where the archive is the only truth: satellite/labels/topo are warmed to
+// the exact max zoom the client can request, making those styles literally
+// 100% complete offline; osm/positron/toner stop at 17/16 because vector
+// cartography upscales gracefully through the ancestor-tile fallback
+// (tiles.js), whereas satellite imagery is where blur is actually
+// noticeable. Deep-zoom warming is clipped to the real city boundary
+// polygon (not its rectangle) — see tileIntersectsRings below — which cuts
+// the deep-tile count roughly in half.
+const STYLE_WARM_MAX_ZOOM = {
+  osm: envInt("TILE_WARM_MAX_OSM", 17),
+  positron: envInt("TILE_WARM_MAX_POSITRON", 16),
+  toner: envInt("TILE_WARM_MAX_TONER", 16),
+  topo: envInt("TILE_WARM_MAX_TOPO", 17), // client max 17 — complete
+  satellite: envInt("TILE_WARM_MAX_SATELLITE", 18), // client max 18 — complete
+  labels: envInt("TILE_WARM_MAX_LABELS", 18), // client max 18 — complete
+};
+// Below this zoom a city's bounding rectangle is close enough to its real
+// shape that polygon-clipping isn't worth the per-tile geometry test.
+const RING_CLIP_MIN_ZOOM = 15;
+
+// How often to re-probe for connectivity after a warm pass came back with
+// failures (the air-gapped case: the internet window isn't open yet or
+// closed partway through). The warm is resumable — cached tiles are
+// millisecond stat-hits — so re-running it after a probe succeeds only
+// costs the tiles still actually missing.
+const CONNECTIVITY_RECHECK_MS = envInt("TILE_WARM_RECHECK_MINUTES", 10) * 60 * 1000;
 
 // GWC tiles are cached with a 1-hour TTL (real, editable GIS data) vs. the
 // basemap tiles' 30-day TTL (eternal third-party imagery) — re-warm only
@@ -62,7 +110,16 @@ export function parseCityRegistry() {
   // city's own roadLayer.
   const keyRe = /^\s*(\w+):\s*\{\s*$/;
   const fieldRe = /^\s*(zoneLayer|wardLayer|roadLayer):\s*"([^"]+)"/;
+  // roadClassifications' own layers (Roads by category/condition/material/
+  // ownership/cus/zone) use a static named GeoServer style per layer, same
+  // as roadLayer — structurally just as cacheable, just never included in
+  // the warming loop below until now. Confirmed via real telemetry these
+  // averaged 7-28s/view specifically because nothing ever pre-warmed them.
+  const roadClassStartRe = /^\s*roadClassifications:\s*\{\s*$/;
+  const layerFieldRe = /\blayer:\s*"([^"]+)"/;
   let depth = 0;
+  let inClassifications = false;
+  let classificationsEnterDepth = null;
 
   for (const line of lines) {
     if (depth === 1) {
@@ -76,10 +133,26 @@ export function parseCityRegistry() {
       if (fieldMatch) {
         cities[currentKey][fieldMatch[1]] = fieldMatch[2];
       }
+      if (roadClassStartRe.test(line)) {
+        inClassifications = true;
+        classificationsEnterDepth = depth;
+      }
+    } else if (inClassifications && currentKey) {
+      const layerMatch = layerFieldRe.exec(line);
+      if (layerMatch) {
+        if (!cities[currentKey].roadClassificationLayers) {
+          cities[currentKey].roadClassificationLayers = [];
+        }
+        cities[currentKey].roadClassificationLayers.push(layerMatch[1]);
+      }
     }
     for (const ch of line) {
       if (ch === "{") depth += 1;
       else if (ch === "}") depth -= 1;
+    }
+    if (inClassifications && depth <= classificationsEnterDepth) {
+      inClassifications = false;
+      classificationsEnterDepth = null;
     }
   }
   return cities;
@@ -107,6 +180,71 @@ function* tilesForBbox(bbox, zoomRange) {
       }
     }
   }
+}
+
+// True when a tile's bbox actually touches the boundary polygon (any ring),
+// not just the polygon's bounding rectangle. Standard rect-vs-polygon test:
+// coarse ring-bbox reject, then (a) any ring vertex inside the rect, (b) any
+// rect corner inside the ring (ray cast), (c) any ring segment crossing a
+// rect edge — covering the "polygon edge passes through the tile without
+// either's vertices inside the other" case.
+function pointInRing(px, py, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+  const orient = (px, py, qx, qy, rx, ry) => Math.sign((qx - px) * (ry - py) - (qy - py) * (rx - px));
+  const o1 = orient(ax, ay, bx, by, cx, cy);
+  const o2 = orient(ax, ay, bx, by, dx, dy);
+  const o3 = orient(cx, cy, dx, dy, ax, ay);
+  const o4 = orient(cx, cy, dx, dy, bx, by);
+  return o1 !== o2 && o3 !== o4;
+}
+
+function tileIntersectsRings(tileBBox, ringsWithBbox) {
+  const [minX, minY, maxX, maxY] = tileBBox;
+  const rectEdges = [
+    [minX, minY, maxX, minY],
+    [maxX, minY, maxX, maxY],
+    [maxX, maxY, minX, maxY],
+    [minX, maxY, minX, minY],
+  ];
+  for (const { ring, bbox } of ringsWithBbox) {
+    if (!bboxIntersects(bbox, tileBBox)) continue;
+    for (const [px, py] of ring) {
+      if (px >= minX && px <= maxX && py >= minY && py <= maxY) return true;
+    }
+    if (pointInRing(minX, minY, ring)) return true;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [x1, y1] = ring[j];
+      const [x2, y2] = ring[i];
+      for (const [ex1, ey1, ex2, ey2] of rectEdges) {
+        if (segmentsIntersect(x1, y1, x2, y2, ex1, ey1, ex2, ey2)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function ringsWithBboxes(rings) {
+  return (rings || []).map((ring) => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [x, y] of ring) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    return { ring, bbox: [minX, minY, maxX, maxY] };
+  });
 }
 
 async function runQueue(jobs, concurrency) {
@@ -140,9 +278,11 @@ async function warmGwcForLayer(layer, boundary, zoomRange) {
 async function warmCityGwcLayers(city, boundary) {
   let ok = 0;
   let fail = 0;
-  for (const layerKey of ["zoneLayer", "wardLayer", "roadLayer"]) {
-    const layer = city[layerKey];
-    if (!layer) continue;
+  const layers = [
+    ...["zoneLayer", "wardLayer", "roadLayer"].map((k) => city[k]).filter(Boolean),
+    ...(city.roadClassificationLayers || []),
+  ];
+  for (const layer of layers) {
     const result = await warmGwcForLayer(layer, boundary, CITY_ZOOM_RANGE);
     ok += result.ok;
     fail += result.fail;
@@ -177,28 +317,29 @@ export async function warmAllCaches({
       return true;
     });
 
-  const bboxByBoundary = new Map();
-  try {
-    bboxByBoundary.set(UP_BOUNDARY, (await fetchBoundaryRings(UP_BOUNDARY, LOW_PRIORITY)).bbox);
-  } catch (err) {
-    console.warn(`[cache-warmer] UP-wide boundary fetch failed: ${err.message}`);
-  }
-  for (const entry of cityEntries) {
+  const boundaryData = new Map(); // boundary -> { bbox, clipRings }
+  const loadBoundary = async (boundary, label) => {
     try {
-      bboxByBoundary.set(entry.boundary, (await fetchBoundaryRings(entry.boundary, LOW_PRIORITY)).bbox);
+      const { rings, bbox } = await fetchBoundaryRings(boundary, LOW_PRIORITY);
+      boundaryData.set(boundary, { bbox, clipRings: ringsWithBboxes(rings) });
     } catch (err) {
-      console.warn(`[cache-warmer] boundary fetch failed for ${entry.key}: ${err.message}`);
+      console.warn(`[cache-warmer] boundary fetch failed for ${label}: ${err.message}`);
     }
+  };
+  await loadBoundary(UP_BOUNDARY, "UP-wide");
+  for (const entry of cityEntries) {
+    await loadBoundary(entry.boundary, entry.key);
   }
 
   let totals = { ok: 0, fail: 0 };
-  const maxZoom = Math.max(cityZoomRange.max, upZoomRange.max);
+  const styleMaxOverall = Math.max(...Object.values(STYLE_WARM_MAX_ZOOM));
+  const maxZoom = Math.max(cityZoomRange.max, upZoomRange.max, styleMaxOverall);
 
   for (let z = Math.min(cityZoomRange.min, upZoomRange.min); z <= maxZoom; z += 1) {
     const jobs = [];
 
-    if (z >= upZoomRange.min && z <= upZoomRange.max && bboxByBoundary.has(UP_BOUNDARY)) {
-      const bbox = bboxByBoundary.get(UP_BOUNDARY);
+    if (z >= upZoomRange.min && z <= upZoomRange.max && boundaryData.has(UP_BOUNDARY)) {
+      const { bbox } = boundaryData.get(UP_BOUNDARY);
       for (const style of Object.keys(STYLES)) {
         for (const tile of tilesForBbox(bbox, { min: z, max: z })) {
           jobs.push(() => getMaskedTile(style, UP_BOUNDARY, tile.z, tile.x, tile.y, LOW_PRIORITY));
@@ -206,20 +347,40 @@ export async function warmAllCaches({
       }
     }
 
-    if (z >= cityZoomRange.min && z <= cityZoomRange.max) {
+    if (z >= cityZoomRange.min) {
       for (const entry of cityEntries) {
-        const bbox = bboxByBoundary.get(entry.boundary);
-        if (!bbox) continue;
+        const data = boundaryData.get(entry.boundary);
+        if (!data) continue;
+        const { bbox, clipRings } = data;
+        // Basemap styles: each warms as deep as its own configured max.
+        // Past RING_CLIP_MIN_ZOOM only tiles that genuinely touch the
+        // city's boundary polygon are fetched — a city's bounding
+        // rectangle is mostly not-city at street-level zooms.
         for (const style of Object.keys(STYLES)) {
+          const styleMax = STYLE_WARM_MAX_ZOOM[style] ?? cityZoomRange.max;
+          if (z > styleMax) continue;
           for (const tile of tilesForBbox(bbox, { min: z, max: z })) {
+            if (
+              z >= RING_CLIP_MIN_ZOOM &&
+              clipRings.length &&
+              !tileIntersectsRings(tileBounds3857(tile.z, tile.x, tile.y), clipRings)
+            ) {
+              continue;
+            }
             jobs.push(() => getMaskedTile(style, entry.boundary, tile.z, tile.x, tile.y, LOW_PRIORITY));
           }
         }
-        for (const layerKey of ["zoneLayer", "wardLayer", "roadLayer"]) {
-          const layer = entry.city[layerKey];
-          if (!layer) continue;
-          for (const tile of tilesForBbox(bbox, { min: z, max: z })) {
-            jobs.push(() => getGwcTileBuffer(layer, tile.z, tile.x, tile.y, LOW_PRIORITY));
+        // GWC overlay layers (internal GeoServer) keep the shared city
+        // zoom range — they're re-warmed on a rolling schedule anyway.
+        if (z <= cityZoomRange.max) {
+          const cityLayers = [
+            ...["zoneLayer", "wardLayer", "roadLayer"].map((k) => entry.city[k]).filter(Boolean),
+            ...(entry.city.roadClassificationLayers || []),
+          ];
+          for (const layer of cityLayers) {
+            for (const tile of tilesForBbox(bbox, { min: z, max: z })) {
+              jobs.push(() => getGwcTileBuffer(layer, tile.z, tile.x, tile.y, LOW_PRIORITY));
+            }
           }
         }
       }
@@ -237,6 +398,7 @@ export async function warmAllCaches({
   console.log(
     `[cache-warmer] initial pass complete: ${cityEntries.length} cities, ${totals.ok} tiles ok, ${totals.fail} failed, ${((Date.now() - startedAt) / 1000).toFixed(0)}s total`
   );
+  return totals;
 }
 
 // Recurring pass: GWC layers only (1-hour TTL). Basemap tiles are skipped
@@ -269,8 +431,21 @@ async function rewarmGwcOnly() {
 // Starts the whole pre-warming lifecycle: one initial full pass (basemaps +
 // GWC), then a recurring GWC-only re-warm on a timer. Fire-and-forget by
 // design — never blocks server startup, never throws past this call.
+// Once the initial pass completes, the freshly-warmed cache is packaged
+// into per-style .mbtiles archives (server/mbtiles/) automatically, so a
+// staging box that finished warming always has portable archives ready for
+// the manual production migration. Per-style staleness checks inside the
+// exporter make this near-free on restarts where nothing new was fetched.
+// Set TILE_MBTILES_EXPORT=0 to disable (e.g. on a dev machine where
+// rewriting multi-hundred-MB archives after every warm is unwanted).
 export function startCacheWarmer() {
-  warmAllCaches().catch((err) => console.error("[cache-warmer] initial pass failed:", err));
+  warmAllCaches()
+    .then(async () => {
+      if (process.env.TILE_MBTILES_EXPORT === "0") return;
+      const { exportAllMbtiles } = await import("./mbtilesExport.js");
+      exportAllMbtiles();
+    })
+    .catch((err) => console.error("[cache-warmer] initial pass failed:", err));
   setInterval(() => {
     rewarmGwcOnly().catch((err) => console.error("[cache-warmer] GWC re-warm failed:", err));
   }, GWC_REWARM_INTERVAL_MS);

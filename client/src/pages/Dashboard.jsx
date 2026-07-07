@@ -19,6 +19,7 @@ import ChartPanel from "../components/ChartPanel";
 
 import { cityConfig } from "../assets/configs/cityConfig.js";
 import { getGeoserverBase } from "../utils/geoserverBase";
+import { isChainageAvailable } from "../utils/chainageAvailability"; //chainage
 const GEOSERVER_BASE = getGeoserverBase();
 
 // ⭐ Internal Component for Filter Dropdown
@@ -389,6 +390,20 @@ const DashboardPage = () => {
   const queryParams = new URLSearchParams(location.search);
   const city = (queryParams.get("city") || "Lucknow").toLowerCase();
 
+  // A field-task deep link (KMC/iGile redirect) carries project_id/user_id
+  // alongside mode=CHAINAGE — a plain manual "Chainage" button click never
+  // has these. This is what distinguishes "someone was sent here to work on
+  // one specific patch" from "a logged-in user is browsing Chainage mode
+  // normally," which is why the whole restricted-chrome/scoped-data mode
+  // below hangs off this specific combination, not just `mode` alone.
+  const urlProjectId = queryParams.get("project_id");
+  const urlUserId = queryParams.get("user_id");
+  const urlZone = queryParams.get("zone");
+  const urlWard = queryParams.get("ward");
+  const urlTaskTitle = queryParams.get("title");
+  const isFieldTaskMode =
+    queryParams.get("mode") === "CHAINAGE" && !!(urlProjectId && urlUserId);
+
   useEffect(() => {
     logEvent("dashboard_opened", { city });
   }, [city]);
@@ -397,9 +412,81 @@ const DashboardPage = () => {
   // const [roadOptions, setRoadOptions] = useState([]);
   const [selectedRoad, setSelectedRoad] = useState("");
 
-  const [roadFilter, setRoadFilter] = useState(""); // ⭐ FILTER FOR WMS LAYER
+  // Shared by roadFilter/baseFilter's initial state just below — field-task
+  // deep links need this value available synchronously on the very first
+  // render, not one tick later via the "combine filters" effect further
+  // down. roadFilter in particular is read directly by MapContainer's own
+  // effects (the WFS hit-test fetch, the road layer's CQL) — if it started
+  // at "" and only got the real value a render later, those effects fired
+  // at least once fully unfiltered (a real, observed burst of "every road
+  // in the city" requests) before catching up.
+  const computeFieldTaskZoneWardFilter = () => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("mode") !== "CHAINAGE") return "";
+    const rawZone = params.get("zone");
+    const rawWard = params.get("ward");
+    const zoneNum = rawZone ? Number(rawZone) : NaN;
+    const wardNum = rawWard ? Number(rawWard) : NaN;
+    const parts = [];
+    if (Number.isFinite(zoneNum)) parts.push(`zone_no=${zoneNum}`);
+    if (Number.isFinite(wardNum)) parts.push(`ward_no=${wardNum}`);
+    return parts.length ? parts.join(" AND ") : "";
+  };
+  const [roadFilter, setRoadFilter] = useState(computeFieldTaskZoneWardFilter); // ⭐ FILTER FOR WMS LAYER
   const [zoomFilter, setZoomFilter] = useState(""); // ⭐ FILTER FOR AUTO-ZOOM
-  const [baseFilter, setBaseFilter] = useState(""); // ⭐ NEW: Base filter from Sidebar/Search
+  // Field-task deep links seed the road table/road-layer filter straight
+  // from the URL's zone/ward on first render — without this, the table's
+  // own data-fetch effect (driven entirely by baseFilter/roadFilter) has no
+  // idea a specific zone/ward was requested and would load/export the
+  // whole city's ~30k roads instead of the one patch task's area.
+  const [baseFilter, setBaseFilter] = useState(computeFieldTaskZoneWardFilter); // ⭐ NEW: Base filter from Sidebar/Search
+  // Starts as just the URL's own ward (fast, matches the initial baseFilter
+  // above) then widens once /adjacent-wards resolves — loading roads for
+  // the assigned ward plus whichever wards actually border it keeps the
+  // "reduce load" goal while still showing a sensible working area instead
+  // of a single ward isolated with no surrounding context.
+  const [fieldTaskWardList, setFieldTaskWardList] = useState(() =>
+    isFieldTaskMode && urlWard ? [String(urlWard)] : []
+  );
+  useEffect(() => {
+    if (!isFieldTaskMode || !urlZone || !urlWard) return;
+    let cancelled = false;
+    fetch(
+      `/api/road-networks/${city}/adjacent-wards?zone=${encodeURIComponent(urlZone)}&ward=${encodeURIComponent(urlWard)}`
+    )
+      .then((res) => (res.ok ? res.json() : []))
+      .then((rows) => {
+        if (cancelled) return;
+        const wards = Array.isArray(rows)
+          ? [...new Set(rows.map((r) => String(r.ward_no)).filter(Boolean))]
+          : [];
+        if (wards.length) setFieldTaskWardList(wards);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isFieldTaskMode, city, urlZone, urlWard]);
+  // Recomputed whenever fieldTaskWardList changes (single ward → widened
+  // adjacency list) so both the "still untouched default" zoom-guard below
+  // and the effect that pushes this into baseFilter stay in sync through
+  // that transition.
+  const fieldTaskDefaultFilter = isFieldTaskMode
+    ? (() => {
+        const zoneNum = urlZone ? Number(urlZone) : NaN;
+        const parts = [];
+        if (Number.isFinite(zoneNum)) parts.push(`zone_no=${zoneNum}`);
+        const wardNums = fieldTaskWardList.map(Number).filter(Number.isFinite);
+        if (wardNums.length === 1) parts.push(`ward_no=${wardNums[0]}`);
+        else if (wardNums.length > 1) parts.push(`ward_no IN (${wardNums.join(",")})`);
+        return parts.length ? parts.join(" AND ") : null;
+      })()
+    : null;
+  useEffect(() => {
+    if (!isFieldTaskMode || !fieldTaskDefaultFilter) return;
+    setBaseFilter(fieldTaskDefaultFilter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fieldTaskDefaultFilter, isFieldTaskMode]);
   const [queryVersion, setQueryVersion] = useState(0);
   const [showChainage, setShowChainage] = useState(false); //chainage
   // In-place Chainage mode toggle — replaces navigating to a separate
@@ -456,7 +543,21 @@ const DashboardPage = () => {
     baseFilter === "INCLUDE" ||
     (!!roadFilter && roadFilter.trim() !== ""); //chainage
   const [currentPage, setCurrentPage] = useState(1);
-  const [recordsPerPage] = useState(100);
+  // Field-task/KMC deep-link sessions (the "redirection page") get a
+  // smaller page size - that flow is used on phones in the field, where a
+  // 100-row page is unwieldy. The normal dashboard table keeps 100.
+  const recordsPerPage = isFieldTaskMode ? 25 : 100;
+  // Live extent sync: [minLon, minLat, maxLon, maxLat] of the map's current
+  // viewport, reported (debounced) by MapContainer via onMapExtentChange.
+  const [mapExtent, setMapExtent] = useState(null);
+  const handleMapExtentChange = useCallback((extent) => {
+    setMapExtent((prev) => {
+      if (prev && prev.length === 4 && extent.every((v, i) => Math.abs(v - prev[i]) < 1e-6)) {
+        return prev;
+      }
+      return extent;
+    });
+  }, []);
   const [isTableMinimized, setIsTableMinimized] = useState(false);
   const [selectedRoadId, setSelectedRoadId] = useState(null);
   const [selectedRoadIds, setSelectedRoadIds] = useState([]);
@@ -674,10 +775,14 @@ const DashboardPage = () => {
 
     // Sync zoom filter if main filter changes (except when clicking rows which handles zoom separately)
     // Note: We check if finalFilter differs to avoid loops, though setRoadFilter does that too.
-    if (finalFilter !== roadFilter && lastFilterSourceRef.current !== "map") {
+    const isUntouchedFieldTaskDefault =
+      fieldTaskDefaultFilter &&
+      finalFilter === fieldTaskDefaultFilter &&
+      lastFilterSourceRef.current === null;
+    if (finalFilter !== roadFilter && lastFilterSourceRef.current !== "map" && !isUntouchedFieldTaskDefault) {
       setZoomFilter(finalFilter);
     }
-  }, [baseFilter, columnFilters, queryVersion]); // Removed roadFilter from dependency to avoid loop
+  }, [baseFilter, columnFilters, queryVersion, fieldTaskDefaultFilter]); // Removed roadFilter from dependency to avoid loop
 
   const requestLiveMetrics = useCallback((filterExpr) => {
     if (liveMetricsTimerRef.current) {
@@ -1229,8 +1334,24 @@ const DashboardPage = () => {
     // detected slow connection pulls a smaller first batch instead of the
     // full 1000-row page every time the filter changes.
     const roadTableLimit = getIsLowBandwidth() ? 300 : 1000;
+    // Live extent sync: whenever the table is open, only ask for roads
+    // actually within the current map viewport instead of the whole
+    // filtered set - MapContainer reports this (debounced) via
+    // onMapExtentChange, so this effect re-fetches as the user pans/zooms.
+    const bboxParam = mapExtent ? `&bbox=${encodeURIComponent(mapExtent.join(","))}` : "";
+    // A road click typically also pans/zooms the map, which changes
+    // mapExtent and re-triggers this same fetch - guarantee the just-
+    // clicked/selected road is always in the result (even if its exact
+    // geometry sits just outside the computed bbox) by OR-ing it into the
+    // server-side filter directly, in the same query. Without this, that
+    // second fetch's plain bbox filter can race the separate "missing road"
+    // prepend-fetch below and silently drop the road (and its table
+    // highlight) right after a click.
+    const includeRoadIdParam = (!isMultiSelectMode && selectedRoadId)
+      ? `&includeRoadId=${encodeURIComponent(selectedRoadId)}`
+      : "";
     fetch(
-      `/api/road-networks/${city}/details?filter=${encodeURIComponent(roadFilter)}&limit=${roadTableLimit}`,
+      `/api/road-networks/${city}/details?filter=${encodeURIComponent(roadFilter)}&limit=${roadTableLimit}${bboxParam}${includeRoadIdParam}`,
       { signal: controller.signal }
     )
       .then((res) => res.json())
@@ -1250,7 +1371,7 @@ const DashboardPage = () => {
         endLoading("roadTable");
       });
     return () => controller.abort();
-  }, [roadFilter, city, shouldFetchTable, analysisResults]);
+  }, [roadFilter, city, shouldFetchTable, analysisResults, mapExtent, selectedRoadId, isMultiSelectMode]);
 
   // Pagination calculations
   const indexOfLastRecord = currentPage * recordsPerPage;
@@ -1276,6 +1397,39 @@ const DashboardPage = () => {
     row?.ROAD_ID ??
     null;
 
+  // Field-task mode's multi-road patch selection: fetches roads adjacent to
+  // every currently-selected road and narrows the table's own filter down
+  // to exactly (selection + candidates) — so picking the next road for the
+  // patch only ever means picking from what's already visible in the
+  // table, never browsing the whole ward. Growing the selection re-runs
+  // this with the new, larger set, which is what makes the candidate pool
+  // expand road-by-road along the connected chain instead of staying fixed
+  // to the first road's own neighbors.
+  const fetchAndApplyMultiRoadCandidates = async (selectedIds) => {
+    const wardNums = (fieldTaskWardList || []).map(Number).filter(Number.isFinite);
+    const wardsParam = wardNums.length ? `&wards=${wardNums.join(",")}` : "";
+    try {
+      const results = await Promise.all(
+        selectedIds.map((id) =>
+          fetch(`/api/road-networks/${city}/adjacent-roads?road_id=${encodeURIComponent(id)}${wardsParam}`)
+            .then((res) => (res.ok ? res.json() : []))
+            .catch(() => [])
+        )
+      );
+      const candidateIds = new Set(selectedIds.map(String));
+      results.forEach((list) => {
+        (Array.isArray(list) ? list : []).forEach((r) => candidateIds.add(String(r.road_id)));
+      });
+      const filter = buildSelectionFilter([...candidateIds]);
+      lastFilterSourceRef.current = "table";
+      setBaseFilter(filter);
+      setQueryVersion((v) => v + 1);
+    } catch {
+      // Leave the table on whatever filter it already had — worst case the
+      // candidate pool just doesn't narrow further this round.
+    }
+  };
+
   const handleRowClick = (row) => {
     const rowId = getRowSelectionId(row);
 
@@ -1286,9 +1440,13 @@ const DashboardPage = () => {
       if (!rowId) return;
       setSelectedRoadIds((prev) => {
         const idStr = String(rowId);
-        return prev.includes(idStr)
+        const next = prev.includes(idStr)
           ? prev.filter((id) => id !== idStr)
           : [...prev, idStr];
+        if (isFieldTaskMode && next.length) {
+          fetchAndApplyMultiRoadCandidates(next);
+        }
+        return next;
       });
       return;
     }
@@ -1302,6 +1460,13 @@ const DashboardPage = () => {
       const idStr = String(rowId);
       const isNumeric = /^-?\d+(?:\.\d+)?$/.test(idStr);
       setZoomFilter(isNumeric ? `road_id=${idStr}` : `road_id='${idStr.replace(/'/g, "''")}'`);
+    }
+
+    // Field-task mode: table selection opens the same chainage panel a map
+    // click would — someone working through the table shouldn't also have
+    // to go find and click the road on the map.
+    if (isFieldTaskMode && rowId != null && rowId !== "") {
+      mapRef.current?.openChainageForRoadId?.(rowId, row);
     }
 
     // The selected row is highlighted via CSS.
@@ -1377,6 +1542,29 @@ const DashboardPage = () => {
 
   const applyMultiSelection = () => {
     if (!selectedRoadIds.length) return;
+
+    if (isFieldTaskMode) {
+      // Multi-road patch creation — hand the selected roads to
+      // MapContainer's existing preview -> confirm -> save flow (the same
+      // one the single-road Create Patch form uses) instead of just
+      // filtering the table/map to show them.
+      if (selectedRoadIds.length < 2) {
+        mapRef.current?.showFeatureNotice?.({
+          feature: "Chainage",
+          message: "Select at least one more connected road before creating a multi-road patch.",
+          dedupeKey: `multi-road-too-few|${Date.now()}`,
+          autoDismissMs: 4000,
+        });
+        return;
+      }
+      const roadInfos = selectedRoadIds.map((id) => {
+        const row = tableRows.find((r) => String(getRowSelectionId(r)) === String(id));
+        return { road_id: id, road_name: row?.road_name || row?.roadName || row?.roadname || id };
+      });
+      mapRef.current?.createMultiRoadPatch?.(roadInfos);
+      return;
+    }
+
     if (!prevTableStateRef.current) {
       prevTableStateRef.current = capturePrevState();
     }
@@ -1392,6 +1580,19 @@ const DashboardPage = () => {
   };
 
   const clearMultiSelection = () => {
+    if (isFieldTaskMode) {
+      // Drop back to the normal ward-scoped view (target ward + neighbors)
+      // instead of the generic "no filter"/"INCLUDE" reset, which would
+      // otherwise lose the field-task scope entirely.
+      setSelectedRoadIds([]);
+      setBaseFilter(fieldTaskDefaultFilter || "");
+      setQueryVersion((v) => v + 1);
+      if (isMultiSelectMode) {
+        setSelectedRoadId(null);
+        setSelectedRoad("");
+      }
+      return;
+    }
     if (
       lastFilterSourceRef.current === "table" &&
       /road_id\s+in\s*\(/i.test(String(baseFilter || ""))
@@ -1413,10 +1614,28 @@ const DashboardPage = () => {
       const next = !prev;
       if (next) {
         if (selectedRoadId !== null && selectedRoadId !== undefined) {
-          setSelectedRoadIds([String(selectedRoadId)]);
+          const seedId = String(selectedRoadId);
+          setSelectedRoadIds([seedId]);
+          if (isFieldTaskMode) {
+            // Narrow the table to the seed road + whatever's actually
+            // connected to it — same "adjacent, not everything" principle
+            // as the ward scoping, just at road granularity.
+            fetchAndApplyMultiRoadCandidates([seedId]);
+          }
+        } else if (isFieldTaskMode) {
+          mapRef.current?.showFeatureNotice?.({
+            feature: "Chainage",
+            message: "Select a road first, then turn on Multi to add connected roads to the same patch.",
+            dedupeKey: `multi-road-no-selection|${Date.now()}`,
+            autoDismissMs: 4000,
+          });
         }
       } else {
         setSelectedRoadIds([]);
+        if (isFieldTaskMode) {
+          setBaseFilter(fieldTaskDefaultFilter || "");
+          setQueryVersion((v) => v + 1);
+        }
       }
       return next;
     });
@@ -1507,6 +1726,24 @@ const DashboardPage = () => {
         .catch(err => console.error("[Auto-Pagination] Failed to fetch missing road:", err));
     }
   }, [tableRows, selectedRoadId, isMultiSelectMode, recordsPerPage, city, currentPage]);
+
+  // Table-row-highlight-only counterpart to handleRoadSelectedFromMap, used
+  // specifically by field-task mode's chainage click flow (openChainageForRoadId)
+  // instead of the full callback above, since that one resets baseFilter/
+  // zoomFilter in ways that would fight field-task's own ward-scoped default
+  // filter. Mirrors the table's own selection state so clicking a road on the
+  // map highlights the same row a table click on that road would.
+  //
+  // Passing null clears the highlight - this is required, not optional: the
+  // road-panel's own close (X) button only clears MapContainer's local
+  // selectedRoad state, but this component's own "armed mode" effect
+  // re-opens the panel automatically whenever selectedRoadId (this state)
+  // is still set and doesn't match the current selectedRoad. Without
+  // clearing selectedRoadId here too, closing the panel via X immediately
+  // reopens it.
+  const handleFieldTaskRoadHighlight = useCallback((roadId) => {
+    setSelectedRoadId(roadId == null ? null : String(roadId));
+  }, []);
 
   const handleRoadSelectedFromMap = useCallback((road) => {
     if (!road) return;
@@ -1974,6 +2211,12 @@ const DashboardPage = () => {
         onSearchClick={handleSearchClick}
         onDownloadAction={handleDownloadAction}
         isDownloading={isDownloading}
+        hideBack={isFieldTaskMode}
+        hideHamburger={isFieldTaskMode}
+        hideDownload={isFieldTaskMode}
+        isFieldTaskMode={isFieldTaskMode}
+        fieldTaskLabel={isFieldTaskMode ? urlTaskTitle || null : null}
+        kmcUserId={isFieldTaskMode ? urlUserId : null}
       />
 
       {isLoading && (
@@ -2058,15 +2301,23 @@ const DashboardPage = () => {
           showChainage={showChainage} //chainage
           onPatchTableOpen={handlePatchTableOpen} //chainage
           onPatchTableClose={handlePatchTableClose} //chainage
+          onFieldTaskRoadHighlight={handleFieldTaskRoadHighlight} //chainage
+          onMapExtentChange={handleMapExtentChange}
+          fieldTaskWardList={isFieldTaskMode ? fieldTaskWardList : null} //chainage
+          isMultiSelectModeProp={isMultiSelectMode} //chainage
         />
 
         {/* ⭐ TOOLBAR — updated */}
         <MapToolbar
           city={city}
           mapRef={mapRef}
+          restrictedMode={isFieldTaskMode}
+          lockedZone={isFieldTaskMode ? urlZone : null}
+          lockedWardList={isFieldTaskMode ? fieldTaskWardList : null}
+          primaryWard={isFieldTaskMode ? urlWard : null}
           onChainageToggle={handleChainageToggle} //chainage
           chainageActive={mode === "CHAINAGE"} //chainage
-          chainageDisabled={!hasVisibleRoadLayer} //chainage
+          chainageDisabled={!hasVisibleRoadLayer || !isChainageAvailable(city)} //chainage
           showRoadNetworkPanel={showRoadNetworkPanel} // ⭐ Pass state
           onToggleRoadNetworkPanel={setShowRoadNetworkPanel} // ⭐ Pass setter
           baseMap={baseMap}
@@ -2103,11 +2354,24 @@ const DashboardPage = () => {
           onClear={() => {
             console.log("Clearing road selection");
             setSelectedRoad("");
-            setBaseFilter("");
+            // Field-task mode: "Clear" undoes a category/condition/etc.
+            // drill-down, not the whole redirect scope — resetting to ""
+            // dropped the ward filter entirely, which hid the road layer
+            // and let the view fall back toward the full zone/city instead
+            // of staying on the assigned ward + its neighbors.
+            setBaseFilter(isFieldTaskMode ? fieldTaskDefaultFilter || "" : "");
             setStreetViewVisible(false);
             // setZoomFilter(""); // ⭐ Handled by useEffect
             setColumnFilters({}); // ⭐ Clear column filters
-            setTableRows([]); // ⭐ Clear table
+            if (isFieldTaskMode) {
+              // Table should keep showing the ward-scoped rows, not go
+              // blank — if baseFilter ends up the same value as before (no
+              // drill-down was active), the combine-filters effect wouldn't
+              // otherwise re-run and refetch on its own.
+              setQueryVersion((v) => v + 1);
+            } else {
+              setTableRows([]); // ⭐ Clear table
+            }
             setShowRoadSearch(false);
             setShowRoadNetworkPanel(false); // ⭐ Ensure Road Network panel and its legend are closed
             setLayerFilters({}); // ⭐ Clear generic filters
@@ -2118,7 +2382,7 @@ const DashboardPage = () => {
               roadClassifications: {},
               network: {
                 ...prev.network,
-                roads: false
+                roads: isFieldTaskMode ? true : false
               }
             }));
           }}
@@ -2178,7 +2442,7 @@ const DashboardPage = () => {
         tableRows.length > 0
       )) && (
         <div
-          className={`bottom-table ${isTableMinimized ? "minimized" : ""}`}
+          className={`bottom-table ${isTableMinimized ? "minimized" : ""} ${isFieldTaskMode ? "field-task-table" : ""}`}
         >
           {/* ADD PAGINATION CONTROLS HERE */}
           {/* Simplified Pagination Controls */}
@@ -2242,7 +2506,10 @@ const DashboardPage = () => {
                   <span style={{ marginLeft: 2, fontSize: 14 }}>×</span>
                 </div>
               )}
-              {/* Inline Export Buttons */}
+              {/* Inline Export Buttons — hidden entirely for field-task
+                  redirects (KMC/iGile), not just disabled, per that mode's
+                  restricted toolbar. */}
+              {!isFieldTaskMode && (
               <div style={{ display: "flex", gap: "4px", marginLeft: "auto" }}>
                 <button
                   title="Export Excel"
@@ -2275,6 +2542,7 @@ const DashboardPage = () => {
                   {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-image" style={{ fontSize: 11 }} />} Print
                 </button>
               </div>
+              )}
             </div>
             <div className="pagination-buttons">
               <button

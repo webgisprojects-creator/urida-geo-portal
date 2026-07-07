@@ -21,6 +21,11 @@
               <CssParameter name="font-size">12</CssParameter>
               <CssParameter name="font-weight">bold</CssParameter>
             </Font>
+            <LabelPlacement>
+              <LinePlacement>
+                <PerpendicularOffset>0</PerpendicularOffset>
+              </LinePlacement>
+            </LabelPlacement>
             <Halo>
               <Radius>2</Radius>
               <Fill>
@@ -31,20 +36,30 @@
               <CssParameter name="fill">#ffffff</CssParameter>
             </Fill>
             <VendorOption name="conflictResolution">true</VendorOption>
-            <VendorOption name="spaceAround">6</VendorOption>
-            <VendorOption name="maxDisplacement">20</VendorOption>
+            <VendorOption name="spaceAround">8</VendorOption>
+            <VendorOption name="maxDisplacement">30</VendorOption>
+            <VendorOption name="followLine">true</VendorOption>
+            <VendorOption name="group">true</VendorOption>
+            <VendorOption name="maxAngleDelta">30</VendorOption>
+            <VendorOption name="autoWrap">120</VendorOption>
+            <VendorOption name="forceLeftToRight">true</VendorOption>
           </TextSymbolizer>
         </Rule>
         <Rule>
-          <MaxScaleDenominator>5000</MaxScaleDenominator>
+          <MaxScaleDenominator>2000</MaxScaleDenominator>
           <TextSymbolizer>
             <Label>
               <ogc:PropertyName>road_id</ogc:PropertyName>
             </Label>
             <Font>
               <CssParameter name="font-family">Arial</CssParameter>
-              <CssParameter name="font-size">10</CssParameter>
+              <CssParameter name="font-size">9</CssParameter>
             </Font>
+            <LabelPlacement>
+              <LinePlacement>
+                <PerpendicularOffset>0</PerpendicularOffset>
+              </LinePlacement>
+            </LabelPlacement>
             <Halo>
               <Radius>2</Radius>
               <Fill>
@@ -55,8 +70,11 @@
               <CssParameter name="fill">#ffffff</CssParameter>
             </Fill>
             <VendorOption name="conflictResolution">true</VendorOption>
-            <VendorOption name="spaceAround">4</VendorOption>
-            <VendorOption name="maxDisplacement">16</VendorOption>
+            <VendorOption name="spaceAround">10</VendorOption>
+            <VendorOption name="maxDisplacement">20</VendorOption>
+            <VendorOption name="followLine">true</VendorOption>
+            <VendorOption name="maxAngleDelta">30</VendorOption>
+            <VendorOption name="forceLeftToRight">true</VendorOption>
           </TextSymbolizer>
         </Rule>
       </FeatureTypeStyle>

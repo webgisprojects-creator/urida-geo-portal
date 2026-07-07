@@ -36,14 +36,23 @@ function prettifyLabel(label) {
 const LOAD_AUTO_EXPIRE_MS = 12000;
 
 export function attachMapLoadingTracker(map, onChange) {
-  const active = new Map(); // source -> { label, count }
+  const active = new Map(); // source -> { label, count, layer }
   let hideDebounceTimer = null;
 
   const emit = () => {
     clearTimeout(hideDebounceTimer);
     const labels = [
       ...new Set(
-        [...active.values()].filter((v) => v.count > 0).map((v) => prettifyLabel(v.label))
+        [...active.values()]
+          // A hidden layer's in-flight tiles are wasted work, not something
+          // the user is waiting on — most visibly, switching between road
+          // classifications (zone -> category -> ...) hides the old layer
+          // but doesn't cancel its already-queued tile requests, so without
+          // this check the banner keeps naming a classification the user
+          // already switched away from until those orphaned tiles happen to
+          // finish loading.
+          .filter((v) => v.count > 0 && (!v.layer || v.layer.getVisible?.() !== false))
+          .map((v) => prettifyLabel(v.label))
       ),
     ];
     if (labels.length) {
@@ -55,10 +64,10 @@ export function attachMapLoadingTracker(map, onChange) {
     }
   };
 
-  const trackSource = (source, label) => {
+  const trackSource = (source, label, layer) => {
     if (!source || source.__loadTrackerAttached) return;
     source.__loadTrackerAttached = true;
-    const entry = { label, count: 0 };
+    const entry = { label, count: 0, layer };
     active.set(source, entry);
     const pendingExpiries = []; // FIFO queue — matches OL's own load/error firing order closely enough
     // Per-burst counters (a "burst" = from the first tile requested after
@@ -147,9 +156,12 @@ export function attachMapLoadingTracker(map, onChange) {
     }
     const label = layer.get?.("title") || layer.get?.("label");
     if (!label) return; // untitled helper layers (markers, search outline) shouldn't clutter the message
+    // Hiding a layer should drop it from the banner immediately, not wait
+    // for its in-flight tiles to finish resolving on their own.
+    layer.on?.("change:visible", emit);
     const attach = () => {
       const source = layer.getSource?.();
-      if (source) trackSource(source, label);
+      if (source) trackSource(source, label, layer);
     };
     attach();
     // A layer's source can be swapped after creation (e.g. style/workspace

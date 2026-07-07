@@ -5,7 +5,12 @@ import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { pool } from '../config/db.js';
-import { blacklistToken, storeActiveToken, clearActiveTokensForUser, updateActiveTokenStatus, ensureActiveTokensTable, parseCookies, getClientIp } from '../middleware/authMiddleware.js';
+import { blacklistToken, storeActiveToken, enforceSessionLimit, updateActiveTokenStatus, ensureActiveTokensTable, parseCookies, getClientIp } from '../middleware/authMiddleware.js';
+
+// One account, up to this many devices logged in at once (e.g. phone +
+// browser) — logging in on one more evicts only the single oldest
+// session, not every other session.
+const MAX_SESSIONS_PER_USER = Number(process.env.MAX_SESSIONS_PER_USER || 2);
 dotenv.config();
 
 const cookieName = process.env.AUTH_COOKIE_NAME || 'auth_token';
@@ -16,6 +21,28 @@ const jwtExpiresIn = process.env.JWT_EXPIRES_IN || `${Math.max(1, Math.floor(abs
 const lockoutWindowMs = 15 * 60 * 1000;
 const captchaTtlMs = Number(process.env.CAPTCHA_TTL_MS || 5 * 60 * 1000);
 const captchaStore = new Map();
+
+// Shared accounts used only by KMC/iGile field-task redirects (multiple
+// field staff sign in as the same account, identified afterward by the
+// redirect URL's own user_id/title — see Header.jsx's profile dropdown).
+// These must never be usable as an ordinary direct login: they're not tied
+// to one person, so letting anyone log in with them from the plain login
+// form would defeat the whole point of routing field work through KMC's
+// own redirect links. Not a hard security boundary against a determined
+// attacker forging a redirect string — there's no signed token from KMC to
+// verify against — but it does stop the casual/accidental case of someone
+// finding the shared credentials and using them outside that flow.
+const FIELD_TASK_ONLY_USERNAMES = new Set(
+  String(process.env.FIELD_TASK_ONLY_USERNAMES || 'chainage')
+    .split(',')
+    .map((u) => u.trim().toLowerCase())
+    .filter(Boolean)
+);
+
+const isFieldTaskRedirectContext = (redirect) => {
+  if (typeof redirect !== 'string' || !redirect) return false;
+  return redirect.startsWith('/chainage') || /(?:^|[?&])mode=CHAINAGE(?:&|$)/i.test(redirect);
+};
 
 const usersTableCache = {
   schema: null,
@@ -300,9 +327,16 @@ export const login = async (req, res) => {
   if (!secret) {
     return res.status(500).json({ success: false, message: 'Something went wrong. Please contact administrator.' });
   }
-  const { username, password, captcha } = req.body || {};
+  const { username, password, captcha, redirect } = req.body || {};
   if (!username || !password) {
     return res.status(400).json({ success: false, message: 'Invalid login details.' });
+  }
+  if (FIELD_TASK_ONLY_USERNAMES.has(String(username).toLowerCase()) && !isFieldTaskRedirectContext(redirect)) {
+    logEvent('login_failed', username, { ip: getClientIp(req), reason: 'field_task_account_direct_login_blocked' });
+    return res.status(403).json({
+      success: false,
+      message: 'This account is only available through an authorized field-task link.',
+    });
   }
   const captchaResult = consumeCaptcha(req, res, captcha);
   if (!captchaResult.ok) {
@@ -403,7 +437,7 @@ export const login = async (req, res) => {
       role: user.role || 'user',
       city: user.city || null,
     };
-    await clearActiveTokensForUser(userIdForToken);
+    await enforceSessionLimit(userIdForToken, MAX_SESSIONS_PER_USER);
     const token = jwt.sign(payload, secret, { expiresIn: jwtExpiresIn });
     const issuedAt = new Date();
     const expiresAt = new Date(issuedAt.getTime() + absoluteTimeoutMs);

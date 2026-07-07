@@ -50,7 +50,23 @@ const Header = ({
   onMenuClick,
   backTarget,
   hideBack = false,
-
+  // Field-task deep links (KMC/iGile redirects) hide the app-navigation
+  // chrome entirely — there's nowhere for "back"/the sidebar menu/exports
+  // to meaningfully go for someone dropped straight onto one patch task.
+  hideHamburger = false,
+  hideDownload = false,
+  // Explicit flag for "this session is a field-task redirect" — kept
+  // separate from fieldTaskLabel because the title/description text can
+  // legitimately be missing even in field-task mode, and null would
+  // otherwise be indistinguishable from "not a field task at all."
+  isFieldTaskMode = false,
+  // Display-only label for who this task belongs to per the redirect URL
+  // (never the authenticated session identity — see fieldTaskLabel usage
+  // below for why those are kept separate).
+  fieldTaskLabel = null,
+  // Raw user_id from the redirect URL, shown verbatim so whoever's holding
+  // the device can confirm this matches the task KMC assigned them.
+  kmcUserId = null,
 
   // ⭐ NEW PROPS for dynamic road search
   showRoadSearch,       // boolean → Dashboard se aata hai
@@ -63,6 +79,7 @@ const Header = ({
   const navigate = useNavigate();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDownloadMenuOpen, setIsDownloadMenuOpen] = useState(false);
+  const [loggedInUser] = useState(() => localStorage.getItem("authUser") || "User");
 
   const toggleSidebar = () => {
     setIsSidebarOpen(!isSidebarOpen);
@@ -106,9 +123,11 @@ const Header = ({
       </div>
       )}
 
+      {!hideHamburger && (
       <div className="menu-toggle" onClick={toggleSidebar}>
         <div className={`bar ${isSidebarOpen ? "open" : ""}`}></div>
       </div>
+      )}
 
       <div className="lucknow-header__center">
         <img src={logo} alt="City Logo" className="lucknow-header__logo" />
@@ -120,7 +139,8 @@ const Header = ({
         />
       </div>
 
-      <div className="lucknow-header__actions" style={{ position: 'relative', display: 'flex', alignItems: 'center', marginRight: '20px', gap: '16px' }}>
+      <div className="lucknow-header__actions" style={{ position: 'relative', display: 'flex', alignItems: 'center', marginRight: '20px', gap: '16px', zIndex: 10050 }}>
+        {!hideDownload && (
         <i
           className="fa-solid fa-download"
           onClick={() => setIsDownloadMenuOpen(!isDownloadMenuOpen)}
@@ -131,8 +151,9 @@ const Header = ({
             fontSize: "20px"
           }}
         ></i>
+        )}
 
-        {isDownloadMenuOpen && (
+        {!hideDownload && isDownloadMenuOpen && (
           <div className="download-menu" style={{
             position: 'absolute',
             top: '130%',
@@ -153,10 +174,10 @@ const Header = ({
           </div>
         )}
 
-        <div style={{ position: 'relative' }}>
+        <div style={{ position: 'relative', zIndex: 10050 }}>
           <i
             className="fa-solid fa-user-circle"
-            title="Profile"
+            title={loggedInUser}
             style={{ cursor: 'pointer', color: 'black', fontSize: '20px' }}
             onClick={() => {
               const menu = document.getElementById("profile-menu");
@@ -184,6 +205,43 @@ const Header = ({
             color: 'black',
             display: 'none'
           }}>
+            <div style={{
+              padding: '10px 15px',
+              borderBottom: '1px solid #eee',
+              fontSize: '13px',
+              fontWeight: 700,
+              textTransform: 'capitalize',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}>
+              <i className="fa-solid fa-user-circle" style={{ fontSize: 22, color: '#3b82f6' }}></i>
+              {/* A task title/description is free text from KMC's own
+                  system — it can be a full sentence, or missing entirely.
+                  Neither belongs in the "identity" slot at the top: show a
+                  short, always-available KMC user reference there instead,
+                  and let the (possibly long, possibly absent) title live in
+                  its own labeled "Task" row below. */}
+              {isFieldTaskMode ? (kmcUserId ? `KMC User #${kmcUserId}` : "Field Task User") : loggedInUser}
+            </div>
+            {isFieldTaskMode && (
+              // The account logged in here is a shared field-task login —
+              // these lines show *who this specific task belongs to* and
+              // *which shared account authorised the session*, straight
+              // from the redirect link and the session respectively. Both
+              // are read-only context for whoever's holding the device,
+              // never an identity the app trusts for anything: access
+              // control still runs entirely off the session, not these
+              // labels.
+              <div style={{ padding: '8px 15px', borderBottom: '1px solid #eee', fontSize: '12px', color: '#555' }}>
+                <div style={{ fontWeight: 600, color: '#333' }}>Task</div>
+                <div style={{ marginBottom: 6 }}>{fieldTaskLabel || "No task description provided"}</div>
+                {kmcUserId && (
+                  <div>KMC User Id: <span style={{ color: '#333', fontWeight: 600 }}>{kmcUserId}</span></div>
+                )}
+                <div>Authorised by: <span style={{ color: '#333', fontWeight: 600 }}>{loggedInUser}</span></div>
+              </div>
+            )}
             <div
               onClick={() => {
                 fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => { });
@@ -194,6 +252,7 @@ const Header = ({
               }}
               style={{ padding: '10px 15px', cursor: 'pointer', fontSize: '14px' }}
             >
+              <i className="fa-solid fa-sign-out-alt" style={{ marginRight: 8 }}></i>
               Logout
             </div>
           </div>

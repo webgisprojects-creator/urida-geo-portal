@@ -2,7 +2,7 @@
 import { pool } from "./config/db.js";
 import express from "express";
 import NodeCache from "node-cache";
-import { getRoadTable, citySchemaMap, getAmenityTable, getCityUtmEpsg } from "./config/cityConfig.js";
+import { getRoadTable, getWardTable, citySchemaMap, getAmenityTable, getCityUtmEpsg } from "./config/cityConfig.js";
 import { verifyToken } from "./middleware/authMiddleware.js";
 import {
   refreshUnderdevelopedAnalysis,
@@ -271,7 +271,18 @@ function buildSafeFilter(filterString) {
  |-------------------------------------------------------------|
 */
 
+// A table's geometry column name and SRID are fixed schema properties —
+// they never change while the server is running, but every single road
+// selection was re-running these information_schema/geometry_columns
+// lookups (plus, on a cold SRID lookup, a further sample-row query) before
+// ever reaching the actual road data — several extra DB round trips paid
+// on every click, entirely avoidably. Cached under the same queryCache
+// instance already used elsewhere in this file.
 async function getGeometryColumn(schema, table) {
+  const cacheKey = `geomcol_${schema}_${table}`;
+  const cached = queryCache.get(cacheKey);
+  if (cached) return cached;
+
   const q1 = `
     SELECT column_name
     FROM information_schema.columns
@@ -279,15 +290,19 @@ async function getGeometryColumn(schema, table) {
     LIMIT 1
   `;
   const r1 = await pool.query(q1, [schema, table]);
-  if (r1.rows[0]?.column_name) return r1.rows[0].column_name;
-  const q2 = `
-    SELECT f_geometry_column
-    FROM geometry_columns
-    WHERE f_table_schema = $1 AND f_table_name = $2
-    LIMIT 1
-  `;
-  const r2 = await pool.query(q2, [schema, table]);
-  return r2.rows[0]?.f_geometry_column || "geom";
+  let result = r1.rows[0]?.column_name;
+  if (!result) {
+    const q2 = `
+      SELECT f_geometry_column
+      FROM geometry_columns
+      WHERE f_table_schema = $1 AND f_table_name = $2
+      LIMIT 1
+    `;
+    const r2 = await pool.query(q2, [schema, table]);
+    result = r2.rows[0]?.f_geometry_column || "geom";
+  }
+  queryCache.set(cacheKey, result);
+  return result;
 }
 
 function parseQualified(qualified) {
@@ -514,22 +529,33 @@ async function findAmenityTable(schema, city, amenityType) {
 }
 
 async function getTableSRID(schema, table, geomCol) {
+  const cacheKey = `srid_${schema}_${table}_${geomCol}`;
+  const cached = queryCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  let result = 0;
   // Try to get SRID from geometry_columns first
   const q1 = `SELECT srid FROM geometry_columns WHERE f_table_schema = $1 AND f_table_name = $2 AND f_geometry_column = $3`;
   try {
     const r1 = await pool.query(q1, [schema, table, geomCol]);
-    if (r1.rows.length > 0) return r1.rows[0].srid;
+    if (r1.rows.length > 0) result = r1.rows[0].srid;
   } catch (e) {
     // ignore
   }
-  // Fallback to querying the table
-  const q2 = `SELECT ST_SRID(${geomCol}) as srid FROM ${schema}.${table} LIMIT 1`;
-  try {
-    const r2 = await pool.query(q2);
-    return r2.rows[0]?.srid || 0;
-  } catch (e) {
-    return 0;
+  if (!result) {
+    // Fallback to querying the table
+    const q2 = `SELECT ST_SRID(${geomCol}) as srid FROM ${schema}.${table} LIMIT 1`;
+    try {
+      const r2 = await pool.query(q2);
+      result = r2.rows[0]?.srid || 0;
+    } catch (e) {
+      result = 0;
+    }
   }
+  // Only cache a real, non-zero SRID — 0 means "couldn't determine it",
+  // and that's worth retrying on the next call rather than caching a miss.
+  if (result) queryCache.set(cacheKey, result);
+  return result;
 }
 
 async function detectSridFromSample(schema, table, geomCol, utmSrid) {
@@ -912,7 +938,6 @@ router.get("/:cityCode/wards", async (req, res) => {
         FROM ${table}
         WHERE zone_no = $1
           AND ward_no IS NOT NULL
-          AND ward_no NOT LIKE '%,%'
         ORDER BY ward_no;
       `;
       params = [zone];
@@ -921,7 +946,6 @@ router.get("/:cityCode/wards", async (req, res) => {
         SELECT DISTINCT ward_no, ward_name
         FROM ${table}
         WHERE ward_no IS NOT NULL
-          AND ward_no NOT LIKE '%,%'
         ORDER BY ward_no;
       `;
     }
@@ -937,6 +961,110 @@ router.get("/:cityCode/wards", async (req, res) => {
     res.json(mappedResponse);
   } catch (err) {
     console.error("Error fetching wards:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Field-task deep links load roads for the URL's ward plus whatever wards
+// spatially border it, instead of the whole zone — the boundary polygons
+// already reveal adjacency (shared/near edges), no separate adjacency table
+// needed. Not every city's ward boundary table carries zone_no (Agra's
+// doesn't), so the zone filter is applied only when the column exists;
+// otherwise adjacency alone still returns a sane (if zone-unaware) answer.
+router.get("/:cityCode/adjacent-wards", async (req, res) => {
+  try {
+    const { cityCode } = req.params;
+    const { zone, ward } = req.query;
+    if (!ward) {
+      return res.status(400).json({ error: "ward is required" });
+    }
+
+    const wardTable = getWardTable(cityCode);
+    const [schema, table] = wardTable.split(".");
+
+    const hasZoneColCacheKey = `wardtbl_haszonecol_${wardTable}`;
+    let hasZoneCol = queryCache.get(hasZoneColCacheKey);
+    if (hasZoneCol === undefined) {
+      const colCheck = await pool.query(
+        `SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 AND column_name = 'zone_no'`,
+        [schema, table]
+      );
+      hasZoneCol = colCheck.rows.length > 0;
+      queryCache.set(hasZoneColCacheKey, hasZoneCol, 3600);
+    }
+
+    const useZoneFilter = hasZoneCol && zone;
+    const sql = `
+      SELECT DISTINCT w2.ward_no, w2.ward_name
+      FROM ${wardTable} w1
+      JOIN ${wardTable} w2
+        ON ST_DWithin(w1.geom::geography, w2.geom::geography, 50)
+      WHERE w1.ward_no = $1
+        ${useZoneFilter ? "AND w2.zone_no = $2" : ""}
+      ORDER BY w2.ward_no;
+    `;
+    const params = useZoneFilter ? [ward, zone] : [ward];
+    const result = await pool.query(sql, params);
+    res.json(
+      result.rows.map((r) => ({
+        ward_no: r.ward_no,
+        ward_name: r.ward_name,
+        name: `Ward ${r.ward_no}`,
+      }))
+    );
+  } catch (err) {
+    console.error("Error fetching adjacent wards:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Multi-road patch creation (field-task mode): given a road already in the
+// selection, find roads whose geometry actually touches/nearly-touches it
+// (a shared or very close endpoint), restricted to the ward set — this is
+// road-level adjacency, a finer-grained sibling of /adjacent-wards above.
+// Building the multi-road tree by always expanding from an already-picked
+// road's own neighbors guarantees the resulting selection is a genuinely
+// connected chain, with no separate validation query needed.
+router.get("/:cityCode/adjacent-roads", async (req, res) => {
+  try {
+    const { cityCode } = req.params;
+    const { road_id, wards } = req.query;
+    if (!road_id) {
+      return res.status(400).json({ error: "road_id is required" });
+    }
+
+    const table = getRoadTable(cityCode);
+    const wardNums = wards
+      ? String(wards).split(",").map((w) => Number(w.trim())).filter(Number.isFinite)
+      : [];
+
+    const params = [road_id, road_id];
+    let wardClause = "";
+    if (wardNums.length) {
+      params.push(wardNums);
+      wardClause = `AND r2.ward_no = ANY($${params.length}::int[])`;
+    }
+
+    const sql = `
+      SELECT DISTINCT
+        r2.road_id,
+        r2.road_name,
+        r2.ward_no,
+        r2.zone_no,
+        COALESCE(r2.length_km, ST_Length(r2.geom::geography) / 1000.0) AS length_km
+      FROM ${table} r1
+      JOIN ${table} r2
+        ON ST_DWithin(r1.geom::geography, r2.geom::geography, 15)
+      WHERE r1.road_id = $1
+        AND r2.road_id != $2
+        ${wardClause}
+      ORDER BY r2.road_name
+      LIMIT 30
+    `;
+    const result = await pool.query(sql, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error fetching adjacent roads:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -958,16 +1086,10 @@ router.get("/:cityCode", async (req, res) => {
   try {
     const table = getRoadTable(req.params.cityCode);
 
-    // Some cities' zone_no column already stores "Zone 1" (e.g. Kanpur);
-    // others store a plain number (e.g. "1"). Only prepend "Zone " when the
-    // value doesn't already start with it, so we never produce "Zone Zone 1".
+    // zone_no is a plain integer for every city now, so the display label
+    // is always a simple prefix - no per-city text-format handling needed.
     const zones = await pool.query(`
-      SELECT DISTINCT zone_no,
-      CASE
-        WHEN zone_no ~* '^zone\\s'
-          THEN zone_no
-        ELSE ('Zone ' || zone_no)
-      END AS name
+      SELECT DISTINCT zone_no, ('Zone ' || zone_no) AS name
       FROM ${table}
       WHERE zone_no IS NOT NULL
       ORDER BY zone_no;
@@ -1182,18 +1304,46 @@ router.get("/:cityCode/cus_class", async (req, res) => {
 router.get("/:cityCode/summary", async (req, res) => {
   try {
     const { cityCode } = req.params;
-    const { filter } = req.query;
-    
-    // Check Cache
-    const cacheKey = `summary_${cityCode}_${filter || 'all'}`;
+    const { filter, bbox } = req.query;
+
+    // Check Cache - bbox is part of the key so different viewports (the
+    // legend's dynamic counts are now extent-aware, same as the table)
+    // never share a cached summary from a different area.
+    const cacheKey = `summary_${cityCode}_${filter || 'all'}_${bbox || 'nobbox'}`;
     const cachedData = queryCache.get(cacheKey);
     if (cachedData) return res.json(cachedData);
 
     const table = getRoadTable(cityCode);
 
     // Use buildSafeFilter to handle complex filters (zone, ward, condition, etc.)
-    const { text, values } = buildSafeFilter(filter);
-    const whereScope = text ? `AND ${text}` : "";
+    const { text, values: baseValues } = buildSafeFilter(filter);
+    let values = baseValues;
+    let scopeText = text;
+
+    // Live extent sync: the legend's dynamic road-count items (e.g. "Roads
+    // > 10m ROW (N)") used to stay static while the table below them
+    // updated live with the map's viewport - same bbox=minLon,minLat,
+    // maxLon,maxLat (EPSG:4326) contract as /details.
+    const bboxParts = bbox ? String(bbox).split(",").map(Number) : null;
+    if (bboxParts && bboxParts.length === 4 && bboxParts.every(Number.isFinite)) {
+      const { schema, table: tableName } = parseQualified(table);
+      const geomCol = await getGeometryColumn(schema, tableName);
+      let srid = await getTableSRID(schema, tableName, geomCol);
+      if (!srid) {
+        const utmSrid = getCityUtmEpsg(cityCode);
+        srid = (await detectSridFromSample(schema, tableName, geomCol, utmSrid)) || utmSrid;
+      }
+      const [minLon, minLat, maxLon, maxLat] = bboxParts;
+      const baseIdx = values.length;
+      const envelope = `ST_MakeEnvelope($${baseIdx + 1},$${baseIdx + 2},$${baseIdx + 3},$${baseIdx + 4},4326)`;
+      const bboxClause = srid === 4326
+        ? `${geomCol} && ${envelope} AND ST_Intersects(${geomCol}, ${envelope})`
+        : `${geomCol} && ST_Transform(${envelope}, ${srid}) AND ST_Intersects(${geomCol}, ST_Transform(${envelope}, ${srid}))`;
+      values = [...values, minLon, minLat, maxLon, maxLat];
+      scopeText = scopeText ? `(${scopeText}) AND ${bboxClause}` : bboxClause;
+    }
+
+    const whereScope = scopeText ? `AND ${scopeText}` : "";
 
     const totalRoadsQ = `SELECT COUNT(*)::int AS count FROM ${table} WHERE 1=1 ${whereScope};`;
     const totalWardsQ = `SELECT COUNT(DISTINCT ward_no)::int AS count FROM ${table} WHERE ward_no IS NOT NULL ${whereScope};`;
@@ -1206,7 +1356,7 @@ router.get("/:cityCode/summary", async (req, res) => {
     const byOwnershipQ = `SELECT ownership AS label, COUNT(*)::int AS count, COALESCE(SUM(COALESCE(length_km, ST_Length(geom::geography)/1000.0)),0)::numeric(12,3) AS length_km FROM ${table} WHERE ownership IS NOT NULL ${whereScope} GROUP BY ownership ORDER BY count DESC;`;
     const byCusQ = `SELECT cus_class AS label, COUNT(*)::int AS count, COALESCE(SUM(COALESCE(length_km, ST_Length(geom::geography)/1000.0)),0)::numeric(12,3) AS length_km FROM ${table} WHERE cus_class IS NOT NULL ${whereScope} GROUP BY cus_class ORDER BY count DESC;`;
     const byZoneQ = `SELECT zone_no AS label, COUNT(*)::int AS count, COALESCE(SUM(COALESCE(length_km, ST_Length(geom::geography)/1000.0)),0)::numeric(12,3) AS length_km FROM ${table} WHERE zone_no IS NOT NULL ${whereScope} GROUP BY zone_no ORDER BY zone_no ASC;`;
-    const byWardQ = `SELECT ward_no AS label, COUNT(*)::int AS count, COALESCE(SUM(COALESCE(length_km, ST_Length(geom::geography)/1000.0)),0)::numeric(12,3) AS length_km FROM ${table} WHERE ward_no IS NOT NULL AND ward_no NOT LIKE '%,%' ${whereScope} GROUP BY ward_no ORDER BY ward_no ASC;`;
+    const byWardQ = `SELECT ward_no AS label, COUNT(*)::int AS count, COALESCE(SUM(COALESCE(length_km, ST_Length(geom::geography)/1000.0)),0)::numeric(12,3) AS length_km FROM ${table} WHERE ward_no IS NOT NULL ${whereScope} GROUP BY ward_no ORDER BY ward_no ASC;`;
 
     const [
       totalRoads,
@@ -1297,7 +1447,7 @@ router.get("/:cityCode/details", async (req, res) => {
   console.log(`🛣️ API CALLED: /${req.params.cityCode}/details (Filtered Road List) - Filter: ${req.query.filter}`);
   try {
     const { cityCode } = req.params;
-    const { filter, include_geom, page, limit } = req.query;
+    const { filter, include_geom, page, limit, bbox, includeRoadId } = req.query;
     const table = getRoadTable(cityCode);
 
     const { schema, table: tableName } = parseQualified(table);
@@ -1311,57 +1461,90 @@ router.get("/:cityCode/details", async (req, res) => {
     const limitNum = rawLimit === 0 ? 0 : (rawLimit || 1000); // 0 = unlimited, default 1000
     const offset = limitNum === 0 ? 0 : (pageNum - 1) * limitNum;
 
-    let geomSelect = "";
-    if (include_geom === "true") {
+    // Resolving the table's real SRID is needed both for returning geometry
+    // (include_geom) and for the bbox/extent filter below - only do the
+    // (cached, but still async) lookup once if either needs it.
+    let resolvedSrid = null;
+    const resolveSrid = async () => {
+      if (resolvedSrid !== null) return resolvedSrid;
       const tableSrid = await getTableSRID(schema, tableName, geomCol);
-
-      if (tableSrid === 4326) {
-        geomSelect = `, ST_AsGeoJSON(${geomCol})::json as geom`;
-      } else if (tableSrid && tableSrid !== 0) {
-        geomSelect = `, ST_AsGeoJSON(ST_Transform(${geomCol}, 4326))::json as geom`;
+      if (tableSrid) {
+        resolvedSrid = tableSrid;
       } else {
         const utmSrid = getCityUtmEpsg(cityCode);
-        const inferredSrid = await detectSridFromSample(schema, tableName, geomCol, utmSrid);
-        if (inferredSrid === 4326) {
-          geomSelect = `, ST_AsGeoJSON(ST_SetSRID(${geomCol}, 4326))::json as geom`;
-        } else if (inferredSrid) {
-          geomSelect = `, ST_AsGeoJSON(ST_Transform(ST_SetSRID(${geomCol}, ${inferredSrid}), 4326))::json as geom`;
-        } else {
-          geomSelect = `, ST_AsGeoJSON(ST_Transform(ST_SetSRID(${geomCol}, ${utmSrid}), 4326))::json as geom`;
-        }
+        resolvedSrid = (await detectSridFromSample(schema, tableName, geomCol, utmSrid)) || utmSrid;
       }
+      return resolvedSrid;
+    };
+
+    let geomSelect = "";
+    if (include_geom === "true") {
+      const srid = await resolveSrid();
+      geomSelect = srid === 4326
+        ? `, ST_AsGeoJSON(${geomCol})::json as geom`
+        : `, ST_AsGeoJSON(ST_Transform(ST_SetSRID(${geomCol}, ${srid}), 4326))::json as geom`;
+    }
+
+    // Live extent sync: when the map's current viewport is passed as
+    // bbox=minLon,minLat,maxLon,maxLat (EPSG:4326), only return roads that
+    // actually intersect it - this is what lets the table track "what's on
+    // screen" instead of paging through the whole filtered set.
+    let combinedText = text;
+    let combinedValues = values;
+    const bboxParts = bbox ? String(bbox).split(",").map(Number) : null;
+    if (bboxParts && bboxParts.length === 4 && bboxParts.every(Number.isFinite)) {
+      const [minLon, minLat, maxLon, maxLat] = bboxParts;
+      const srid = await resolveSrid();
+      const baseIdx = combinedValues.length;
+      const envelope = `ST_MakeEnvelope($${baseIdx + 1},$${baseIdx + 2},$${baseIdx + 3},$${baseIdx + 4},4326)`;
+      let bboxClause = srid === 4326
+        ? `${geomCol} && ${envelope} AND ST_Intersects(${geomCol}, ${envelope})`
+        : `${geomCol} && ST_Transform(${envelope}, ${srid}) AND ST_Intersects(${geomCol}, ST_Transform(${envelope}, ${srid}))`;
+      combinedValues = [...combinedValues, minLon, minLat, maxLon, maxLat];
+      // A road click typically pans/zooms the map (changing the extent this
+      // same request is scoped to) - OR the clicked/selected road into the
+      // bbox condition so it's guaranteed present (and thus stays
+      // highlighted) in the very next extent-scoped fetch, without a
+      // separate request racing this one. Still respects the rest of the
+      // filter (zone/ward/category scope) - only the geographic bbox is
+      // bypassed, and only for this one road.
+      if (includeRoadId) {
+        combinedValues.push(String(includeRoadId));
+        bboxClause = `(${bboxClause} OR road_id = $${combinedValues.length})`;
+      }
+      combinedText = combinedText ? `(${combinedText}) AND ${bboxClause}` : bboxClause;
     }
 
     // Get Total Count and Length
     const countSql = `
-      SELECT 
+      SELECT
         COUNT(*) as total,
         COALESCE(SUM(COALESCE(length_km, ST_Length(${geomCol}::geography)/1000.0)), 0)::numeric(12,3) as total_length_km
       FROM ${table}
-      ${text ? `WHERE ${text}` : ""}
+      ${combinedText ? `WHERE ${combinedText}` : ""}
     `;
-    const countResult = await pool.query(countSql, values);
+    const countResult = await pool.query(countSql, combinedValues);
     const total = parseInt(countResult.rows[0]?.total || 0);
     const total_length_km = parseFloat(countResult.rows[0]?.total_length_km || 0);
 
     // Get Data
     const paginationClause = limitNum > 0
-      ? `LIMIT $${values.length + 1} OFFSET $${values.length + 2}`
+      ? `LIMIT $${combinedValues.length + 1} OFFSET $${combinedValues.length + 2}`
       : '';
     const sql = `
-      SELECT 
+      SELECT
         gis_id, road_id, zone_no, zone_name, ward_no, ward_name,
         ownership, road_name, condition, category, material,
         yoc, cus_class, row_meter, carriage_w,
         COALESCE(length_km, ROUND((ST_Length(${geomCol}::geography)/1000)::numeric, 2)) as length_km
         ${geomSelect}
       FROM ${table}
-      ${text ? `WHERE ${text}` : ""}
+      ${combinedText ? `WHERE ${combinedText}` : ""}
       ORDER BY road_id
       ${paginationClause};
     `;
 
-    const queryValues = limitNum > 0 ? [...values, limitNum, offset] : values;
+    const queryValues = limitNum > 0 ? [...combinedValues, limitNum, offset] : combinedValues;
     const result = await pool.query(sql, queryValues);
 
     res.json({
@@ -1383,50 +1566,55 @@ router.get("/:cityCode/search", async (req, res) => {
   console.log(`🔍 API CALLED: /${req.params.cityCode}/search (Search Query: ${req.query.q})`);
   try {
     const { cityCode } = req.params;
-    const { q, page = 1, limit = 50 } = req.query; // Default to 50 items per page
+    const { q, page = 1, limit = 50, wards } = req.query; // Default to 50 items per page
 
     const table = getRoadTable(cityCode);
     const offset = (page - 1) * limit;
 
-    let query;
-    let params = [];
+    // Field-task redirects pass their target ward + neighbors here so the
+    // preloaded dropdown/search results only ever cover that area instead
+    // of the whole city — normal dashboard search never sends this.
+    const wardNums = wards
+      ? String(wards).split(",").map((w) => Number(w.trim())).filter(Number.isFinite)
+      : [];
+
+    const params = [];
+    const whereClauses = [];
 
     if (q && q.trim() !== "") {
-      // 🔍 SEARCH MODE
-      query = `
-        SELECT DISTINCT 
-          gis_id,
-          road_id,
-          road_name,
-          ward_no,
-          ward_name,
-          zone_no
-        FROM ${table}
-        WHERE 
-          road_name ILIKE $1
-          OR ward_name ILIKE $1
-        ORDER BY road_name, ward_name
-        LIMIT $2 OFFSET $3
-      `;
-      params = [`%${q}%`, limit, offset];
-    } else {
-      // 📋 DROPDOWN MODE (NO SEARCH TEXT)
-      query = `
-        SELECT DISTINCT 
-          gis_id,
-          road_id,
-          road_name,
-          ward_no,
-          ward_name,
-          zone_no
-        FROM ${table}
-        ORDER BY road_name, ward_name
-        LIMIT $1 OFFSET $2
-      `;
-      params = [limit, offset];
+      // Road number (road_id) is searchable here specifically for the
+      // field-task case — a KMC field worker is far more likely to have
+      // been given a road ID than to know its name.
+      params.push(`%${q}%`);
+      const qIdx = params.length;
+      whereClauses.push(`(road_name ILIKE $${qIdx} OR ward_name ILIKE $${qIdx} OR road_id ILIKE $${qIdx})`);
     }
 
-    console.log("🔍 SEARCH querying:", table, "Page:", page, "Limit:", limit);
+    if (wardNums.length) {
+      params.push(wardNums);
+      whereClauses.push(`ward_no = ANY($${params.length}::int[])`);
+    }
+
+    params.push(limit);
+    const limitIdx = params.length;
+    params.push(offset);
+    const offsetIdx = params.length;
+
+    const query = `
+      SELECT DISTINCT
+        gis_id,
+        road_id,
+        road_name,
+        ward_no,
+        ward_name,
+        zone_no
+      FROM ${table}
+      ${whereClauses.length ? `WHERE ${whereClauses.join(" AND ")}` : ""}
+      ORDER BY road_name, ward_name
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+    `;
+
+    console.log("🔍 SEARCH querying:", table, "Page:", page, "Limit:", limit, "Wards:", wardNums.join(",") || "(all)");
 
     const result = await pool.query(query, params);
 

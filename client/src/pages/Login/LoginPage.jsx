@@ -96,12 +96,18 @@ export default function LoginPage() {
     setLoading(true);
     setMessage("");
 
+    // Passed straight through to the backend, which uses it to confirm a
+    // shared field-task account (e.g. "chainage") is actually being used as
+    // part of a KMC/iGile redirect and not typed into this form directly —
+    // see authController.js's login() for the actual gate.
+    const redirectContext = new URLSearchParams(window.location.search).get("redirect");
+
     try {
       const response = await fetch(`${API_BASE_URL}/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ username, password, captcha }),
+        body: JSON.stringify({ username, password, captcha, redirect: redirectContext }),
       });
 
       if (!response.ok) {

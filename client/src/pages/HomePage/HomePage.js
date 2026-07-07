@@ -18,11 +18,12 @@ import XYZ from "ol/source/XYZ";
 import TileWMS from "ol/source/TileWMS";
 import ImageWMS from "ol/source/ImageWMS";
 import VectorSource from "ol/source/Vector";
+import { bbox as bboxStrategy } from "ol/loadingstrategy";
 import GeoJSON from "ol/format/GeoJSON";
 import { Style, Fill, Stroke } from "ol/style";
 import Overlay from "ol/Overlay";
-import { getCenter } from "ol/extent";
-import { fromLonLat, toLonLat } from "ol/proj";
+import { getCenter, buffer as bufferExtent, getWidth, getHeight } from "ol/extent";
+import { fromLonLat, toLonLat, transformExtent } from "ol/proj";
 // removed proj4 usage to avoid dependency; relying on default projections
 import { defaults as defaultControls } from "ol/control";
 // Enable reprojection for WMS layers
@@ -31,8 +32,10 @@ import "ol-layerswitcher/dist/ol-layerswitcher.css";
 import { useNavigate } from "react-router-dom";
 import logo from "../../assets/NN_Logo/download.png";
 import HomeMapLegend from "../../components/HomeMapLegend";
-import { attachLayerClip, extractClipRings } from "../../utils/mapClip";
+import { attachInvertedMask, extractClipRings } from "../../utils/mapClip";
+import { attachBasemapErrorNotifier } from "../../utils/basemapHealth";
 import { getGeoserverBase } from "../../utils/geoserverBase";
+import { cityConfig } from "../../assets/configs/cityConfig";
 
 /* ====================== CONFIG ====================== */
 
@@ -50,7 +53,13 @@ const UP_BOUNDARY_LAYER = "Ward_38:Up_District";
 const makeCachedXyzSource = ({ style, fallbackUrl, attributions, maxZoom, boundary }) =>
   new XYZ({
     url: getCachedTileUrl(style, boundary),
-    transition: 0,
+    cacheSize: 1024,
+    // OL's own built-in tile cross-fade (ms) - was disabled (0), which made
+    // every new tile pop in abruptly. A short fade gives a noticeably more
+    // "premium" feel while panning/zooming at effectively no extra cost
+    // (cached tiles resolve instantly and the fade is barely visible then;
+    // it only shows up on genuine network fetches).
+    transition: 300,
     crossOrigin: "anonymous",
     attributions,
     maxZoom,
@@ -166,8 +175,6 @@ const normalizeWfsName = (raw) => {
   return WFS_NAME_MAP[lower] || lower;
 };
 
-const CITY_BOUNDARY_STYLE = {};
-
 const CITY_OVERLAY_OFFSET = {
   agra: [60, -40],
   aligarh: [50, -35],
@@ -214,32 +221,6 @@ const AMENITY_LABELS = {
   post_office: "Post Office",
 };
 
-const buildBoundarySld = (strokeColor, strokeWidth = 2.2) => `
-  <StyledLayerDescriptor version="1.0.0">
-    <NamedLayer>
-      <Name>boundary</Name>
-      <UserStyle>
-        <Title>Boundary Style</Title>
-        <FeatureTypeStyle>
-          <Rule>
-            <PolygonSymbolizer>
-              <Fill>
-                <CssParameter name="fill">#ffffff</CssParameter>
-                <CssParameter name="fill-opacity">0</CssParameter>
-              </Fill>
-              <Stroke>
-                <CssParameter name="stroke">${strokeColor}</CssParameter>
-                <CssParameter name="stroke-width">${strokeWidth}</CssParameter>
-                <CssParameter name="stroke-opacity">1</CssParameter>
-              </Stroke>
-            </PolygonSymbolizer>
-          </Rule>
-        </FeatureTypeStyle>
-      </UserStyle>
-    </NamedLayer>
-  </StyledLayerDescriptor>
-`;
-
 /** Above-10m WMS per city (workspace fixed; layer varies) */
 // Use the correct case for the workspace name.  GeoServer layer names are case sensitive.
 const ABOVE10M_WS = "Above_10m";
@@ -263,79 +244,130 @@ const ABOVE10M_LAYER = {
   varanasi: "Varanasi",
 };
 
+const ABOVE10M_VECTOR_STYLE = new Style({
+  stroke: new Stroke({
+    color: "#10b981",
+    width: 3,
+  }),
+});
+
 /** CM-Grid & GPR (fill with your real layer names per city/phase) */
+const CM_GRID_WORKSPACE = "All_CM_Grid";
+
 const CM_GRID_WMS = {
   agra: {
     Phase1: { ws: "Phase_1", layer: "Agra_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Agra_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Agra_Phase_3" },
   },
   aligarh: {
     Phase1: { ws: "Phase_1", layer: "Aligarh_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Aligarh_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Aligarh_Phase_3" },
   },
   ayodhya: {
     Phase1: { ws: "Phase_1", layer: "Ayodhya_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Ayodhya_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Ayodhya_Phase_3" },
   },
   bareilly: {
     Phase1: { ws: "Phase_1", layer: "Bareilly_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Bareilly_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Bareilly_Phase_3" },
   },
   firozabad: {
     Phase1: { ws: "Phase_1", layer: "Firozabad_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Firozabad_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Firozabad_Phase_3" },
   },
   ghaziabad: {
     Phase1: { ws: "Phase_1", layer: "Ghaziabad_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Ghaziabad_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Ghaziabad_Phase_3" },
   },
   gorakhpur: {
     Phase1: { ws: "Phase_1", layer: "Gorakhpur_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Gorakhpur_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Gorakhpur_Phase_3" },
   },
   jhansi: {
     Phase1: { ws: "Phase_1", layer: "Jhansi_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Jhansi_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Jhansi_Phase_3" },
   },
   kanpur: {
     Phase1: { ws: "Phase_1", layer: "Kanpur_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Kanpur_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Kanpur_Phase_3" },
   },
   lucknow: {
     Phase1: { ws: "Phase_1", layer: "Lucknow_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Lucknow_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Lucknow_Phase_3" },
     GPR: { ws: "GPR_Layer", layer: "GPR_Data" },
   },
   mathura: {
     Phase1: { ws: "Phase_1", layer: "Mathura_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Mathura_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Mathura_Phase_3" },
   },
   meerut: {
     Phase1: { ws: "Phase_1", layer: "Meerut_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Meerut_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Meerut_Phase_3" },
   },
   moradabad: {
     Phase1: { ws: "Phase_1", layer: "Moradabad_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Moradabad_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Moradabad_Phase_3" },
   },
   prayagraj: {
     Phase1: { ws: "Phase_1", layer: "Prayagraj_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Prayagraj_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Prayagraj_Phase_3" },
   },
   saharanpur: {
     Phase1: { ws: "Phase_1", layer: "Saharanpur_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Saharanpur_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Saharanpur_Phase_3" },
   },
   shahjahanpur: {
     Phase1: { ws: "Phase_1", layer: "Shahjahanpur_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Shahjahanpur_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Shahjahanpur_Phase_3" },
   },
   varanasi: {
     Phase1: { ws: "Phase_1", layer: "Varanasi_Phase_1" },
     Phase2: { ws: "Phase_2", layer: "Varanasi_Phase_2" },
+    Phase3: { ws: "Phase_3", layer: "Varanasi_Phase_3" },
   },
   // add others as needed
 };
+
+const resolveCmGridEntry = (entry) => {
+  if (!entry) return null;
+
+  const isCmGridPhase = /^Phase_[123]$/.test(entry.ws || "");
+  const workspace = isCmGridPhase ? CM_GRID_WORKSPACE : entry.ws;
+
+  return {
+    ...entry,
+    workspace,
+    style: entry.style || (isCmGridPhase ? entry.ws : ""),
+    layerName: `${workspace}:${entry.layer}`,
+    baseUrl:
+      !isCmGridPhase && entry.ws === "Phase_2"
+        ? PHASE2_GEOSERVER_BASE
+        : GEOSERVER_BASE,
+  };
+};
+
+const CM_GRID_MENU_OPTIONS = [
+  { value: "", label: "CM-Grid Roads", kind: "header" },
+  { value: "Phase1", label: "Phase 1", unavailableLabel: "Phase 1" },
+  { value: "Phase2", label: "Phase 2", unavailableLabel: "Phase 2" },
+  { value: "Phase3", label: "Phase 3", unavailableLabel: "Phase 3" },
+];
 
 // === City card data (same as old home.js) ===
 const cityCardData = {
@@ -464,12 +496,17 @@ export default function HomePage() {
   const boundaryExtentCacheRef = useRef({});
   const profileMenuRef = useRef(null);
   const profileBtnRef = useRef(null);
+  const phaseMenuRef = useRef(null);
   const homeSummaryRef = useRef(null);
   const buildOverlayHtmlRef = useRef(null);
   const selectedCityRef = useRef(""); // tracked in map handlers to suppress hover when a city is selected
+  const baseLayerSourcesRef = useRef({}); // style key -> XYZ source, for swapping the mask boundary below
+  const baseLayerBoundaryRef = useRef(null);
 
   const [selectedCity, setSelectedCity] = useState("");
   const [selectedPhase, setSelectedPhase] = useState("");
+  const [phaseMenuOpen, setPhaseMenuOpen] = useState(false);
+  const [cmGridNotice, setCmGridNotice] = useState(null);
   // const [cityData] = useState(null);
   // const [isLoading] = useState(false);
   // const [error] = useState(null);
@@ -490,6 +527,13 @@ export default function HomePage() {
   const [loggedInRole] = useState(
     () => String(localStorage.getItem("authRole") || "").toLowerCase(),
   );
+  // A "city-based" login (session.user.city set server-side) is locked to
+  // its own city - no switching, no pan-out to the state view. Only trust
+  // it if it matches a city we actually know how to render.
+  const [loggedInCity] = useState(
+    () => String(localStorage.getItem("authCity") || "").trim().toLowerCase(),
+  );
+  const isCityScopedUser = Boolean(loggedInCity && BOUNDARY_WFS[loggedInCity]);
   const [homeSummary, setHomeSummary] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [layerVisibility, setLayerVisibility] = useState({
@@ -498,6 +542,13 @@ export default function HomePage() {
     cmGrid: true,
   });
   const [legendMinimized, setLegendMinimized] = useState(false);
+  // Basemap-outage toast (see utils/basemapHealth.js) — auto-dismisses.
+  const [basemapNotice, setBasemapNotice] = useState(null);
+  useEffect(() => {
+    if (!basemapNotice) return;
+    const timer = setTimeout(() => setBasemapNotice(null), 12000);
+    return () => clearTimeout(timer);
+  }, [basemapNotice]);
 
   const isMobileView = window.innerWidth <= 767;
   // On desktop the sidebar is ~215px wide — give it left padding so zoom fits in the visible map area
@@ -513,21 +564,82 @@ export default function HomePage() {
     }
   }, [isMobileView, selectedCity]);
 
+  const getCityDisplayName = useCallback((cityKey) => {
+    if (!cityKey) return "this city";
+    return cityConfig[cityKey]?.name || cityKey.charAt(0).toUpperCase() + cityKey.slice(1);
+  }, []);
+
+  const phaseOptions = useMemo(() => {
+    if (!selectedCity) return CM_GRID_MENU_OPTIONS;
+    const cityLayers = CM_GRID_WMS[selectedCity] || {};
+    const options = CM_GRID_MENU_OPTIONS.map((option) => ({
+      ...option,
+      available: option.kind === "header" || Boolean(resolveCmGridEntry(cityLayers[option.value])),
+    }));
+
+    if (cityLayers.GPR) {
+      options.push({
+        value: "GPR",
+        label: "GPR Layer",
+        unavailableLabel: "GPR layer",
+        available: Boolean(resolveCmGridEntry(cityLayers.GPR)),
+      });
+    }
+
+    return options;
+  }, [selectedCity]);
+
+  const selectedPhaseLabel = useMemo(
+    () => phaseOptions.find((option) => option.value === selectedPhase)?.label || "CM-Grid Roads",
+    [phaseOptions, selectedPhase],
+  );
+
+  useEffect(() => {
+    if (!phaseMenuOpen) return undefined;
+    const handlePointerDown = (event) => {
+      if (!phaseMenuRef.current?.contains(event.target)) {
+        setPhaseMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [phaseMenuOpen]);
+
   const cmGridLegendUrl = useMemo(() => {
     if (!selectedCity || !selectedPhase) return "";
-    const entry = CM_GRID_WMS[selectedCity]?.[selectedPhase];
+    const entry = resolveCmGridEntry(CM_GRID_WMS[selectedCity]?.[selectedPhase]);
     if (!entry) return "";
-    const baseUrl =
-      entry.ws === "Phase_2" ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE;
-    const layerName = `${entry.ws}:${entry.layer}`;
-    return `${baseUrl}/${entry.ws}/wms?SERVICE=WMS&REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&LAYER=${encodeURIComponent(
-      layerName,
-    )}&LEGEND_OPTIONS=forceLabels:on;fontName:Arial;fontSize:11&_=${encodeURIComponent(
+    const styleParam = entry.style
+      ? `&STYLE=${encodeURIComponent(entry.style)}`
+      : "";
+    return `${entry.baseUrl}/${entry.workspace}/wms?SERVICE=WMS&REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&LAYER=${encodeURIComponent(
+      entry.layerName,
+    )}${styleParam}&LEGEND_OPTIONS=forceLabels:on;fontName:Arial;fontSize:11&_=${encodeURIComponent(
       `${selectedCity}-${selectedPhase}`,
     )}`;
   }, [selectedCity, selectedPhase]);
 
   // ✅ Toggle Overlay Layers
+  const getBasemapBoundaryForCity = useCallback((cityKey) => {
+    const key = String(cityKey || "").toLowerCase();
+    const cfg = cityConfig[key];
+    return (cfg && (cfg.zoneLayer || cfg.wardLayer)) || UP_BOUNDARY_LAYER;
+  }, []);
+
+  const updateBaseLayerBoundary = useCallback((cityKey) => {
+    const sources = baseLayerSourcesRef.current;
+    if (!sources || Object.keys(sources).length === 0) return;
+
+    const targetBoundary = getBasemapBoundaryForCity(cityKey);
+    if (baseLayerBoundaryRef.current === targetBoundary) return;
+    baseLayerBoundaryRef.current = targetBoundary;
+
+    Object.entries(sources).forEach(([style, source]) => {
+      if (!source?.setUrl) return;
+      source.setUrl(getCachedTileUrl(style, targetBoundary));
+    });
+  }, [getBasemapBoundaryForCity]);
+
   const toggleLayer = (key) => {
     setLayerVisibility((prev) => {
       const newState = { ...prev, [key]: !prev[key] };
@@ -540,9 +652,6 @@ export default function HomePage() {
         if (mapRef.current?.upBoundaryLayer) {
           mapRef.current.upBoundaryLayer.setVisible(isVisible);
         }
-      }
-      if (key === "cityBoundary" && mapRef.current?.boundaryLayer) {
-        mapRef.current.boundaryLayer.setVisible(isVisible);
       }
       if (key === "above10m" && above10mRef.current) {
         above10mRef.current.setVisible(isVisible);
@@ -613,15 +722,20 @@ export default function HomePage() {
 
   /* ------------ INIT MAP + LAYER SWITCHER ------------ */
   useEffect(() => {
-    // reset city + clear any stored one
-    setSelectedCity("");
-    localStorage.removeItem("selectedCity");
+    // reset city + clear any stored one - except for a city-scoped login,
+    // which is always locked to its own city and never starts at the state
+    // view (that lock is applied once the map is ready, further below).
+    if (!isCityScopedUser) {
+      setSelectedCity("");
+      localStorage.removeItem("selectedCity");
+    }
 
     // 1️⃣ Create all base layers first
     const osmLayer = new TileLayer({
       title: "OpenStreetMap",
       type: "base",
       visible: true, // ✅ Show by default
+      preload: 1,
       maxZoom: 19,
       source: makeCachedXyzSource({
         style: "osm",
@@ -636,6 +750,7 @@ export default function HomePage() {
     const positronLayer = new TileLayer({
       title: "CartoDB Positron",
       visible: false,
+      preload: 1,
       maxZoom: 20,
       source: makeCachedXyzSource({
         style: "positron",
@@ -650,6 +765,7 @@ export default function HomePage() {
     const satelliteLayer = new TileLayer({
       title: "Satellite",
       visible: false,
+      preload: 1,
       maxZoom: 18,
       source: makeCachedXyzSource({
         style: "satellite",
@@ -663,6 +779,7 @@ export default function HomePage() {
     const tonerLayer = new TileLayer({
       title: "Toner",
       visible: false,
+      preload: 1,
       maxZoom: 20,
       source: makeCachedXyzSource({
         style: "toner",
@@ -679,6 +796,7 @@ export default function HomePage() {
     const topoLayer = new TileLayer({
       title: "Topo",
       visible: false,
+      preload: 1,
       maxZoom: 17,
       source: makeCachedXyzSource({
         style: "topo",
@@ -696,6 +814,7 @@ export default function HomePage() {
     const labelsLayer = new TileLayer({
       title: "Labels (Esri Reference)",
       visible: false,
+      preload: 1,
       maxZoom: 18,
       source: makeCachedXyzSource({
         style: "labels",
@@ -705,6 +824,53 @@ export default function HomePage() {
         maxZoom: 18,
       }),
     });
+
+    baseLayerSourcesRef.current = {
+      osm: osmLayer.getSource(),
+      positron: positronLayer.getSource(),
+      satellite: satelliteLayer.getSource(),
+      toner: tonerLayer.getSource(),
+      topo: topoLayer.getSource(),
+      labels: labelsLayer.getSource(),
+    };
+    baseLayerBoundaryRef.current = UP_BOUNDARY_LAYER;
+
+    // Basemap outage detection: a burst of tile errors on any style
+    // triggers one probe of the tile proxy to classify the failure
+    // (deployment network blocking the provider vs the provider's own
+    // outage) and tells the user the right story. See utils/basemapHealth.js.
+    [
+      [osmLayer, "osm", "OpenStreetMap"],
+      [positronLayer, "positron", "CartoDB Positron"],
+      [satelliteLayer, "satellite", "Satellite"],
+      [labelsLayer, "labels", "Satellite Labels"],
+      [tonerLayer, "toner", "Toner"],
+      [topoLayer, "topo", "Topo"],
+    ].forEach(([layer, styleKey, displayName]) => {
+      attachBasemapErrorNotifier(
+        layer.getSource(),
+        styleKey,
+        displayName,
+        `${TILE_CACHE_BASE}/api/tiles/${styleKey}/6/45/27.png`,
+        (reason, message) => setBasemapNotice({ displayName, reason, message })
+      );
+    });
+
+    // "Tinted window" mask — a permanent, instantly-applied translucent
+    // "glass" fill painted over everywhere *outside* the UP boundary. Not a
+    // second image/tile layer of any kind (a single static raster looks
+    // fine zoomed out but turns into unreadable blown-up pixels/text the
+    // moment a user zooms into a city - confirmed live, reverted). Just a
+    // soft, permanent translucency so the cut-off doesn't look like a blank
+    // void, while the real in-boundary map stays the fast, high-priority,
+    // fully-detailed layer it always was. Costs zero network requests: pure
+    // canvas drawing reusing geometry already fetched for the boundary
+    // layer below.
+    const maskLayer = new VectorLayer({
+      title: "Focus Mask",
+      source: new VectorSource(),
+    });
+    maskLayer.setZIndex(8);
 
     // 2️⃣ Initialize map *after* layers exist
     const map = new Map({
@@ -716,6 +882,7 @@ export default function HomePage() {
         tonerLayer,
         topoLayer,
         labelsLayer,
+        maskLayer,
       ],
       view: new View({
         projection: "EPSG:3857",
@@ -728,6 +895,10 @@ export default function HomePage() {
         // viewport aspect ratio doesn't match the extent's — see the same
         // note in MapContainer.jsx's per-city view restriction.
         constrainOnlyCenter: true,
+        // Same reasoning as MapContainer.jsx's View: avoids OpenLayers'
+        // own default fill (shows as stark black) for any area with no
+        // rendered tile yet.
+        background: "#e5e7eb",
       }),
       controls: defaultControls({
         attribution: true,
@@ -781,7 +952,12 @@ export default function HomePage() {
     const createWMSSource = (url, layerName, extra) =>
       makeWmsSource(url, layerName, extra);
 
-    // 4️⃣ UP District layer (visible by default)
+    // 4️⃣ UP District layer (visible by default) — carries both the
+    // district boundary lines AND their name labels (GeoServer-styled into
+    // one image). Kept above every other overlay this page can show
+    // (highlight/Above10m/CM-Grid, up to zIndex 900) so district names are
+    // never hidden behind a data layer, matching the same "labels always on
+    // top" rule applied to Dashboard's own label layers.
     const upDistrictLayer = new TileLayer({
       title: "UP District Boundaries",
       source: createWMSSource(
@@ -791,7 +967,7 @@ export default function HomePage() {
       visible: true,
       opacity: 1.0, // full opacity — GeoServer style controls the look
       imageSmoothing: false,
-      zIndex: 10,
+      zIndex: 9000,
     });
 
     // 5️⃣  UP City Boundary — WFS VectorLayer (unique colors per city, hover-ready)
@@ -819,13 +995,12 @@ export default function HomePage() {
     map.addLayer(upDistrictLayer);
     map.addLayer(upBoundaryLayer);
 
-    // Clip every base raster layer to the real UP boundary shape (not just
-    // its bounding box) — upClipRingsRef starts null and is populated
-    // shortly after by the district-boundary WFS fetch below, so layers
-    // simply render unclipped until then.
-    [osmLayer, positronLayer, satelliteLayer, tonerLayer, topoLayer, labelsLayer].forEach(
-      (layer) => attachLayerClip(layer, map, upClipRingsRef)
-    );
+    // Dim everywhere outside the real UP boundary shape (not just its
+    // bounding box) via a single tint overlay, rather than hard-clipping
+    // the base layers away to nothing out there — upClipRingsRef starts
+    // null and is populated shortly after by the district-boundary WFS
+    // fetch below, so the map simply renders untinted until then.
+    attachInvertedMask(maskLayer, map, upClipRingsRef, "rgba(120,120,120,0.28)");
     fetch(
       `${GEOSERVER_BASE}/Ward_38/ows?service=WFS&version=2.0.0&request=GetFeature` +
       `&typeName=Ward_38:Up_District&outputFormat=application/json`
@@ -910,14 +1085,35 @@ export default function HomePage() {
           if (mapRef.current.hoverEl)
             mapRef.current.hoverEl.style.display = "none";
 
+          const above10mFeature = map.forEachFeatureAtPixel(
+            evt.pixel,
+            (feature, layer) =>
+              layer === mapRef.current.above10mRef?.current ? feature : null,
+            {
+              hitTolerance: 6,
+              layerFilter: (layer) => layer === mapRef.current.above10mRef?.current,
+            },
+          );
+          if (above10mFeature) {
+            const props = above10mFeature.getProperties?.() || {};
+            const roadName = props.road_name || "Unnamed Road";
+            const condition = props.condition || "Unknown Condition";
+            if (mapRef.current.roadHoverEl) {
+              mapRef.current.roadHoverEl.innerHTML = `<strong>${roadName}</strong><br/><span style="color:#aaa;">Condition: <span style="color:#fff">${condition}</span></span>`;
+              mapRef.current.roadHoverEl.style.display = "";
+              mapRef.current.roadHoverOverlay.setPosition(evt.coordinate);
+            }
+            mapRef.current.highlightLayer?.getSource().clear();
+            const cloned = above10mFeature.clone();
+            cloned.setStyle(undefined);
+            mapRef.current.highlightLayer?.getSource().addFeature(cloned);
+            const targetEl = map.getTargetElement?.();
+            if (targetEl?.style) targetEl.style.cursor = "pointer";
+            return;
+          }
+
           // --- ADD WMS HOVER TOOLTIP FOR ROADS ---
           const candidates = [];
-          if (
-            mapRef.current.above10mRef?.current &&
-            mapRef.current.above10mRef.current.getVisible()
-          ) {
-            candidates.push(mapRef.current.above10mRef.current);
-          }
           if (
             mapRef.current.cmGridRef?.current &&
             mapRef.current.cmGridRef.current.getVisible()
@@ -928,6 +1124,7 @@ export default function HomePage() {
           if (candidates.length === 0) {
             if (mapRef.current.roadHoverEl)
               mapRef.current.roadHoverEl.style.display = "none";
+            mapRef.current.highlightLayer?.getSource().clear();
             const targetEl = map.getTargetElement?.();
             if (targetEl?.style) targetEl.style.cursor = "";
             return;
@@ -1094,6 +1291,96 @@ export default function HomePage() {
       }
 
       // If a city is selected, handle road clicking
+      const clickedAbove10mFeature = map.forEachFeatureAtPixel(
+        evt.pixel,
+        (feature, layer) =>
+          layer === mapRef.current.above10mRef?.current ? feature : null,
+        {
+          hitTolerance: 8,
+          layerFilter: (layer) => layer === mapRef.current.above10mRef?.current,
+        },
+      );
+      if (clickedAbove10mFeature) {
+        if (mapRef.current.roadHoverEl)
+          mapRef.current.roadHoverEl.style.display = "none";
+        mapRef.current.highlightLayer?.getSource().clear();
+        mapRef.current.highlightLayer?.getSource().addFeature(clickedAbove10mFeature.clone());
+
+        const geom = clickedAbove10mFeature.getGeometry?.();
+        if (geom) {
+          const padding =
+            window.innerWidth < 768 ? [40, 40, 200, 40] : [80, 80, 80, 380];
+          map.getView().fit(geom.getExtent(), { padding, duration: 650, maxZoom: 18 });
+        }
+
+        const props = clickedAbove10mFeature.getProperties?.() || {};
+        const [lng, lat] = toLonLat(evt.coordinate);
+        const streetViewUrl = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`;
+        const escapeHtml = (value) =>
+          String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+        const formatLabel = (label) =>
+          label.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+        const renderRoadRow = (key) => {
+          const value = props[key];
+          if (value === null || value === undefined || value === "") return "";
+          const display =
+            typeof value === "number" && key.includes("length")
+              ? `${value.toFixed(3)} km`
+              : value;
+          return `<div style="display:grid; grid-template-columns: 92px minmax(0,1fr); gap:10px; margin-bottom:6px; align-items:start;">
+            <span style="color:#64748b; font-size:11px; font-weight:600;">${formatLabel(key)}</span>
+            <span style="color:#0f172a; font-size:12px; font-weight:700; word-break:break-word;">${escapeHtml(display)}</span>
+          </div>`;
+        };
+        const title = props.road_name || "Road";
+        const html = `<div style="min-width:260px; max-width:340px; padding:14px; background:#fff; border-radius:10px; box-shadow:0 10px 30px rgba(15,23,42,0.25); pointer-events:auto; position:relative;">
+          <button onclick="document.dispatchEvent(new CustomEvent('closeRoadPopup'))" style="position:absolute; right:8px; top:8px; background:#e2e8f0; border:none; border-radius:50%; width:26px; height:26px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#475569; font-size:14px;">
+            <i class="fas fa-times"></i>
+          </button>
+          <h4 style="margin:0 28px 10px 0; border-bottom:2px solid #2563eb; padding-bottom:8px; color:#1e3a8a; font-size:15px;">
+            <i class="fas fa-road" style="margin-right:6px;"></i>${escapeHtml(title)}
+          </h4>
+          <div style="display:flex; flex-direction:column; gap:0; max-height:260px; overflow-y:auto; padding-right:2px;">
+            ${[
+              "road_id",
+              "zone_name",
+              "ward_name",
+              "ownership",
+              "condition",
+              "category",
+              "material",
+              "row_meter",
+              "carriage_w",
+              "length_km",
+              "yoc",
+            ].map(renderRoadRow).join("")}
+          </div>
+          <a href="${streetViewUrl}" target="_blank" rel="noopener noreferrer" style="display:block; margin-top:10px; padding:7px 10px; background:#0f172a; color:#fff; border-radius:5px; text-decoration:none; font-size:12px; text-align:center; font-weight:700;">
+            Open Street View
+          </a>
+        </div>`;
+
+        if (mapRef.current.hoverEl) {
+          mapRef.current.hoverEl.innerHTML = html;
+          mapRef.current.hoverEl.style.display = "";
+          // OL's Overlay has no setOptions()/setAutoPan() - autoPan can only
+          // be set at construction (this overlay was built with
+          // autoPan:false). A call to the non-existent setOptions() here
+          // used to throw synchronously, crashing this whole click handler
+          // before it ever reached setPosition below - so this popup never
+          // actually displayed on any road click, on any city.
+          mapRef.current.hoverOverlay.setPosition(geom ? getCenter(geom.getExtent()) : evt.coordinate);
+          mapRef.current.hoverOverlay.setPositioning("bottom-center");
+          mapRef.current.hoverOverlay.setOffset([0, -15]);
+        }
+        return;
+      }
+
       const candidates = [];
       if (
         mapRef.current.above10mRef?.current &&
@@ -1152,7 +1439,9 @@ export default function HomePage() {
             <i class="fas fa-spinner fa-spin" style="margin-right:8px; color:#2f6fd6;"></i> Loading road details...
           </div>`;
             mapRef.current.hoverEl.style.display = "";
-            mapRef.current.hoverOverlay.setOptions({ autoPan: true });
+            // See the other call site above - OL's Overlay has no
+            // setOptions()/setAutoPan(); this used to throw and crash the
+            // handler before the loading state ever displayed.
             mapRef.current.hoverOverlay.setPosition(evt.coordinate);
             mapRef.current.hoverOverlay.setPositioning("bottom-center");
             mapRef.current.hoverOverlay.setOffset([0, -15]);
@@ -1308,17 +1597,23 @@ export default function HomePage() {
       mapRef.current.hoverOverlay?.setPosition(undefined);
     });
 
-    // ✅ Fit UP extent after map initializes
-    map.once("postrender", function () {
-      const upExtent = [77.0, 23.5, 84.5, 31.0]; // [minX, minY, maxX, maxY]
-      const minCoord = fromLonLat([upExtent[0], upExtent[1]]);
-      const maxCoord = fromLonLat([upExtent[2], upExtent[3]]);
-      map.getView().fit([minCoord[0], minCoord[1], maxCoord[0], maxCoord[1]], {
-        padding: mapPadding,
-        duration: 1000,
-        maxZoom: upMaxZoom,
+    // ✅ Fit UP extent after map initializes - skipped for a city-scoped
+    // login, which locks onto its own city moments later anyway; letting
+    // this run first only causes a pointless state-wide flash and can even
+    // race the city fit that follows (this animation finishing last would
+    // silently override the correct, restricted city view).
+    if (!isCityScopedUser) {
+      map.once("postrender", function () {
+        const upExtent = [77.0, 23.5, 84.5, 31.0]; // [minX, minY, maxX, maxY]
+        const minCoord = fromLonLat([upExtent[0], upExtent[1]]);
+        const maxCoord = fromLonLat([upExtent[2], upExtent[3]]);
+        map.getView().fit([minCoord[0], minCoord[1], maxCoord[0], maxCoord[1]], {
+          padding: mapPadding,
+          duration: 1000,
+          maxZoom: upMaxZoom,
+        });
       });
-    });
+    }
 
     // ✅ Force refresh of WMS layers once map is ready
     map.once("rendercomplete", () => {
@@ -1338,7 +1633,16 @@ export default function HomePage() {
 
     // ✅ Back button (browser) handling – return to HomePage, not Login
     const handlePopState = (event) => {
+      // A city-scoped login can't reach the state view even via the
+      // browser's own back button.
+      if (isCityScopedUser) {
+        event.preventDefault();
+        window.history.pushState(null, "", "/home");
+        return;
+      }
       setSelectedCity("");
+      setLayerVisibility((prev) => ({ ...prev, upDistrict: true }));
+      mapRef.current?.upDistrictLayer?.setVisible(true);
       localStorage.removeItem("selectedCity");
       setCards(cityCardData.default);
 
@@ -1404,11 +1708,32 @@ export default function HomePage() {
     };
   }, []);
 
+  // Basemap tiles are masked server-side to a boundary shape (see
+  // getMaskedTile in tiles.js) so every browser doesn't redraw the same
+  // clip on every frame — but every base layer here was hardcoded to
+  // UP_BOUNDARY_LAYER (the whole state) *always*, even once a user has
+  // zoomed into a single city. That meant the tile+boundary combination at
+  // city-level zoom (11+) was never covered by the cache warmer, which only
+  // pre-warms the whole-state boundary up to zoom 10 (deeper would be
+  // combinatorially unaffordable) — so every tile at exactly the zoom level
+  // most users actually look at was a guaranteed cold miss, on top of
+  // masking against a far more complex polygon (all districts vs. one
+  // city). Once a city is selected, switch every base layer's mask to that
+  // city's own zone/ward boundary — the *same* boundary value the cache
+  // warmer already pre-warms at zoom 11-16 for the Dashboard, so this
+  // reuses an already-warm cache instead of needing any new warming work.
+  useEffect(() => {
+    updateBaseLayerBoundary(selectedCity);
+  }, [selectedCity, updateBaseLayerBoundary]);
+
   // removed debug panel and instrumentation code
 
-  // Focus on the GeoServer layer when the component mounts
+  // Focus on the GeoServer layer when the component mounts - skipped for a
+  // city-scoped login, which locks onto its own city moments later anyway;
+  // this reset otherwise races that city fit (both fire ~1000ms after
+  // mount) and can silently win, leaving the view at the wide state extent.
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || isCityScopedUser) return;
 
     const initializeMapView = () => {
       const map =
@@ -1797,6 +2122,82 @@ export default function HomePage() {
     selectedCityRef.current = selectedCity;
   });
 
+  // City-scoped login: lock onto the user's own city once, as soon as the
+  // UP boundary WFS data (used to fit/restrict the view to the exact city
+  // extent) is actually loaded - not on a blind delay, since calling the
+  // lock before that data arrives silently falls back to a rough
+  // center+zoom guess that skips the pan/zoom restriction entirely. A
+  // dedicated effect (rather than an OL event listener registered inside
+  // the map-init effect) is used deliberately - under React.StrictMode's
+  // dev-only double-invoke, a listener registered by the throwaway first
+  // mount can end up firing after that mount's own cleanup. Guard state is
+  // kept in a variable local to this effect invocation (not a ref, which
+  // would persist across the phantom/real double-invoke and could get
+  // permanently stuck "done" by a phantom run that never truly completed) -
+  // the `cancelled` flag set in cleanup is what makes the phantom mount's
+  // in-flight listeners inert, and each invocation gets a fresh `locked`.
+  useEffect(() => {
+    if (!isCityScopedUser) return;
+    let cancelled = false;
+    let locked = false;
+    let fallbackTimer = null;
+    const source = mapRef.current?.upBoundaryLayer?.getSource?.();
+
+    const tryLock = () => {
+      if (cancelled || locked) return;
+      const map = mapRef.current?.instance || mapRef.current?.map || mapRef.current;
+      if (!map) {
+        requestAnimationFrame(tryLock);
+        return;
+      }
+      // WFS data alone isn't enough - handleCitySelect ends in
+      // map.renderSync(), which throws if OL's internal frame state isn't
+      // populated yet (map.getSize() being truthy doesn't guarantee this).
+      // Forcing a render and waiting for the "postrender" it produces is
+      // the one reliable signal that renderSync() is now safe to call. Set
+      // the guard eagerly (not inside the callback) so a second trigger
+      // (e.g. the fallback timer firing close behind featuresloadend)
+      // can't register a second listener and double-fire the lock.
+      locked = true;
+      map.once("postrender", () => {
+        if (cancelled) return;
+        mapRef.current?.handleCitySelectFn?.(loggedInCity);
+      });
+      map.render();
+    };
+
+    // getState() can trivially report "ready" before the source's WFS load
+    // has even been triggered (its default strategy only starts loading
+    // once something actually asks it to render) - that's a false positive
+    // if taken alone, so also require real feature data to already exist.
+    if (source && source.getState() === "ready" && source.getFeatures().length > 0) {
+      tryLock();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (source) {
+      source.once("featuresloadend", tryLock);
+      // Safety net in case the load errors or the event is missed for any
+      // reason - don't leave the user stuck on the unrestricted state view.
+      fallbackTimer = setTimeout(tryLock, 5000);
+      return () => {
+        cancelled = true;
+        source.un("featuresloadend", tryLock);
+        clearTimeout(fallbackTimer);
+      };
+    }
+
+    // Map not built yet (shouldn't normally happen, since this effect runs
+    // after the map-init effect) - fall back to a short delayed retry.
+    fallbackTimer = setTimeout(tryLock, 1200);
+    return () => {
+      cancelled = true;
+      clearTimeout(fallbackTimer);
+    };
+  }, [isCityScopedUser, loggedInCity]);
+
   const mobileOverlayHtml = useMemo(() => {
     if (!homeSummary || !selectedCity) return "";
     return buildOverlayHtml(
@@ -1940,42 +2341,125 @@ export default function HomePage() {
     }
   };
 
-  const fitViewToCityBoundary = useCallback(
-    async (city) => {
-      const map =
-        mapRef.current?.instance || mapRef.current?.map || mapRef.current;
-      if (!map || !city) return;
-      const entry = BOUNDARY_WFS[city];
-      const view = map.getView();
+  // Once a city is selected, pan/zoom should stay within that city — the
+  // only way back to the state-wide view is the dropdown, not scrolling out
+  // far enough. OL bakes an extent constraint into the View at construction
+  // time (no setter on a live view), so this replaces the view in place,
+  // carrying over the current center/zoom/rotation, same pattern already
+  // used for this on the per-city Dashboard.
+  const restrictViewToExtent = useCallback((map, extent, fitPadding) => {
+    const view = map.getView();
+    const padding = Math.max(getWidth(extent), getHeight(extent)) * 0.15;
+    const restrictedExtent = bufferExtent(extent, padding);
 
-      // Attempt to get extent from already loaded WFS features
-      if (mapRef.current?.upBoundaryLayer && entry) {
-        const source = mapRef.current.upBoundaryLayer.getSource();
-        if (source && typeof source.getFeatures === "function") {
-          const features = source.getFeatures();
-          const feat = features.find(
-            (f) => normalizeWfsName(f.get("Name")) === city,
-          );
-          if (feat) {
-            const extent = feat.getGeometry().getExtent();
-            view.fit(extent, {
-              padding: mapPadding,
-              duration: 800,
-              maxZoom: cityMaxZoom,
-            });
+    // constrainOnlyCenter alone stops panning away from the city but does
+    // nothing to the zoom/resolution itself — a user could still scroll out
+    // numerically and see a mostly-blank view (center pinned to the city,
+    // but zoomed out far enough to show a much wider, unloaded area). Work
+    // out what zoom fit() would land on for this extent given the current
+    // viewport size, and use that as minZoom so scrolling out simply stops
+    // once the whole city is already visible.
+    const size = map.getSize();
+    let minZoom = view.getMinZoom();
+    if (size) {
+      // getResolutionForExtent has no padding param — shrink the box it
+      // fits into ourselves so this lines up with what fit({padding}) will
+      // actually compute, not a same tighter zoom.
+      const [top = 0, right = 0, bottom = 0, left = 0] = fitPadding || [];
+      const paddedSize = [
+        Math.max(1, size[0] - left - right),
+        Math.max(1, size[1] - top - bottom),
+      ];
+      const resolution = view.getResolutionForExtent(extent, paddedSize);
+      const fitZoom = view.getZoomForResolution(resolution);
+      // A little slack so the exact fitted view doesn't sit right at the
+      // limit (which can make the very first zoom-out tick feel like it
+      // does nothing due to floating point/OL's own snapping).
+      if (Number.isFinite(fitZoom)) minZoom = Math.max(0, fitZoom - 0.25);
+    }
+
+    const restrictedView = new View({
+      projection: view.getProjection(),
+      center: view.getCenter(),
+      zoom: view.getZoom(),
+      rotation: view.getRotation(),
+      minZoom,
+      maxZoom: view.getMaxZoom(),
+      extent: restrictedExtent,
+      // Only the center is constrained (not the whole viewport) so a city
+      // with an aspect ratio that doesn't match the screen doesn't get
+      // silently forced to a tighter zoom than fit() itself chose.
+      constrainOnlyCenter: true,
+    });
+    map.setView(restrictedView);
+    return restrictedView;
+  }, []);
+
+  const fitViewToCityBoundary = useCallback(
+    (city) =>
+      new Promise((resolve) => {
+        const map =
+          mapRef.current?.instance || mapRef.current?.map || mapRef.current;
+        if (!map || !city) {
+          resolve();
+          return;
+        }
+        const entry = BOUNDARY_WFS[city];
+        const view = map.getView();
+
+        const fallback = () => {
+          const cityCenter = CITY_CENTER[city] || fromLonLat([80.8, 26.8]);
+          view.animate({
+            center: cityCenter,
+            zoom: isMobileView ? 10 : 11,
+            duration: 800,
+          });
+          resolve();
+        };
+
+        // The UP boundary WFS layer can still be mid-fetch (or not yet
+        // asked to load anything at all - its source only actually starts
+        // loading once the layer is asked to render for an extent) at the
+        // exact moment this runs, especially right after mount. Rather than
+        // silently falling back to a rough center+zoom (which also skips
+        // the pan/zoom restriction below), retry for a few seconds so a
+        // slow/late load still ends up with the precise, restricted view.
+        let attempts = 0;
+        const maxAttempts = 20; // ~5s at 250ms apart, plus event-driven retries
+        const tryFit = () => {
+          const layer = mapRef.current?.upBoundaryLayer;
+          const source = layer?.getSource?.();
+          if (source && entry) {
+            const features = source.getFeatures();
+            const feat = features.find(
+              (f) => normalizeWfsName(f.get("Name")) === city,
+            );
+            if (feat) {
+              const extent = feat.getGeometry().getExtent();
+              const restrictedView = restrictViewToExtent(map, extent, mapPadding);
+              restrictedView.fit(extent, {
+                padding: mapPadding,
+                duration: 800,
+                maxZoom: cityMaxZoom,
+              });
+              resolve();
+              return;
+            }
+            if (source.getState() === "loading") {
+              source.once("featuresloadend", tryFit);
+              return;
+            }
+          }
+          attempts += 1;
+          if (attempts >= maxAttempts) {
+            fallback();
             return;
           }
-        }
-      }
-
-      const cityCenter = CITY_CENTER[city] || fromLonLat([80.8, 26.8]);
-      view.animate({
-        center: cityCenter,
-        zoom: isMobileView ? 10 : 11,
-        duration: 800,
-      });
-    },
-    [isMobileView, mapPadding, cityMaxZoom],
+          setTimeout(tryFit, 250);
+        };
+        tryFit();
+      }),
+    [isMobileView, mapPadding, cityMaxZoom, restrictViewToExtent],
   );
 
   /* ----------------- LAYERS ----------------- */
@@ -1990,16 +2474,13 @@ export default function HomePage() {
     const { upDistrictLayer, upBoundaryLayer } = mapRef.current;
 
     if (upDistrictLayer) {
-      upDistrictLayer.setVisible(true);
+      // A specific city's own boundary makes the whole-state outline
+      // redundant - only show upDistrict when no city is selected.
+      upDistrictLayer.setVisible(!city);
     }
 
     if (upBoundaryLayer) {
       upBoundaryLayer.setVisible(layerVisibility.upBoundary);
-    }
-
-    if (mapRef.current.boundaryLayer) {
-      map.removeLayer(mapRef.current.boundaryLayer);
-      mapRef.current.boundaryLayer = null;
     }
 
     // Hide detailed road layers temporarily to reset map state
@@ -2013,49 +2494,26 @@ export default function HomePage() {
     if (mapRef.current.highlightLayer)
       mapRef.current.highlightLayer.getSource().clear();
 
-    if (city) {
-      const entry = BOUNDARY_WFS[city];
-      if (entry) {
-        const highlightColor = CITY_BOUNDARY_COLORS[city] || "#000000";
-        const highlightStyle = CITY_BOUNDARY_STYLE[city];
-        const cityLayer = new TileLayer({
-          title: `${city} Highlight`,
-          source: new TileWMS({
-            url: `${GEOSERVER_BASE}/${entry.ws}/wms`,
-            params: {
-              LAYERS: `${entry.ws}:${entry.layer}`,
-              CQL_FILTER: `Name='${entry.name}'`,
-              FORMAT: "image/png",
-              VERSION: "1.3.0",
-              TRANSPARENT: true,
-              TILED: true,
-              FORMAT_OPTIONS: "antiAlias:false",
-              ...(highlightStyle
-                ? { STYLES: highlightStyle }
-                : { SLD_BODY: buildBoundarySld(highlightColor, 5) }),
-            },
-            serverType: "geoserver",
-            crossOrigin: "anonymous",
-            wrapX: false,
-            projection: "EPSG:3857",
-          }),
-          visible: layerVisibility.cityBoundary,
-          opacity: 1,
-          imageSmoothing: false,
-          zIndex: 60,
-        });
-        setLayerVisibility((prev) => ({ ...prev, cityBoundary: true }));
-        map.addLayer(cityLayer);
-        mapRef.current.boundaryLayer = cityLayer;
-      }
-    }
-
     if (!city) {
+      // Undo the per-city pan/zoom restriction (if any) — going back to
+      // the state-wide view needs a view that isn't still boxed into
+      // whichever city was previously selected.
+      const currentView = map.getView();
+      const unrestrictedView = new View({
+        projection: currentView.getProjection(),
+        center: currentView.getCenter(),
+        zoom: currentView.getZoom(),
+        rotation: currentView.getRotation(),
+        minZoom: currentView.getMinZoom(),
+        maxZoom: currentView.getMaxZoom(),
+      });
+      map.setView(unrestrictedView);
+
       const upExtent = [77.0, 23.5, 84.5, 31.0];
       const minCoord = fromLonLat([upExtent[0], upExtent[1]]);
       const maxCoord = fromLonLat([upExtent[2], upExtent[3]]);
 
-      map.getView().fit([minCoord[0], minCoord[1], maxCoord[0], maxCoord[1]], {
+      unrestrictedView.fit([minCoord[0], minCoord[1], maxCoord[0], maxCoord[1]], {
         padding: mapPadding,
         duration: 1000,
         maxZoom: upMaxZoom,
@@ -2066,31 +2524,41 @@ export default function HomePage() {
     map.renderSync(); // ✅ Force OpenLayers to redraw with WMS layers
   };
 
-  // Above 10m WMS (overlay)
+  // Above 10m roads from live DB-backed GeoJSON, not the static GeoServer WMS.
   const addAbove10mLayer = (city) => {
     removeLayer(above10mRef);
-    const layerName = ABOVE10M_LAYER[city];
-    if (!layerName) return;
+    if (!ABOVE10M_LAYER[city]) return;
 
-    const layer = new TileLayer({
+    const format = new GeoJSON();
+    const source = new VectorSource({
+      strategy: bboxStrategy,
+      loader: async (extent, resolution, projection, success, failure) => {
+        const extent4326 = transformExtent(extent, projection, "EPSG:4326");
+        const url =
+          `/api/${encodeURIComponent(city)}/roads/above10m/geojson` +
+          `?bbox=${extent4326.map((n) => n.toFixed(6)).join(",")}`;
+        try {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`Above 10m request failed: ${res.status}`);
+          const geojson = await res.json();
+          const features = format.readFeatures(geojson, {
+            dataProjection: "EPSG:4326",
+            featureProjection: projection,
+          });
+          source.addFeatures(features);
+          if (typeof success === "function") success(features);
+        } catch (err) {
+          source.removeLoadedExtent(extent);
+          if (typeof failure === "function") failure();
+        }
+      },
+    });
+
+    const layer = new VectorLayer({
       title: `${city.toUpperCase()} Above 10m`,
-      opacity: 0, // start transparent for graceful fade-in
-      source: new TileWMS({
-        url: `${GEOSERVER_BASE}/${ABOVE10M_WS}/wms`,
-        params: {
-          LAYERS: `${ABOVE10M_WS}:${layerName}`,
-          FORMAT: "image/png",
-          VERSION: "1.3.0",
-          TRANSPARENT: true,
-          TILED: true,
-          FORMAT_OPTIONS: "antiAlias:false",
-        },
-        serverType: "geoserver",
-        crossOrigin: "anonymous",
-        wrapX: false,
-      }),
+      source,
+      style: ABOVE10M_VECTOR_STYLE,
       visible: true,
-      imageSmoothing: false,
       zIndex: 500,
     });
 
@@ -2100,16 +2568,6 @@ export default function HomePage() {
       mapRef.current?.instance || mapRef.current?.map || mapRef.current;
     if (map && typeof map.addLayer === "function") {
       map.addLayer(layer);
-      // Graceful fade-in once the first tile arrives
-      layer.once("postrender", () => {
-        let op = 0;
-        const step = () => {
-          op = Math.min(1, op + 0.08);
-          layer.setOpacity(op);
-          if (op < 1) requestAnimationFrame(step);
-        };
-        requestAnimationFrame(step);
-      });
     }
     above10mRef.current = layer;
   };
@@ -2117,24 +2575,23 @@ export default function HomePage() {
   // CM-Grid / GPR WMS
   const addCmGridLayer = (city, phase) => {
     removeLayer(cmGridRef);
-    const entry = CM_GRID_WMS[city]?.[phase];
+    const entry = resolveCmGridEntry(CM_GRID_WMS[city]?.[phase]);
     if (!entry) return;
 
-    const baseUrl =
-      entry.ws === "Phase_2" ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE;
     const layer = new TileLayer({
       title: `${city.toUpperCase()} ${phase}`,
       opacity: 0, // graceful fade-in
       zIndex: 600,
       source: new TileWMS({
-        url: `${baseUrl}/${entry.ws}/wms`,
+        url: `${entry.baseUrl}/${entry.workspace}/wms`,
         params: {
-          LAYERS: `${entry.ws}:${entry.layer}`,
+          LAYERS: entry.layerName,
           FORMAT: "image/png",
           VERSION: "1.3.0",
           TRANSPARENT: true,
           TILED: true,
           FORMAT_OPTIONS: "antiAlias:false",
+          ...(entry.style ? { STYLES: entry.style } : {}),
         },
         serverType: "geoserver",
         crossOrigin: "anonymous",
@@ -2172,8 +2629,19 @@ export default function HomePage() {
 
   // Shared logic for both dropdown select and map click
   const handleCitySelect = async (city) => {
+    // A city-scoped login can never switch to another city or back to the
+    // state view, regardless of which UI path tried to trigger it.
+    if (isCityScopedUser && city !== loggedInCity) return;
     setSelectedCity(city);
     setShowCityOverlays(isMobileView ? false : true);
+    updateBaseLayerBoundary(city);
+
+    // Once a specific city is chosen, the whole-state outline (upDistrict)
+    // is redundant with that city's own boundary - showing both looked like
+    // two competing/duplicate boundaries in the legend. Hide it while a
+    // city is selected, restore it on "back to state" (city === "").
+    setLayerVisibility((prev) => ({ ...prev, upDistrict: !city }));
+    mapRef.current?.upDistrictLayer?.setVisible(!city);
 
     if (city) localStorage.setItem("selectedCity", city);
     else localStorage.removeItem("selectedCity");
@@ -2211,9 +2679,32 @@ export default function HomePage() {
     addAbove10mLayer(city);
   };
 
-  const handlePhaseChange = (e) => {
-    const phase = e.target.value; // "", Phase1, Phase2, GPR
+  const showCmGridUnavailableNotice = useCallback((option) => {
+    const cityName = getCityDisplayName(selectedCity);
+    const phaseName = option?.unavailableLabel || option?.label || "This data";
+    setCmGridNotice({
+      feature: "CM-Grid data",
+      message: `${phaseName} data is not available for ${cityName}. You can continue using the available CM-Grid phases or other map tools.`,
+      noticeId: `${selectedCity}|${option?.value || "missing"}|${Date.now()}`,
+    });
+  }, [getCityDisplayName, selectedCity]);
+
+  useEffect(() => {
+    if (!cmGridNotice) return undefined;
+    const timer = setTimeout(() => setCmGridNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [cmGridNotice]);
+
+  const handlePhaseChange = (phase, option) => {
+    if (option && option.available === false) {
+      showCmGridUnavailableNotice(option);
+      setPhaseMenuOpen(false);
+      return;
+    }
+
     setSelectedPhase(phase);
+    setCmGridNotice(null);
+    setPhaseMenuOpen(false);
     removeLayer(cmGridRef);
 
     if (phase) {
@@ -2282,7 +2773,7 @@ export default function HomePage() {
       } else if (BOUNDARY_WFS[selectedCity]) {
         arr.push({
           layerName: `manual_${selectedCity}_boundary`,
-          label: `${selectedCity.charAt(0).toUpperCase() + selectedCity.slice(1)} Nagar Nigam Boundary`,
+          label: `${selectedCity.charAt(0).toUpperCase() + selectedCity.slice(1)} Boundary`,
           isManual: true,
           items: [
             {
@@ -2307,20 +2798,20 @@ export default function HomePage() {
     }
     if (layerVisibility.cmGrid && selectedPhase) {
       if (selectedPhase === "GPR" && CM_GRID_WMS[selectedCity]?.GPR) {
-        const entry = CM_GRID_WMS[selectedCity].GPR;
+        const entry = resolveCmGridEntry(CM_GRID_WMS[selectedCity].GPR);
         arr.push({
-          layerName: `${entry.ws}:${entry.layer}`,
+          layerName: entry.layerName,
           label: "GPR Priority",
-          baseUrl:
-            entry.ws === "Phase_2" ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE,
+          baseUrl: entry.baseUrl,
+          style: entry.style,
         });
       } else if (CM_GRID_WMS[selectedCity]?.[selectedPhase]) {
-        const entry = CM_GRID_WMS[selectedCity][selectedPhase];
+        const entry = resolveCmGridEntry(CM_GRID_WMS[selectedCity][selectedPhase]);
         arr.push({
-          layerName: `${entry.ws}:${entry.layer}`,
+          layerName: entry.layerName,
           label: `${selectedPhase} Progress`,
-          baseUrl:
-            entry.ws === "Phase_2" ? PHASE2_GEOSERVER_BASE : GEOSERVER_BASE,
+          baseUrl: entry.baseUrl,
+          style: entry.style,
         });
       }
     }
@@ -2342,19 +2833,25 @@ export default function HomePage() {
         </div>
 
         <div className="sidebar-item">
-          <select
-            id="nagarNigamSelect"
-            className="select-field"
-            value={selectedCity}
-            onChange={handleCityChange}
-          >
-            <option value="">Select Nagar Nigam</option>
-            {Object.keys(CITY_CENTER).map((city) => (
-              <option key={city} value={city}>
-                {city.charAt(0).toUpperCase() + city.slice(1)}
-              </option>
-            ))}
-          </select>
+          {isCityScopedUser ? (
+            <div className="select-field select-field--locked" aria-disabled="true">
+              {loggedInCity.charAt(0).toUpperCase() + loggedInCity.slice(1)}
+            </div>
+          ) : (
+            <select
+              id="nagarNigamSelect"
+              className="select-field"
+              value={selectedCity}
+              onChange={handleCityChange}
+            >
+              <option value="">Select Nagar Nigam</option>
+              {Object.keys(CITY_CENTER).map((city) => (
+                <option key={city} value={city}>
+                  {city.charAt(0).toUpperCase() + city.slice(1)}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         <div className="separator" />
@@ -2434,20 +2931,54 @@ export default function HomePage() {
                   Dashboard
                 </button>
 
-                <select
-                  id="roadSelector"
-                  className="select-field select-year"
-                  value={selectedPhase}
-                  onChange={handlePhaseChange}
+                <div
+                  className="phase-menu"
+                  ref={phaseMenuRef}
                 >
-                  <option value="">CM-Grid Roads</option>
-                  <option value="Phase1">Phase 1</option>
-                  <option value="Phase2">Phase 2</option>
+                  <button
+                    type="button"
+                    id="roadSelector"
+                    className="phase-menu__button"
+                    onClick={() => setPhaseMenuOpen((open) => !open)}
+                    aria-haspopup="listbox"
+                    aria-expanded={phaseMenuOpen}
+                  >
+                    <span>{selectedPhaseLabel}</span>
+                    <i className="fas fa-chevron-down" aria-hidden="true" />
+                  </button>
 
-                  {selectedCity === "lucknow" && (
-                    <option value="GPR">GPR Layer</option>
+                  {phaseMenuOpen && (
+                    <div className="phase-menu__list" role="listbox">
+                      {phaseOptions.map((option) => {
+                        const isSelected = option.value === selectedPhase;
+                        const isDisabled = option.available === false;
+                        return (
+                          <button
+                            key={option.value || "cm-grid-default"}
+                            type="button"
+                            className={[
+                              "phase-menu__option",
+                              option.kind === "header" ? "phase-menu__option--header" : "",
+                              isSelected ? "phase-menu__option--selected" : "",
+                              isDisabled ? "phase-menu__option--disabled" : "",
+                            ].filter(Boolean).join(" ")}
+                            role="option"
+                            aria-selected={isSelected}
+                            aria-disabled={isDisabled}
+                            onClick={() => handlePhaseChange(option.value, option)}
+                          >
+                            <span>{option.label}</span>
+                            {isDisabled && (
+                              <span className="phase-menu__option-note">
+                                Not available
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
-                </select>
+                </div>
               </div>
 
               {loggedInRole === "admin" && (
@@ -2473,12 +3004,56 @@ export default function HomePage() {
           .trim()}
       />
 
-      {/* Back to State button */}
-      {selectedCity && (
+      {cmGridNotice && (
+        <div className="feature-progress-notice" role="status" aria-live="polite">
+          <div className="feature-progress-notice__content">
+            <div className="feature-progress-notice__title">
+              {cmGridNotice.feature}
+            </div>
+            <div className="feature-progress-notice__message">
+              {cmGridNotice.message}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="feature-progress-notice__close"
+            onClick={() => setCmGridNotice(null)}
+            aria-label="Close message"
+          >
+            x
+          </button>
+        </div>
+      )}
+
+      {basemapNotice && (
+        <div className="feature-progress-notice" role="status" aria-live="polite">
+          <div className="feature-progress-notice__content">
+            <div className="feature-progress-notice__title">
+              {basemapNotice.displayName} basemap unavailable
+            </div>
+            <div className="feature-progress-notice__message">
+              {basemapNotice.message}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="feature-progress-notice__close"
+            onClick={() => setBasemapNotice(null)}
+            aria-label="Close message"
+          >
+            x
+          </button>
+        </div>
+      )}
+
+      {/* Back to State button - never shown for a city-scoped login */}
+      {selectedCity && !isCityScopedUser && (
         <button
           className={styles["map-reset-btn"] || "map-reset-btn"}
           onClick={() => {
             setSelectedCity("");
+            setLayerVisibility((prev) => ({ ...prev, upDistrict: true }));
+            mapRef.current?.upDistrictLayer?.setVisible(true);
             localStorage.removeItem("selectedCity");
             setCards(cityCardData.default);
             if (mapRef.current?.instance) {
@@ -2662,13 +3237,6 @@ export default function HomePage() {
                     key: "upBoundary",
                     label: "UP Nagar Nigam Boundary",
                     alwaysShow: true,
-                  },
-                  {
-                    key: "cityBoundary",
-                    label: `${selectedCity ? selectedCity.charAt(0).toUpperCase() + selectedCity.slice(1) + " Boundary" : ""}`,
-                    alwaysShow: false,
-                    show: !!selectedCity,
-                    disabled: !mapRef.current?.boundaryLayer,
                   },
                   {
                     key: "above10m",
