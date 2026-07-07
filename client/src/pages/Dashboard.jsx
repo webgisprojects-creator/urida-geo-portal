@@ -2150,7 +2150,7 @@ const DashboardPage = () => {
           alert("No data to export. Please adjust your filter and try again.");
           return;
         }
-        exportToExcel(rows, city, { title: tableDataset.title || "table_data" });
+        await exportToExcel(rows, city, { title: tableDataset.title || "table_data" });
 
       } else if (action === "pdf") {
         let rows = [];

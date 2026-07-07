@@ -6,7 +6,7 @@
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import * as XLSX from "xlsx";
+import writeXlsxFile from "write-excel-file/browser";
 import { saveAs } from "file-saver";
 
 // ─── Clean export columns (no gid, no system fields) ────────────────────────
@@ -632,7 +632,7 @@ export const exportToPDF = async ({
  * @param {object[]} rows  — data.data array from API
  * @param {string}   city  — city name
  */
-export const exportToExcel = (rows, city, opts = {}) => {
+export const exportToExcel = async (rows, city, opts = {}) => {
   const toLabel = (key) =>
     String(key || "")
       .replace(/_/g, " ")
@@ -661,36 +661,42 @@ export const exportToExcel = (rows, city, opts = {}) => {
         return Array.from(keys).map((k) => ({ label: toLabel(k), key: k }));
       })());
 
-  const wsData = [
-    columns.map((c) => c.label),
-    ...inputRows.map((row) => columns.map((c) => {
-      const val = row?.[c.key];
-      if (val === null || val === undefined) return "";
-      const asNum = Number(val);
-      return Number.isFinite(asNum) && String(val).trim() !== "" ? asNum : val;
-    })),
-  ];
+  const isNumericExportColumn = (key) => {
+    const values = inputRows
+      .slice(0, 200)
+      .map((row) => row?.[key])
+      .filter((value) => value !== null && value !== undefined && String(value).trim() !== "");
+    return values.length > 0 && values.every((value) => Number.isFinite(Number(value)));
+  };
 
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-
-  // Auto-column widths
-  const colWidths = columns.map((col) => {
-    const maxLen = Math.max(
-      String(col.label || "").length,
-      ...inputRows.slice(0, 200).map((r) => String(r?.[col.key] ?? "").length)
-    );
-    return { wch: Math.min(maxLen + 2, 40) };
+  const schema = columns.map((col) => {
+    const isNumeric = isNumericExportColumn(col.key);
+    return {
+      column: col.label,
+      type: isNumeric ? Number : String,
+      value: (row) => {
+        const val = row?.[col.key];
+        if (val === null || val === undefined) return isNumeric ? undefined : "";
+        const asNum = Number(val);
+        if (isNumeric && Number.isFinite(asNum) && String(val).trim() !== "") return asNum;
+        return String(val);
+      },
+      width: Math.min(
+        Math.max(
+          String(col.label || "").length + 2,
+          ...inputRows.slice(0, 200).map((row) => String(row?.[col.key] ?? "").length + 2)
+        ),
+        40
+      ),
+    };
   });
-  ws["!cols"] = colWidths;
-
-  // Style header row (freeze header)
-  ws["!freeze"] = { xSplit: 0, ySplit: 1 };
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, opts?.sheetName || (hasRoadColumns ? "Road Data" : "Table Data"));
 
   const dateStr = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(wb, `${safeTitle}_${String(city).toLowerCase()}_${dateStr}.xlsx`);
+  await writeXlsxFile(inputRows, {
+    schema,
+    fileName: `${safeTitle}_${String(city).toLowerCase()}_${dateStr}.xlsx`,
+    sheet: opts?.sheetName || (hasRoadColumns ? "Road Data" : "Table Data"),
+  });
 };
 
 // ─── Convert GeoJSON geometry to KML coords string ────────────────────────────

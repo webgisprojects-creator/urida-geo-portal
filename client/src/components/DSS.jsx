@@ -647,7 +647,7 @@ const DSS = () => {
     }
 
     if (action === "excel") {
-      exportToExcel(rows, city, { title: tableTitle || "dss_table" });
+      await exportToExcel(rows, city, { title: tableTitle || "dss_table" });
       return;
     }
 
