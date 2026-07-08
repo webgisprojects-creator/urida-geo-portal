@@ -12,6 +12,6 @@ test("renders login page title", async () => {
   });
   render(<App />);
   expect(
-    await screen.findByText(/urban road directory portal/i)
+    await screen.findByText(/URBAN GEO-PORTAL/i)
   ).toBeInTheDocument();
 });

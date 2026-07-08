@@ -562,6 +562,11 @@ const DashboardPage = () => {
   const [selectedRoadId, setSelectedRoadId] = useState(null);
   const [selectedRoadIds, setSelectedRoadIds] = useState([]);
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  // Adjacent-but-not-yet-selected roads from fetchAndApplyMultiRoadCandidates
+  // — rendered by MapContainer at a middle dimming tier (dimmed background,
+  // but distinguishable from fully-irrelevant roads) so a field worker can
+  // see what's pickable next, not just what's already selected. //chainage
+  const [multiSelectCandidateRoadIds, setMultiSelectCandidateRoadIds] = useState([]);
 
   const normalizeLayerName = (value) => String(value || "").replace(/\s*:\s*/g, ":").trim();
 
@@ -623,6 +628,10 @@ const DashboardPage = () => {
   const [isDownloading, setIsDownloading] = useState(false); // ⭐ Download in progress
   const [activeFilterColumn, setActiveFilterColumn] = useState(null);
   const [filterPosition, setFilterPosition] = useState(null);
+  // Only one bottom table (road table vs. chainage patch table) may be
+  // visible at a time — set true while the patch table is open so the road
+  // table's render condition below can hide itself. //chainage
+  const [patchTableActive, setPatchTableActive] = useState(false); //chainage
   const prevTableStateRef = useRef(null);
   const lastStableStateRef = useRef(null);
   const mapFilterActiveRef = useRef(false);
@@ -779,7 +788,16 @@ const DashboardPage = () => {
       fieldTaskDefaultFilter &&
       finalFilter === fieldTaskDefaultFilter &&
       lastFilterSourceRef.current === null;
-    if (finalFilter !== roadFilter && lastFilterSourceRef.current !== "map" && !isUntouchedFieldTaskDefault) {
+    if (
+      finalFilter !== roadFilter &&
+      lastFilterSourceRef.current !== "map" &&
+      // "table-candidates" already set its own selection-only zoomFilter
+      // (see fetchAndApplyMultiRoadCandidates) — this generic sync would
+      // otherwise immediately overwrite it with the full candidate-pool
+      // filter, reintroducing the zoom-out-to-fit-everything bug.
+      lastFilterSourceRef.current !== "table-candidates" &&
+      !isUntouchedFieldTaskDefault
+    ) {
       setZoomFilter(finalFilter);
     }
   }, [baseFilter, columnFilters, queryVersion, fieldTaskDefaultFilter]); // Removed roadFilter from dependency to avoid loop
@@ -1406,6 +1424,21 @@ const DashboardPage = () => {
   // expand road-by-road along the connected chain instead of staying fixed
   // to the first road's own neighbors.
   const fetchAndApplyMultiRoadCandidates = async (selectedIds) => {
+    // Selection is capped at 2 roads (see handleRowClick) — once both slots
+    // are filled there's no third road to connect to, so the candidate
+    // pool (and the extra WMS/table load it costs) is no longer needed.
+    // Narrow everything down to exactly the 2 selected roads instead —
+    // this is the actual point of the cap: less data in flight, not just
+    // a smaller visible selection.
+    if (selectedIds.length >= 2) {
+      lastFilterSourceRef.current = "table-candidates";
+      const onlySelected = buildSelectionFilter(selectedIds);
+      setBaseFilter(onlySelected);
+      setZoomFilter(onlySelected);
+      setMultiSelectCandidateRoadIds([]);
+      setQueryVersion((v) => v + 1);
+      return;
+    }
     const wardNums = (fieldTaskWardList || []).map(Number).filter(Number.isFinite);
     const wardsParam = wardNums.length ? `&wards=${wardNums.join(",")}` : "";
     try {
@@ -1420,9 +1453,18 @@ const DashboardPage = () => {
       results.forEach((list) => {
         (Array.isArray(list) ? list : []).forEach((r) => candidateIds.add(String(r.road_id)));
       });
-      const filter = buildSelectionFilter([...candidateIds]);
-      lastFilterSourceRef.current = "table";
-      setBaseFilter(filter);
+      // "table-candidates" (not "table") so the roadFilter/zoomFilter
+      // combinator effect below skips its own auto-zoom sync — the table's
+      // filter includes every adjacent candidate so they're pickable, but
+      // the map should only ever fit the roads actually selected so far,
+      // not the whole candidate pool (that was the map "zooming out" bug).
+      lastFilterSourceRef.current = "table-candidates";
+      setBaseFilter(buildSelectionFilter([...candidateIds]));
+      setZoomFilter(buildSelectionFilter(selectedIds));
+      const selectedIdSet = new Set(selectedIds.map(String));
+      setMultiSelectCandidateRoadIds(
+        [...candidateIds].filter((id) => !selectedIdSet.has(id))
+      );
       setQueryVersion((v) => v + 1);
     } catch {
       // Leave the table on whatever filter it already had — worst case the
@@ -1440,7 +1482,21 @@ const DashboardPage = () => {
       if (!rowId) return;
       setSelectedRoadIds((prev) => {
         const idStr = String(rowId);
-        const next = prev.includes(idStr)
+        const alreadySelected = prev.includes(idStr);
+        // Capped at 2 roads (a patch spanning more than one intersection
+        // isn't supported yet) — block a 3rd pick with an explanation
+        // rather than silently accepting it or letting the selection grow
+        // unbounded. Deselecting either road frees the slot back up.
+        if (!alreadySelected && isFieldTaskMode && prev.length >= 2) {
+          mapRef.current?.showFeatureNotice?.({
+            feature: "Chainage",
+            message: "You can select at most 2 connected roads for a patch. Deselect one first to pick a different road.",
+            dedupeKey: `multi-road-cap|${Date.now()}`,
+            autoDismissMs: 4000,
+          });
+          return prev;
+        }
+        const next = alreadySelected
           ? prev.filter((id) => id !== idStr)
           : [...prev, idStr];
         if (isFieldTaskMode && next.length) {
@@ -1523,8 +1579,10 @@ const DashboardPage = () => {
   // above, just triggered from the patch table's own open/close instead. //chainage
   const handlePatchTableOpen = () => {
     prevTableStateRef.current = capturePrevState();
+    setPatchTableActive(true);
   }; //chainage
   const handlePatchTableClose = () => {
+    setPatchTableActive(false);
     restorePrevTableState();
   }; //chainage
 
@@ -1584,13 +1642,14 @@ const DashboardPage = () => {
       // Drop back to the normal ward-scoped view (target ward + neighbors)
       // instead of the generic "no filter"/"INCLUDE" reset, which would
       // otherwise lose the field-task scope entirely.
+      mapRef.current?.closeChainagePanel?.();
       setSelectedRoadIds([]);
+      setMultiSelectCandidateRoadIds([]);
       setBaseFilter(fieldTaskDefaultFilter || "");
+      setColumnFilters({});
       setQueryVersion((v) => v + 1);
-      if (isMultiSelectMode) {
-        setSelectedRoadId(null);
-        setSelectedRoad("");
-      }
+      setSelectedRoadId(null);
+      setSelectedRoad("");
       return;
     }
     if (
@@ -2200,6 +2259,27 @@ const DashboardPage = () => {
 
 
 
+  // Extracted so the reopen affordance below can use the exact inverse of
+  // the table's own render condition, instead of a second, driftable copy.
+  const showRoadTable =
+    !patchTableActive &&
+    shouldFetchTable &&
+    (tableDataset.kind === "specialized" ||
+      baseFilter ||
+      Object.keys(columnFilters || {}).length > 0 ||
+      tableRows.length > 0);
+
+  // Field-task/redirected sessions have no toolbar/menu route back to the
+  // road table once its own close button is used — on a phone that left
+  // the user stuck looking at a bare map with no way back. Restores the
+  // same ward-scoped default view clearMultiSelection already uses for
+  // "back to normal" in this mode.
+  const reopenRoadTable = () => {
+    setBaseFilter(fieldTaskDefaultFilter || "");
+    setShouldFetchTable(true);
+    setQueryVersion((v) => v + 1);
+  };
+
   return (
     <div
       className="dashboard-page"
@@ -2286,6 +2366,7 @@ const DashboardPage = () => {
           selectedRoadId={selectedRoadId} // Add this
           selectedRoadIds={selectedRoadIds} // ⭐ ADDED for multi-select highlights
           isMultiSelectMode={isMultiSelectMode} // ⭐ ADDED for multi-select highlights
+          multiSelectCandidateRoadIds={multiSelectCandidateRoadIds} //chainage
           tableFilterActive={Object.keys(columnFilters || {}).length > 0}
           isSidebarOpen={isSidebarOpen}
           tableHasRows={tableRows.length > 0}
@@ -2354,6 +2435,17 @@ const DashboardPage = () => {
           onClear={() => {
             console.log("Clearing road selection");
             setSelectedRoad("");
+            // If chainage is open because a road was selected, Clear must
+            // drop that selection too — otherwise the panel stays stranded
+            // open pointing at a road no longer reflected by the (now
+            // reset) filters/table. closeChainagePanel also nulls out
+            // selectedRoadId (via onFieldTaskRoadHighlight), so the
+            // explicit resets just below are belt-and-suspenders for the
+            // non-chainage-panel case (e.g. table row selection only).
+            mapRef.current?.closeChainagePanel?.();
+            setSelectedRoadId(null);
+            setSelectedRoadIds([]);
+            setMultiSelectCandidateRoadIds([]);
             // Field-task mode: "Clear" undoes a category/condition/etc.
             // drill-down, not the whole redirect scope — resetting to ""
             // dropped the ward filter entirely, which hid the road layer
@@ -2435,12 +2527,7 @@ const DashboardPage = () => {
       </div>
 
       {/* ⭐ NEW BOTTOM TABLE */}
-      {(shouldFetchTable && (
-        tableDataset.kind === "specialized" ||
-        baseFilter ||
-        Object.keys(columnFilters || {}).length > 0 ||
-        tableRows.length > 0
-      )) && (
+      {showRoadTable && (
         <div
           className={`bottom-table ${isTableMinimized ? "minimized" : ""} ${isFieldTaskMode ? "field-task-table" : ""}`}
         >
@@ -2455,12 +2542,15 @@ const DashboardPage = () => {
             }}
           >
             <div className="pagination-info" style={{ display: "flex", alignItems: "center", gap: "15px" }}>
-              <span>
+              {/* Hidden on narrow screens (see the 720px rule) — redundant
+                  with the "N Roads" badge right next to it, and the two
+                  together were wrapping onto two lines on a phone. */}
+              <span className="pagination-entries-text">
                 Showing {indexOfFirstRecord + 1} to{" "}
                 {Math.min(indexOfLastRecord, tableRows.length)} of{" "}
                 {tableRows.length} entries
               </span>
-              <div style={{
+              <div className="road-count-badge" style={{
                 background: "rgba(74, 144, 226, 0.1)",
                 padding: "4px 12px",
                 borderRadius: "12px",
@@ -2472,12 +2562,12 @@ const DashboardPage = () => {
                 gap: "10px"
               }}>
                 <span title="Total number of currently filtered roads">
-                  <i className="fas fa-road" style={{ marginRight: "4px", color: "#4a90e2" }}></i>
+                  <i className="fas fa-road road-count-badge__icon" style={{ marginRight: "4px", color: "#4a90e2" }}></i>
                   {(liveTableMetrics?.total_roads ?? globalTableMetrics.total_roads) || tableRows.length} Roads
                 </span>
                 <span style={{ color: "rgba(0,0,0,0.2)" }}>|</span>
                 <span title="Total length of currently filtered roads">
-                  <i className="fas fa-ruler-horizontal" style={{ marginRight: "4px", color: "#4a90e2" }}></i>
+                  <i className="fas fa-ruler-horizontal road-count-badge__icon" style={{ marginRight: "4px", color: "#4a90e2" }}></i>
                   {((liveTableMetrics?.total_length_km ?? globalTableMetrics.total_length_km) > 0
                     ? Number(liveTableMetrics?.total_length_km ?? globalTableMetrics.total_length_km).toFixed(2)
                     : tableRows.reduce((sum, r) => sum + (Number(r.length_km) || 0), 0).toFixed(2))} km
@@ -2548,21 +2638,25 @@ const DashboardPage = () => {
               <button
                 onClick={goToPreviousPage}
                 disabled={currentPage === 1}
-                className="pagination-btn"
+                className="pagination-btn pagination-btn--arrow"
+                title="Previous page"
+                aria-label="Previous page"
               >
-                Previous
+                <i className="fas fa-chevron-left" />
               </button>
 
-              <span className="page-numbers">
-                Page {currentPage} of {totalPages}
+              <span className="page-numbers" title={`Page ${currentPage} of ${totalPages}`}>
+                {currentPage}/{totalPages}
               </span>
 
               <button
                 onClick={goToNextPage}
                 disabled={currentPage === totalPages}
-                className="pagination-btn"
+                className="pagination-btn pagination-btn--arrow"
+                title="Next page"
+                aria-label="Next page"
               >
-                Next
+                <i className="fas fa-chevron-right" />
               </button>
             </div>
             {/* Close Button */}
@@ -2612,7 +2706,11 @@ const DashboardPage = () => {
               <button
                 className="table-close-btn"
                 onClick={() => {
-                  if (mode === "CHAINAGE") {
+                  // Field-task/redirected chainage sessions have no obvious
+                  // way to "switch off Chainage mode" — their whole session
+                  // is scoped to it — so only block the close here for the
+                  // general, manually-toggled-in-app chainage flow. //chainage
+                  if (mode === "CHAINAGE" && !isFieldTaskMode) {
                     mapRef.current?.showFeatureNotice?.({
                       feature: "Chainage",
                       message: "Please switch off Chainage mode before closing this table.",
@@ -2772,6 +2870,19 @@ const DashboardPage = () => {
             </table>
           </div>
         </div>
+      )}
+
+      {/* Field-task sessions have no other route back to the road table
+          once it's closed — without this, a phone user is stuck looking at
+          a bare map with no way to get the road list back. */}
+      {isFieldTaskMode && !showRoadTable && !patchTableActive && (
+        <button
+          type="button"
+          className="reopen-road-table-btn"
+          onClick={reopenRoadTable}
+        >
+          <i className="fas fa-list" /> Show Roads
+        </button>
       )}
 
       {/* ⭐ FILTER DROPDOWN PORTAL (Fixed Position) */}

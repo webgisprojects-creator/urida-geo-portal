@@ -5,6 +5,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { pool } from '../config/db.js';
+import { fieldTaskUsernames } from '../utils/cityAccess.js';
 dotenv.config();
 
 // __dirname-relative, not process.cwd()-relative: the old
@@ -21,6 +22,17 @@ const cookieName = process.env.AUTH_COOKIE_NAME || 'auth_token';
 const tokenBlacklist = new Map();
 const idleTimeoutMs = Number(process.env.SESSION_IDLE_TIMEOUT_MS || 15 * 60 * 1000);
 const absoluteTimeoutMs = Number(process.env.SESSION_ABSOLUTE_TIMEOUT_MS || 30 * 60 * 1000);
+// Field-task/chainage accounts (client/src/App.js:38 already special-cases
+// this same account list to a 30-minute idle allowance for its own local
+// "you're about to be logged out" countdown) — the server-side idle check
+// below must honor the same 30 minutes, or the server silently invalidates
+// the session at the global 15-minute default well before the client's own
+// UI expects it to, logging a mid-task field worker out without warning.
+const fieldTaskIdleTimeoutMs = Number(process.env.FIELD_TASK_SESSION_IDLE_TIMEOUT_MS || 30 * 60 * 1000);
+const getIdleTimeoutMsForUser = (username) =>
+  fieldTaskUsernames().has(String(username || "").toLowerCase().trim())
+    ? fieldTaskIdleTimeoutMs
+    : idleTimeoutMs;
 let activeTokensReady = false;
 
 // verifyToken runs on *every* request, including tile/GWC/WFS traffic —
@@ -275,7 +287,7 @@ export const verifyToken = async (req, res, next) => {
       return res.status(401).json({ message: 'Unauthorized' });
     }
     const lastActivity = entry.last_activity_time ? new Date(entry.last_activity_time) : null;
-    if (!lastActivity || now.getTime() - lastActivity.getTime() > idleTimeoutMs) {
+    if (!lastActivity || now.getTime() - lastActivity.getTime() > getIdleTimeoutMsForUser(decoded?.username)) {
       await updateActiveTokenStatus(token, 'inactivated');
       return res.status(401).json({ message: 'Unauthorized' });
     }
@@ -336,7 +348,7 @@ export const tryVerifyToken = async (req, res, next) => {
       return next();
     }
     const lastActivity = entry.last_activity_time ? new Date(entry.last_activity_time) : null;
-    if (!lastActivity || now.getTime() - lastActivity.getTime() > idleTimeoutMs) {
+    if (!lastActivity || now.getTime() - lastActivity.getTime() > getIdleTimeoutMsForUser(decoded?.username)) {
       await updateActiveTokenStatus(token, 'inactivated');
       return next();
     }

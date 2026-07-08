@@ -7,6 +7,7 @@ import React, {
   useMemo,
 } from "react";
 import styles from "./HomePage.Module.css";
+import Footer from "../../components/Footer";
 import "ol/ol.css";
 
 import Map from "ol/Map";
@@ -3274,9 +3275,7 @@ export default function HomePage() {
         </div>
       </div>
 
-      <footer className="footer">
-        © 2024 UP Remote Sensing Applications Centre. All rights reserved.
-      </footer>
+      <Footer />
     </>
   );
 }

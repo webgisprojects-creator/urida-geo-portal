@@ -1,7 +1,7 @@
 /* Header bar with navigation, hamburger menu, download menu, and profile actions. */
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import rsacLogo from "../assets/NN_Logo/images.jpg";
+import upLogo from "../assets/NN_Logo/download.png";
 import hamburgerIcon from "../assets/Amenities_Icons/hamburger.icon.png";
 import { cityConfig } from "../assets/configs/cityConfig";
 import "../assets/styles/Dashboard.css";
@@ -104,37 +104,43 @@ const Header = ({
 
   return (
     <header className="lucknow-header">
-      {!hideBack && (
-      <div
-        className="back-button"
-        onClick={() => navigate(backTarget || "/home")}
-        title="Back"
-        style={{
-          cursor: "pointer",
-          marginRight: "15px",
-          color: "white",
-          fontSize: "18px",
-          display: "flex",
-          alignItems: "center",
-          zIndex: 2000
-        }}
-      >
-        <i className="fa-solid fa-arrow-left"></i>
-      </div>
-      )}
+      {/* Fixed-width left/right zones (see .lucknow-header__side CSS) so the
+          center title stays visually centered in the viewport even when
+          back/hamburger are hidden (field-task mode) — without this, the
+          title only centered in the leftover space next to the profile
+          icon, reading as off-center toward the left. */}
+      <div className="lucknow-header__side lucknow-header__side--left">
+        {!hideBack && (
+        <div
+          className="back-button"
+          onClick={() => navigate(backTarget || "/home")}
+          title="Back"
+          style={{
+            cursor: "pointer",
+            color: "white",
+            fontSize: "18px",
+            display: "flex",
+            alignItems: "center",
+            zIndex: 2000
+          }}
+        >
+          <i className="fa-solid fa-arrow-left"></i>
+        </div>
+        )}
 
-      {!hideHamburger && (
-      <div className="menu-toggle" onClick={toggleSidebar}>
-        <div className={`bar ${isSidebarOpen ? "open" : ""}`}></div>
+        {!hideHamburger && (
+        <div className="menu-toggle" onClick={toggleSidebar}>
+          <div className={`bar ${isSidebarOpen ? "open" : ""}`}></div>
+        </div>
+        )}
       </div>
-      )}
 
       <div className="lucknow-header__center">
         <img src={logo} alt="City Logo" className="lucknow-header__logo" />
         <h2 className="lucknow-header__title">{cityTitle}</h2>
         <img
-          src={rsacLogo}
-          alt="City Logo Right"
+          src={upLogo}
+          alt="Uttar Pradesh Government"
           className="lucknow-header__logo"
         />
       </div>
