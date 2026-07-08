@@ -24,9 +24,14 @@ body {
 
 /* ================= HEADER ================= */
 .lucknow-header {
-  display: flex;
+  /* 3 explicit columns instead of flex — left/right are both 1fr, so they
+     stay equal width (and the center title stays truly centered on the
+     viewport) whether or not back/hamburger are actually rendered on the
+     left, rather than the title only centering in whatever space happens
+     to be left over next to the profile icon. */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: center;
   height: 45px;
   width: 100%;
   /* background-image: linear-gradient(#6190E8, #a7bfeb); /* Venice Blue */
@@ -230,11 +235,31 @@ body {
   cursor: pointer;
 }
 
+.lucknow-header__side {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  min-width: 0;
+}
+
+.lucknow-header__side--left {
+  justify-self: start;
+}
+
 .lucknow-header__center {
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-grow: 2;
+  justify-self: center;
+  min-width: 0;
+}
+
+/* Third grid column (auto-placed by DOM order) — the actions block's own
+   inline styles (Header.jsx) don't set this, so without it the item would
+   default to stretching across the column instead of hugging the right
+   edge like the title-centering fix above depends on. */
+.lucknow-header__actions {
+  justify-self: end;
 }
 
 .lucknow-header__logo {
@@ -272,7 +297,16 @@ body {
   transition: transform 0.3s ease-in-out;
   box-shadow: 3px 0 8px rgba(0, 0, 0, 0.35);
   overflow-y: auto;
-  z-index: 2000;
+  /* Was 2000 — .modern-panel (the Road Network/CUS-class cascade cards,
+     z-index 99999) is positioned at left:62px, squarely inside this
+     drawer's 0-300px strip. With the old value, opening the hamburger
+     drawer while any cascade card was still up rendered the drawer BEHIND
+     it — a full-height nav drawer silently unclickable under a leftover
+     popup. A drawer is expected to sit above ordinary page content when
+     open; kept below .bottom-table (100001) and .submit-confirm-overlay
+     (100010), the two elements explicitly documented as needing to stay
+     topmost, so this doesn't create the reverse problem for them. */
+  z-index: 100000;
   padding: 12px 0 16px;
 }
 
@@ -1132,6 +1166,7 @@ right-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 0 20px;
   font-size: 13px;
   box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.25);
@@ -1139,23 +1174,83 @@ right-btn {
   text-align: center;
 }
 
-.dashboard-footer .footer-left span {
+.dashboard-footer .footer-left,
+.dashboard-footer .footer-middle,
+.dashboard-footer .footer-right {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.dashboard-footer .footer-left {
+  justify-content: flex-start;
+}
+
+.dashboard-footer .footer-middle {
+  justify-content: center;
+  gap: 6px;
+}
+
+.dashboard-footer .footer-right {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.dashboard-footer .footer-left span,
+.dashboard-footer .footer-middle span,
+.dashboard-footer .footer-right span {
   color: #000000;
   font-weight: 500;
 }
 
-.dashboard-footer .footer-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 500;
-  color: #000000;
+.dashboard-footer .footer-right span {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dashboard-footer .footer-logo {
   height: 20px;
   width: auto;
   filter: brightness(1.1);
+}
+
+/* Persistent "get the road table back" handle for field-task sessions —
+   deliberately fixed/always-on-top (never conditionally hidden by table
+   state) since its entire purpose is being reachable when everything else
+   has been closed. Sits just above the footer, never overlapping it. */
+.reopen-road-table-btn {
+  position: fixed;
+  left: 50%;
+  bottom: 33px;
+  transform: translateX(-50%);
+  z-index: 2600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ff8800, #ff6a00);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(255, 106, 0, 0.4);
+  cursor: pointer;
+}
+
+.reopen-road-table-btn:active {
+  transform: translateX(-50%) scale(0.97);
+}
+
+@media (max-width: 720px) {
+  .reopen-road-table-btn {
+    bottom: 28px;
+    padding: 9px 16px;
+    font-size: 12px;
+  }
 }
 
 .map-container-wrapper {
@@ -2324,17 +2419,11 @@ right-btn {
   .lucknow-header {
     height: 48px;
     padding: 6px 8px;
-    justify-content: space-between;
   }
 
   .lucknow-header__search {
     position: static;
     margin-left: auto;
-  }
-
-  .lucknow-header__center {
-    flex: 1;
-    min-width: 0;
   }
 
   .lucknow-header__logo {
@@ -2463,12 +2552,19 @@ right-btn {
     gap: 6px;
   }
 
-  .dashboard-footer .footer-right {
+  .dashboard-footer .footer-left span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .dashboard-footer .footer-middle {
     gap: 4px;
   }
 
+  .dashboard-footer .footer-middle span,
   .dashboard-footer .footer-right span {
-    max-width: 55vw;
+    max-width: 30vw;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2499,37 +2595,115 @@ right-btn {
     gap: 4px;
   }
 
+  /* Row 1: page-traversal arrows (left) + the Roads/km badge (right), both
+     compact enough to actually share one row on a phone. Row 2 (forced by
+     .table-controls's flex-basis:100% below): Back/Multi/Apply/Clear/▼/✕.
+     flex-wrap (not flex-direction:column) is what makes "two specific
+     children share a row, third forced to its own" possible without a
+     JSX restructure — .table-controls's 100% basis is what forces the wrap. */
   .pagination-controls {
-    flex-direction: column;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
-    padding: 8px;
+    justify-content: space-between;
+    gap: 4px;
+    /* Was 8px all round — the header was eating a disproportionate slice
+       of a phone's vertical space before any actual table data showed. */
+    padding: 5px 8px;
   }
 
   .pagination-info {
     margin-left: 0;
-    text-align: center;
+    order: 2;
+  }
+
+  /* Redundant with the "N Roads | X.XX km" badge right next to it — on a
+     phone the two together wrapped onto two separate lines, which read as
+     broken/duplicated rather than as two pieces of information. Keeping
+     the badge (road count + length, genuinely useful in the field) and
+     dropping the generic pagination phrasing. */
+  .pagination-entries-text {
+    display: none;
+  }
+
+  /* The count badge — small enough that it and the page-nav arrows
+     reliably share one line instead of each wrapping to its own row.
+     Icons dropped entirely on mobile (they alone cost ~40px for two, more
+     than the compact text itself). */
+  .road-count-badge {
+    padding: 3px 7px !important;
+    font-size: 10px !important;
+    gap: 5px !important;
+  }
+
+  .road-count-badge__icon {
+    display: none;
   }
 
   .pagination-buttons {
-    width: 100%;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 6px;
+    order: 1;
+    width: auto;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    gap: 3px;
     margin-right: 0;
+  }
+
+  .page-numbers {
+    font-size: 11px;
+    white-space: nowrap;
+    padding: 0 2px;
   }
 
   /* .table-controls (Back/Multi/Apply/Clear) is absolutely positioned at
      top-right for desktop, which overlaps the "Showing X to Y of Z" info
-     row once .pagination-controls switches to column layout above — there
+     row once .pagination-controls switches to a wrapping row above — there
      just isn't enough horizontal room on a phone for both to coexist at
-     fixed corners. Drop it into the normal column flow as its own row
-     instead. */
+     fixed corners. flex-basis:100% forces it onto its own second row of
+     the wrapping flex container instead of a JSX restructure. */
   .table-controls {
+    order: 3;
+    flex-basis: 100%;
     position: static;
     width: 100%;
     justify-content: center;
     flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .table-back-btn,
+  .table-multi-btn,
+  .table-apply-btn,
+  .table-clear-btn,
+  .table-maximize-btn,
+  .table-close-btn {
+    padding: 4px 8px;
+    font-size: 11px;
+    min-height: 28px;
+  }
+
+  .pagination-btn--arrow {
+    padding: 4px 8px !important;
+    font-size: 12px;
+    min-width: 26px;
+  }
+
+  /* OpenLayers' default zoom control (defaultControls({zoom:true}) in
+     MapContainer.jsx) ships unstyled at its own ~40px size — plenty big
+     enough to eat real screen space on a phone next to everything else
+     that also needs room. Shrunk but kept comfortably tappable. */
+  .ol-zoom {
+    top: 6px;
+    left: 6px;
+  }
+
+  .ol-zoom button {
+    width: 28px !important;
+    height: 28px !important;
+    font-size: 14px !important;
+    line-height: 28px !important;
   }
 }
 
@@ -2905,9 +3079,9 @@ right-btn {
 }
 
 .road-panel-subtitle {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.6px;
-  color: rgba(30, 43, 58, 0.75);
+  color: rgba(20, 30, 42, 0.88);
   text-transform: uppercase;
 }
 
@@ -2980,7 +3154,10 @@ right-btn {
 }
 
 .road-item span:first-child {
-  color: rgba(30, 43, 58, 0.7);
+  /* Was 0.7 opacity — too washed out against the light teal/blue/purple
+     gradient behind it to read cleanly on a phone outdoors. */
+  color: rgba(15, 23, 32, 0.88);
+  font-weight: 500;
 }
 
 /* BADGES */
