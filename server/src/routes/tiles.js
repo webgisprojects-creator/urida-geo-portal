@@ -151,7 +151,18 @@ const PER_MIRROR_TIMEOUT_MS = 5000;
 // disconnected (e.g. zoomed again before this tile arrived), instead of
 // the fetch running to completion for nobody. Same fix already confirmed
 // live for wfsCache.js's WFS fetches.
-function fetchViaHttp(url, timeoutMs, signal) {
+const MAX_REDIRECTS = 5;
+
+// Follows 3xx redirects (absolute or relative Location) up to MAX_REDIRECTS
+// hops. Confirmed live: a load-balancer nginx config change started force-
+// redirecting our own GeoServer's plain-HTTP URL to HTTPS, and every single
+// GeoServer-backed fetch (WFS boundary rings, GWC tiles — which every
+// boundary-masked basemap tile depends on) failed outright because this
+// client previously rejected on any non-2xx status, redirects included.
+// Following redirects here means a future LB/CDN redirect policy change
+// degrades gracefully (one extra round trip) instead of taking down every
+// basemap.
+function fetchViaHttp(url, timeoutMs, signal, redirectsLeft = MAX_REDIRECTS) {
   return new Promise((resolve, reject) => {
     const client = url.startsWith("https:") ? https : http;
     const req = client.get(
@@ -162,6 +173,16 @@ function fetchViaHttp(url, timeoutMs, signal) {
         timeout: timeoutMs,
       },
       (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          if (redirectsLeft <= 0) {
+            reject(new Error(`Too many redirects fetching ${url}`));
+            return;
+          }
+          const nextUrl = new URL(res.headers.location, url).toString();
+          fetchViaHttp(nextUrl, timeoutMs, signal, redirectsLeft - 1).then(resolve, reject);
+          return;
+        }
         if (res.statusCode < 200 || res.statusCode >= 300) {
           res.resume(); // drain so the socket can be reused/closed cleanly
           reject(new Error(`Upstream tile fetch failed: ${res.statusCode} ${url}`));
@@ -256,7 +277,19 @@ function trackAbortableClient(entry, req) {
     if (entry.refCount <= 0) entry.controller.abort();
   };
   req.on("close", decrementOnce);
-  entry.promise.finally(decrementOnce);
+  // `.finally()` returns a *new* promise that adopts entry.promise's
+  // rejection — since that returned promise is never awaited or attached
+  // to anything else, an upstream failure here was an unhandled rejection
+  // in Node's eyes even though entry.promise itself IS properly caught by
+  // its real awaiter in getRawTileBuffer/getGwcTileBuffer. This is what
+  // crash-looped the whole server (confirmed live: 56 PM2 restarts in 31
+  // minutes) the moment GeoServer calls started failing consistently (see
+  // the GEOSERVER_PROXY_TARGET http->https fix) — a burst of real failures
+  // is exactly the scenario that must never take the whole app down,
+  // online or off. The no-op .catch() only silences this orphaned promise;
+  // it does not swallow the error for the real caller, which awaits the
+  // original entry.promise separately.
+  entry.promise.finally(decrementOnce).catch(() => {});
 }
 
 // ---------------------------------------------------------------------
