@@ -20,11 +20,9 @@ import hotelIcon from "../assets/Amenities_Icons/hotel.png";
 import fuelIcon from "../assets/Amenities_Icons/fuel.png";
 import metroIcon from "../assets/Amenities_Icons/metro.webp";
 import defaultIcon from "../assets/Amenities_Icons/place.png";
+import { getGeoserverBase } from "../utils/geoserverBase";
 
-
-const GEOSERVER_BASE = window.location.port === "8060"
-    ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-    : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+const GEOSERVER_BASE = getGeoserverBase();
 
 ChartJS.register(
     CategoryScale,
@@ -230,7 +228,7 @@ const doughnutOptions = {
 
 
 
-function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FILTERS, onFilterChange, onClassificationChange, onChartClick, roadWmsSource, panelSide = "right" }) {
+function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters = DEFAULT_FILTERS, onFilterChange, onClassificationChange, onChartClick, roadWmsSource, panelSide = "right", tableOpen = false }) {
     const [activeFilter, setActiveFilter] = useState(null);
 
     const [metrics, setMetrics] = useState({ total_roads: "--", total_length_km: "--", });
@@ -521,18 +519,25 @@ const wardDropdownRef = useRef(null);//new
 
 
 
+    // Reset the WMS SLD back to default only when this panel is actually
+    // unmounted (a real Close) — not on every isOpen flip, since Minimize
+    // now keeps the component mounted (just visually hidden) specifically
+    // so filters/layers are preserved and restorable.
+    const roadWmsSourceRef = useRef(roadWmsSource);
+    roadWmsSourceRef.current = roadWmsSource;
+    const cityLayerRef = useRef(cityLayer);
+    cityLayerRef.current = cityLayer;
     useEffect(() => {
-        if (isOpen) return; // only run when panel CLOSES
-        if (!roadWmsSource) return;
-
-        // Reset SLD back to default
-        if (!cityLayer) return;
-        roadWmsSource.updateParams({
-            LAYERS: cityLayer,
-            _t: Date.now(),
-        });
-
-    }, [isOpen, roadWmsSource]);
+        return () => {
+            const source = roadWmsSourceRef.current;
+            const layer = cityLayerRef.current;
+            if (!source || !layer) return;
+            source.updateParams({
+                LAYERS: layer,
+                _t: Date.now(),
+            });
+        };
+    }, []);
 
 
 
@@ -960,13 +965,25 @@ const wardDropdownRef = useRef(null);//new
     return (
         <div
             ref={panelRef}
-            className={`summary-panel ${isOpen ? "open" : ""} ${panelSide === "left" ? "summary-panel-left" : ""} ${isChartsVisible ? "charts-active" : ""}`} style={panelPos ? { left: panelPos.x, top: panelPos.y, right: "auto", resize: "both", overflow: "hidden" } : { resize: "both", overflow: "hidden" }}
+            className={`summary-panel ${isOpen ? "open" : ""} ${panelSide === "left" ? "summary-panel-left" : ""} ${isChartsVisible ? "charts-active" : ""} ${tableOpen ? "table-open" : ""}`} style={panelPos ? { left: panelPos.x, top: panelPos.y, right: "auto", resize: "both", overflow: "hidden" } : { resize: "both", overflow: "hidden" }}
         >
 
 
             <div className="summary-header" onPointerDown={startDrag} style={{ touchAction: "none" }}>
                 <span>ROAD NET SUMMARY</span>
-                <button className="summary-close" onPointerDown={(e) => e.stopPropagation()} onClick={onClose}>×</button>
+                <div className="summary-header-actions">
+                    {onMinimize && (
+                        <button
+                            className="summary-minimize"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={onMinimize}
+                            title="Minimize (keeps filters and layers)"
+                        >
+                            —
+                        </button>
+                    )}
+                    <button className="summary-close" onPointerDown={(e) => e.stopPropagation()} onClick={onClose} title="Close (clears filters and layers)">×</button>
+                </div>
             </div>
 
             <div className="summary-filters-row" style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>

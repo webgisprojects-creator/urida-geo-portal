@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import "../assets/styles/Dashboard.css";
 import { cityConfig } from "../assets/configs/cityConfig.js";
+import { getGeoserverBase } from "../utils/geoserverBase";
 
 const ALLOWED_ATTRIBUTES = [
   "road_id", "zone_no", "zone_name", "ward_no", "ward_name",
@@ -68,9 +69,7 @@ const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
       return;
     }
 
-    const GEOSERVER_BASE = window.location.port === "8060"
-      ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-      : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+    const GEOSERVER_BASE = getGeoserverBase();
     const url = `${GEOSERVER_BASE}/wfs?service=WFS&version=1.1.0&request=DescribeFeatureType&typeName=${encodeURIComponent(
       selectedLayer
     )}`;
@@ -110,9 +109,7 @@ const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
     }
 
     setLoadingValues(true);
-    const GEOSERVER_BASE = window.location.port === "8060"
-      ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-      : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+    const GEOSERVER_BASE = getGeoserverBase();
 
     // WFS GetFeature to get all values for the selected property
     const url = `${GEOSERVER_BASE}/wfs?service=WFS&version=1.1.0&request=GetFeature&typeName=${encodeURIComponent(

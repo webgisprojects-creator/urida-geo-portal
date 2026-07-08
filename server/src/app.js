@@ -12,9 +12,14 @@ import authRoutes from './routes/authRoutes.js';
 // import chainageRoutes from './routes/chainage.js';
 import adminRoutes from './routes/adminRoutes.js';
 import roadNetworkRoutes from './roadNetwork.js';
-import { auditLogger, tryVerifyToken } from './middleware/authMiddleware.js';
+import { auditLogger, tryVerifyToken, verifyToken, verifyRole } from './middleware/authMiddleware.js';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import chainageRoutes from "./routes/chainage.js";//chainage
+import tileRoutes, { startTileCacheEvictionSchedule } from "./routes/tiles.js";
+import telemetryRoutes from "./routes/telemetry.js";
+import wfsCacheRoutes, { startWfsCacheEvictionSchedule } from "./routes/wfsCache.js";
+import { startCacheWarmer } from "./services/cacheWarmer.js";
+import { startMetricsSampler, getCurrentMetrics } from "./services/metricsSampler.js";
 
 // Use __dirname-relative path so this works regardless of which directory
 // the process is started from (project root, server/, or anywhere else).
@@ -148,6 +153,13 @@ app.use(helmet({
 }));
 app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=(), usb=(), fullscreen=(self)');
+  if (req.path.startsWith('/static/')) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    return next();
+  }
+  if (req.path.startsWith('/api/tiles/')) {
+    return next();
+  }
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.setHeader('Pragma', 'no-cache');
   next();
@@ -159,7 +171,36 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/road-networks', roadNetworkRoutes);
 app.use(chainageRoutes);//chainage
+app.use(tileRoutes);
+app.use(wfsCacheRoutes);
+app.use(telemetryRoutes);
 app.use('/api', cityRoutes);
+
+// Live "what's happening right now" snapshot (event-loop lag, memory,
+// concurrency-limiter queue depth) — admin-only, since this is operational
+// internals, not app data. Meant for watching during a load test rather
+// than only reading after the fact from logs/metrics.log.
+app.get('/api/internal/metrics', verifyToken, verifyRole('admin'), (req, res) => {
+  res.json(getCurrentMetrics());
+});
+
+// Under PM2 cluster mode (deploy/ecosystem.config.js), this module loads
+// once per worker process — running the cache warmer or the eviction
+// sweep in every worker would multiply the same disk-scan/GeoServer-warm
+// work by the worker count for zero benefit (they'd all warm/evict the
+// same shared disk cache). NODE_APP_INSTANCE is unset in plain `node
+// src/server.js` (local dev, no PM2) and "0" in the first cluster worker
+// — both cases should run these singleton tasks; workers 1+ skip them.
+// Per-worker observability (metrics sampler) is NOT gated here — event
+// loop lag/memory are genuinely per-process and each worker should report
+// its own.
+const isSingletonWorker = !process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === '0';
+if (isSingletonWorker) {
+  startTileCacheEvictionSchedule();
+  startWfsCacheEvictionSchedule();
+  startCacheWarmer();
+}
+startMetricsSampler();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

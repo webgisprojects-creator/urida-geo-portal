@@ -287,7 +287,9 @@ export const cityConfig = {
       bus_stop: "Amenities:Gorakhpur_Bus_Stop",
       graveyard: "Amenities:Gorakhpur_Graveyard",
       hospital: "Amenities:Gorakhpur_Hospital",
-      hotel: "Amenities:Gorakhpur_Hotel",
+      // GeoServer currently returns an XML exception for this published layer.
+      // Keep it out of the selectable UI until the server layer is repaired.
+      // hotel: "Amenities:Gorakhpur_Hotel",
       park: "Amenities:Gorakhpur_Park",
       police_station: "Amenities:Gorakhpur_Police_Station",
       stadium: "Amenities:Gorakhpur_Stadium",
@@ -321,7 +323,7 @@ export const cityConfig = {
       cus: { layer: "Road_Network:Jhansi_Road_Network_CUS" },
       material: { layer: "Road_Network:Jhansi_Road_Network_Material" },
       ownership: { layer: "Road_Network:Jhansi_Road_Network_Ownership" },
-      ward: { layer: "Road_Network:Jhansi_Road_Network_Ward" },
+      ward: { layer: "Road_Network:Jhansi_Road_Network" },
     },
 
     amenities: {
@@ -437,7 +439,9 @@ export const cityConfig = {
       metro: "Amenities:Lucknow_Metro",
       park: "Amenities:Lucknow_Park",
       petrol_pump: "Amenities:Lucknow_Petrol_Pump",
-      railway_station: "Amenities:Lucknow_Railway_Station",
+      // GeoServer currently returns an XML exception for this published layer.
+      // Keep it out of the selectable UI until the server layer is repaired.
+      // railway_station: "Amenities:Lucknow_Railway_Station",
       stadium: "Amenities:Lucknow_Stadium",
     },
 
@@ -629,7 +633,7 @@ export const cityConfig = {
       cus: { layer: "Road_Network:Saharanpur_Road_Network_CUS" },
       material: { layer: "Road_Network:Saharanpur_Road_Network_Material" },
       ownership: { layer: "Road_Network:Saharanpur_Road_Network_Ownership" },
-      ward: { layer: "Road_Network:Saharanpur_Road_Network_Ward" },
+      ward: { layer: "Road_Network:Saharanpur_Road_Network" },
     },
 
     amenities: {
@@ -703,7 +707,7 @@ export const cityConfig = {
     zoneLayer: "Ward_Boundary_New:Varanasi_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Varanasi_Ward_Boundary", // change layer
 
-    roadLayer: "Road_Network:Varanasi_Road_Netwrok",
+    roadLayer: "Road_Network:Varanasi_Road_Network",
 
     roadClassifications: {
       category: { layer: "Road_Network:Varanasi_Road_Network_Category" },

@@ -21,8 +21,7 @@ const LOCATE_LAYER_ID = "__nav_locate_me_layer__";
  *     - Places a blue dot + accuracy circle on the map (OL VectorLayer)
  *     - Dot pulses with a CSS animation overlay handled via OL postrender
  */
-const MapNavigation = ({ map }) => {
-    const [rotation, setRotation] = useState(0);
+const MapNavigation = ({ map, restrictedMode = false }) => {
     const [coordinates, setCoordinates] = useState({ lat: "0.0000", lng: "0.0000" });
     const [scaleProps, setScaleProps] = useState({ width: 100, text: "" });
     const [locating, setLocating] = useState(false);
@@ -36,11 +35,6 @@ const MapNavigation = ({ map }) => {
     useEffect(() => {
         if (!map) return;
         const view = map.getView();
-
-        // 1. Compass — live rotation tracking
-        const handleRotation = () => setRotation(view.getRotation() || 0);
-        view.on("change:rotation", handleRotation);
-        handleRotation();
 
         // 2. Lat/Long — pointer move
         const handlePointerMove = (e) => {
@@ -73,7 +67,6 @@ const MapNavigation = ({ map }) => {
         handleResolution();
 
         return () => {
-            view.un("change:rotation", handleRotation);
             map.un("pointermove", handlePointerMove);
             view.un("change:resolution", handleResolution);
         };
@@ -90,12 +83,6 @@ const MapNavigation = ({ map }) => {
     }, [map]);
 
     // ── Handlers ──────────────────────────────────────────────────────────────
-
-    /** Reset map rotation to North (0 rad). */
-    const handleResetNorth = () => {
-        if (!map) return;
-        map.getView().animate({ rotation: 0, duration: 500 });
-    };
 
     /**
      * Locate Me — uses Geolocation API, then:
@@ -242,10 +229,6 @@ const MapNavigation = ({ map }) => {
 
     if (!map) return null;
 
-    // Compass needle angle: OL rotation is counter-clockwise in radians.
-    // To draw the N needle pointing North, we negate the rotation.
-    const compassAngle = -rotation;
-
     return (
         <div
             ref={containerRef}
@@ -256,7 +239,13 @@ const MapNavigation = ({ map }) => {
                 zIndex: 4000,
             }}
         >
-            {/* ── METRICS (LAT/LONG & SCALE) — Top-Left, below zoom buttons ── */}
+            {/* ── METRICS (LAT/LONG & SCALE) — Top-Left, below zoom buttons ──
+                Hidden entirely in field-task mode: a KMC field worker
+                already has the one lat/long that matters (the URL's own
+                target, marked on the map) and doesn't need a live
+                pointer-position readout or scale bar cluttering a small
+                mobile screen. */}
+            {!restrictedMode && (
             <Draggable bounds="parent" handle=".drag-handle" nodeRef={metricsRef}>
                 <div
                     ref={metricsRef}
@@ -304,8 +293,15 @@ const MapNavigation = ({ map }) => {
                     </div>
                 </div>
             </Draggable>
+            )}
 
-            {/* ── COMPASS & LOCATE — Top-Right, below legend ── */}
+            {/* ── LOCATE ME — Top-Right, below legend. Hidden entirely in
+                field-task mode along with the compass it used to sit next
+                to (see above) — GPS "where am I" doesn't help a field
+                worker whose whole task is already anchored to one specific
+                lat/long from the URL. The compass control itself has been
+                removed. ── */}
+            {!restrictedMode && (
             <Draggable bounds="parent" handle=".drag-handle" nodeRef={compassRef}>
                 <div
                     ref={compassRef}
@@ -314,7 +310,7 @@ const MapNavigation = ({ map }) => {
                         top: "30px",   /* Top-right corner of map area */
                         right: "10px",
                         display: "flex",
-                        flexDirection: "row",  /* Horizontal — matches image 2 */
+                        flexDirection: "row",
                         alignItems: "center",
                         gap: "2px",
                         padding: "4px 6px",
@@ -326,7 +322,6 @@ const MapNavigation = ({ map }) => {
                         <i className="fa-solid fa-grip-lines" style={{ fontSize: "11px" }} />
                     </div>
 
-                    {/* ── Locate Me Button ── */}
                     <button
                         title="Locate Me"
                         onClick={handleLocateMe}
@@ -348,74 +343,9 @@ const MapNavigation = ({ map }) => {
                             : <i className="fa-solid fa-location-crosshairs" />
                         }
                     </button>
-
-                    <div style={{ width: "1px", height: "22px", background: "rgba(0,0,0,0.15)", margin: "0 2px" }} />
-
-                    {/* ── Real SVG Compass ── */}
-                    <button
-                        title={rotation === 0 ? "Facing North" : "Click to reset North"}
-                        onClick={handleResetNorth}
-                        style={{
-                            width: "34px", height: "34px",
-                            borderRadius: "50%",
-                            border: "none",
-                            background: "transparent",
-                            cursor: "pointer",
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                            padding: 0,
-                        }}
-                    >
-                        {/*
-                          SVG Compass Rose
-                          - Red  (N) needle always points geographically North
-                          - White (S) needle points South
-                          - The whole SVG rotates by -map.rotation (i.e. counter-rotates
-                            so North stays up as map turns)
-                         */}
-                        <svg
-                            viewBox="0 0 40 40"
-                            width="30"
-                            height="30"
-                            style={{
-                                transform: `rotate(${compassAngle}rad)`,
-                                transition: "transform 0.1s linear",
-                                display: "block",
-                            }}
-                        >
-                            {/* Outer ring */}
-                            <circle cx="20" cy="20" r="19" fill="rgba(255,255,255,0.85)" stroke="rgba(0,0,0,0.15)" strokeWidth="1" />
-
-                            {/* Cardinal labels */}
-                            <text x="20" y="6.5" textAnchor="middle" fontSize="5.5" fontWeight="700" fill="#e74c3c" fontFamily="Arial,sans-serif">N</text>
-                            <text x="20" y="37" textAnchor="middle" fontSize="4.5" fontWeight="600" fill="#555" fontFamily="Arial,sans-serif">S</text>
-                            <text x="5.5" y="21.5" textAnchor="middle" fontSize="4.5" fontWeight="600" fill="#555" fontFamily="Arial,sans-serif">W</text>
-                            <text x="34.5" y="21.5" textAnchor="middle" fontSize="4.5" fontWeight="600" fill="#555" fontFamily="Arial,sans-serif">E</text>
-
-                            {/* North needle — RED, pointing up */}
-                            <polygon points="20,9 17.5,20 20,18 22.5,20" fill="#e74c3c" />
-
-                            {/* South needle — GREY/WHITE, pointing down */}
-                            <polygon points="20,31 17.5,20 20,22 22.5,20" fill="#bbb" />
-
-                            {/* Center pivot dot */}
-                            <circle cx="20" cy="20" r="2.5" fill="#333" />
-                            <circle cx="20" cy="20" r="1.2" fill="#fff" />
-                        </svg>
-                    </button>
-
-                    {/* Rotation degree indicator — only show when not North */}
-                    {Math.abs(rotation) > 0.01 && (
-                        <span style={{
-                            fontSize: "9px",
-                            color: "#555",
-                            fontFamily: "monospace",
-                            letterSpacing: "0.5px",
-                        }}>
-                            {Math.abs(Math.round(rotation * 180 / Math.PI))}°
-                        </span>
-                    )}
                 </div>
             </Draggable>
+            )}
         </div>
     );
 };
