@@ -292,13 +292,21 @@ body.login-page,
   line-height: 1.3;
 }
 
-/* Footer Native */
+/* Footer Native — the RSAC banner. Was padding:2px 0 with the image capped
+   at max-width:500px, so on a real desktop viewport it rendered as a thin
+   sliver hugging the very bottom edge instead of a proper page footer —
+   easy to read as "cut off" even though .login-container's flex layout
+   and #root.login-page's overflow-y:auto mean it's always reachable, just
+   cramped. Given real height/width so it reads as a deliberate footer
+   section, not an afterthought. */
 .footer-native {
   background-color: #f8f9fa;
   text-align: center;
-  padding: 2px 0;
+  padding: 16px 20px;
   box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
   margin-top: auto;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .footer-content {
@@ -306,12 +314,30 @@ body.login-page,
   flex-direction: column;
   align-items: center;
   gap: 10px;
+  max-width: 1100px;
+  margin: 0 auto;
 }
 
 .footer-content img {
-  max-width: 500px;
-  width: 80%;
+  max-width: 900px;
+  width: 90%;
   height: auto;
+}
+
+@media (max-width: 800px) {
+  .footer-native {
+    padding: 12px 16px;
+  }
+
+  .footer-content img {
+    width: 95%;
+  }
+}
+
+@media (max-width: 520px) {
+  .footer-native {
+    padding: 10px 12px;
+  }
 }
 
 /* ============================= */
