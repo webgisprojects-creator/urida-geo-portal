@@ -6,6 +6,7 @@ import HomePage from "./pages/HomePage/HomePage";
 import Dashboard from "./pages/Dashboard";
 import AdminPanel from "./pages/AdminPanel/AdminPanel.jsx";
 import ChainagePage from "./pages/ChainagePage";//chainage
+import ForceChangePassword from "./pages/Login/ForceChangePassword.jsx";
 
 const DSS = lazy(() => import("./components/DSS"));
 
@@ -167,6 +168,16 @@ function App() {
     return <Navigate to="/" replace />;
   }
 
+  // A temporary-password login (admin reset/generate-temp-password) sets
+  // must_change_password server-side; login()/profile() surface it on the
+  // session user. Block every protected route except the change-password
+  // screen itself until it's cleared, so typing /home or /dashboard
+  // directly can't skip the forced change the same way a normal redirect
+  // already can't.
+  if (user.must_change_password && location.pathname !== "/change-password") {
+    return <Navigate to="/change-password" replace />;
+  }
+
   return children;
 };
 
@@ -229,6 +240,14 @@ function App() {
                 <AdminProtected>
                   <AdminPanel />
                 </AdminProtected>
+              }
+            />
+            <Route
+              path="/change-password"
+              element={
+                <Protected>
+                  <ForceChangePassword />
+                </Protected>
               }
             />
             {/* chainage */}

@@ -63,7 +63,13 @@ const buildCookieOptions = (req, maxAge) => {
   return {
     httpOnly: true,
     secure: isSecureCookie,
-    sameSite: 'strict',
+    // 'lax' (not 'strict') so the session cookie is still attached on a
+    // top-level GET navigation from an external origin (e.g. the KMC field
+    // app opening a fresh /chainage?... deep link) — 'strict' silently
+    // withheld an already-valid cookie on that navigation, bouncing a
+    // logged-in user back to the login page. Still blocked on cross-site
+    // POST/fetch, so CSRF protection is unchanged.
+    sameSite: 'lax',
     maxAge,
     path: '/',
   };
@@ -237,6 +243,8 @@ const loadUsersTableInfo = async () => {
   let idCol;
   let failedAttemptsCol;
   let lockUntilCol;
+  let mustChangePasswordCol;
+  let passwordChangedAtCol;
   if (selectedTarget) {
     const { rows: colRows } = await pool.query(
       `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2`,
@@ -250,6 +258,8 @@ const loadUsersTableInfo = async () => {
     idCol = resolveColumn(map, ['user_id', 'id']);
     failedAttemptsCol = resolveColumn(map, ['failed_attempts', 'failed_attempt', 'login_attempts']);
     lockUntilCol = resolveColumn(map, ['lock_until', 'locked_until']);
+    mustChangePasswordCol = resolveColumn(map, ['must_change_password']);
+    passwordChangedAtCol = resolveColumn(map, ['password_changed_at']);
   } else {
     const best = await findBestUserTable();
     if (!best) {
@@ -263,6 +273,8 @@ const loadUsersTableInfo = async () => {
     idCol = resolveColumn(map, ['user_id', 'id']);
     failedAttemptsCol = resolveColumn(map, ['failed_attempts', 'failed_attempt', 'login_attempts']);
     lockUntilCol = resolveColumn(map, ['lock_until', 'locked_until']);
+    mustChangePasswordCol = resolveColumn(map, ['must_change_password']);
+    passwordChangedAtCol = resolveColumn(map, ['password_changed_at']);
     usersTableCache.schema = best.schema;
     usersTableCache.table = best.table;
   }
@@ -284,9 +296,19 @@ const loadUsersTableInfo = async () => {
     cityCol,
     failedAttemptsCol,
     lockUntilCol,
+    mustChangePasswordCol,
+    passwordChangedAtCol,
   };
   return usersTableCache;
 };
+
+const ADMIN_ROLES = new Set(['admin', 'superadmin']);
+const isAdminRole = (role) => ADMIN_ROLES.has(String(role || '').toLowerCase());
+
+// Same policy adminRoutes.js's validatePassword() uses for admin-initiated
+// resets — kept in sync manually rather than shared, since these are two
+// separate route modules with no existing shared validators module.
+const isPasswordPolicyValid = (value) => String(value || '').length >= 6;
 
 const logEvent = (type, username, extra = {}) => {
   try {
@@ -317,6 +339,15 @@ export const getCaptcha = (req, res) => {
     success: true,
     captcha: {
       image: buildCaptchaDataUrl(captchaValue),
+      // Plaintext only for the frontend's audio ("speak the captcha")
+      // accessibility control — never sent back in any error message, and
+      // the actual answer check in consumeCaptcha() still validates
+      // server-side against answerHash, so this doesn't change what login
+      // requires. It does mean anyone reading this response can read the
+      // captcha directly instead of solving the image — an inherent
+      // trade-off of any client-side-spoken audio captcha, not something
+      // fixable without server-side text-to-speech.
+      audioText: captchaValue,
       expiresInSeconds: Math.floor(captchaTtlMs / 1000),
     },
   });
@@ -329,7 +360,7 @@ export const login = async (req, res) => {
   }
   const { username, password, captcha, redirect } = req.body || {};
   if (!username || !password) {
-    return res.status(400).json({ success: false, message: 'Invalid login details.' });
+    return res.status(400).json({ success: false, message: 'Invalid login credentials.' });
   }
   if (FIELD_TASK_ONLY_USERNAMES.has(String(username).toLowerCase()) && !isFieldTaskRedirectContext(redirect)) {
     logEvent('login_failed', username, { ip: getClientIp(req), reason: 'field_task_account_direct_login_blocked' });
@@ -341,7 +372,14 @@ export const login = async (req, res) => {
   const captchaResult = consumeCaptcha(req, res, captcha);
   if (!captchaResult.ok) {
     logEvent('login_captcha_failed', username, { ip: getClientIp(req) });
-    return res.status(captchaResult.status).json({ success: false, message: captchaResult.message });
+    // Unified user-facing wording regardless of the specific reason
+    // (missing/expired/mismatched) — consumeCaptcha's own messages are
+    // accurate but more detail than a login form should surface, and none
+    // of them ever include the correct captcha value itself.
+    return res.status(captchaResult.status).json({
+      success: false,
+      message: 'Incorrect captcha. Please enter the characters shown.',
+    });
   }
   try {
     await ensureActiveTokensTable();
@@ -363,6 +401,9 @@ export const login = async (req, res) => {
     const lockUntilExpr = columns.lockUntilCol
       ? `${quoteIdentifier(columns.lockUntilCol)} AS lock_until`
       : `NULL AS lock_until`;
+    const mustChangePasswordExpr = columns.mustChangePasswordCol
+      ? `${quoteIdentifier(columns.mustChangePasswordCol)} AS must_change_password`
+      : `NULL AS must_change_password`;
     const sql = `
       SELECT
         ${userIdExpr},
@@ -371,7 +412,8 @@ export const login = async (req, res) => {
         ${roleExpr},
         ${cityExpr},
         ${failedAttemptsExpr},
-        ${lockUntilExpr}
+        ${lockUntilExpr},
+        ${mustChangePasswordExpr}
       FROM ${tableRef}
       WHERE ${quoteIdentifier(columns.usernameCol)} = $1
       LIMIT 1
@@ -380,13 +422,21 @@ export const login = async (req, res) => {
     const user = rows[0];
     if (!user || !user.password_hash) {
       logEvent('login_failed', username, { ip: req.ip });
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+      return res.status(401).json({ success: false, message: 'Invalid login credentials.' });
     }
-    const supportsLockout = Boolean(columns.failedAttemptsCol && columns.lockUntilCol);
+    // Admin/superadmin accounts are exempt from lockout entirely — never
+    // locked, never counted toward it — per the requirement that an admin
+    // must always be able to get back in. Failed attempts are still logged
+    // below (logEvent runs unconditionally) for audit/debugging.
+    const isAdmin = isAdminRole(user.role);
+    const supportsLockout = Boolean(columns.failedAttemptsCol && columns.lockUntilCol) && !isAdmin;
     const lockUntil = user.lock_until ? new Date(user.lock_until) : null;
     if (supportsLockout && lockUntil && lockUntil.getTime() > Date.now()) {
       logEvent('login_failed', username, { ip: req.ip });
-      return res.status(429).json({ success: false, message: 'Too many login attempts. Please try again later.' });
+      return res.status(429).json({
+        success: false,
+        message: 'Your account has been locked. Please contact RSAC-UP to unlock your account.',
+      });
     }
     const storedHash = String(user.password_hash || '');
     const looksBcrypt = storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$') || storedHash.startsWith('$2y$');
@@ -406,6 +456,8 @@ export const login = async (req, res) => {
       }
     }
     if (!match) {
+      // supportsLockout is already false for admin accounts (see above), so
+      // this increment never touches an admin's failed_attempts/lock_until.
       if (supportsLockout) {
         const currentFailed = Number(user.failed_attempts || 0);
         const nextFailed = currentFailed + 1;
@@ -419,9 +471,9 @@ export const login = async (req, res) => {
         await pool.query(updateSql, [nextFailed, lockUntilNext, user.username]);
       }
       logEvent('login_failed', username, { ip: req.ip });
-      return res.status(401).json({ success: false, message: 'Invalid login details.' });
+      return res.status(401).json({ success: false, message: 'Invalid login credentials.' });
     }
-    if (supportsLockout) {
+    if (Boolean(columns.failedAttemptsCol && columns.lockUntilCol)) {
       const resetSql = `
         UPDATE ${tableRef}
         SET ${quoteIdentifier(columns.failedAttemptsCol)} = $1,
@@ -431,11 +483,13 @@ export const login = async (req, res) => {
       await pool.query(resetSql, [0, null, user.username]);
     }
     const userIdForToken = user.user_id ?? user.username;
+    const mustChangePassword = Boolean(user.must_change_password);
     const payload = {
       user_id: userIdForToken,
       username: user.username,
       role: user.role || 'user',
       city: user.city || null,
+      must_change_password: mustChangePassword,
     };
     await enforceSessionLimit(userIdForToken, MAX_SESSIONS_PER_USER);
     const token = jwt.sign(payload, secret, { expiresIn: jwtExpiresIn });
@@ -443,14 +497,96 @@ export const login = async (req, res) => {
     const expiresAt = new Date(issuedAt.getTime() + absoluteTimeoutMs);
     await storeActiveToken({ token, userId: userIdForToken, issuedAt, expiresAt });
     res.cookie(cookieName, token, buildCookieOptions(req, cookieMaxAgeMs));
-    logEvent('login', user.username, { ip: req.ip });
-    return res.json({ success: true, role: payload.role, city: payload.city, user: payload });
+    logEvent('login', user.username, { ip: req.ip, mustChangePassword });
+    return res.json({ success: true, role: payload.role, city: payload.city, mustChangePassword, user: payload });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Login failed';
     logEvent('login_failed', username, { ip: req.ip, error: message });
     console.error('Login failed:', message);
     const payload = { success: false, message: 'Something went wrong. Please contact administrator.' };
     return res.status(500).json(payload);
+  }
+};
+
+// Self-service password change — the counterpart to admin's
+// generate-temp-password/reset-password in adminRoutes.js. Reached after a
+// user logs in with a temporary password (login() returns
+// mustChangePassword: true); also usable any time by an already-logged-in
+// user. Requires an existing valid session (verifyToken applied on the
+// route), never a plaintext-password-in-URL reset link — this portal has
+// no forgot-password flow by design, only admin-initiated resets.
+export const changePassword = async (req, res) => {
+  const { newPassword, confirmPassword } = req.body || {};
+  if (!newPassword || !confirmPassword) {
+    return res.status(400).json({ success: false, message: 'Please enter and confirm your new password.' });
+  }
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ success: false, message: 'Passwords do not match.' });
+  }
+  if (!isPasswordPolicyValid(newPassword)) {
+    return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+  }
+  const username = req.user?.username;
+  if (!username) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+  try {
+    const info = await loadUsersTableInfo();
+    const { schema, table, columns } = info;
+    const tableRef = `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`;
+    const hashed = await bcrypt.hash(newPassword, 10);
+    const values = [hashed];
+    const setParts = [`${quoteIdentifier(columns.passwordCol)} = $1`];
+    if (columns.mustChangePasswordCol) {
+      values.push(false);
+      setParts.push(`${quoteIdentifier(columns.mustChangePasswordCol)} = $${values.length}`);
+    }
+    if (columns.passwordChangedAtCol) {
+      values.push(new Date());
+      setParts.push(`${quoteIdentifier(columns.passwordChangedAtCol)} = $${values.length}`);
+    }
+    const sql = `
+      UPDATE ${tableRef}
+      SET ${setParts.join(', ')}
+      WHERE ${quoteIdentifier(columns.usernameCol)} = $${values.length + 1}
+    `;
+    const result = await pool.query(sql, [...values, username]);
+    if ((result.rowCount || 0) === 0) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    // The JWT is stateless — req.user (and anything decoded from the old
+    // cookie on the *next* request) would still carry must_change_password:
+    // true from before this update, sending the user straight back to the
+    // force-change-password screen in an infinite loop. Reissue the session
+    // exactly as login() does, with the flag now cleared, and retire the
+    // old token so there isn't a stale duplicate sitting in active_tokens.
+    const secret = process.env.JWT_SECRET;
+    if (secret) {
+      const payload = {
+        user_id: req.user.user_id,
+        username: req.user.username,
+        role: req.user.role,
+        city: req.user.city,
+        must_change_password: false,
+      };
+      const token = jwt.sign(payload, secret, { expiresIn: jwtExpiresIn });
+      const issuedAt = new Date();
+      const expiresAt = new Date(issuedAt.getTime() + absoluteTimeoutMs);
+      await storeActiveToken({ token, userId: payload.user_id, issuedAt, expiresAt });
+      if (req.token) {
+        await updateActiveTokenStatus(req.token, 'password_changed');
+      }
+      res.cookie(cookieName, token, buildCookieOptions(req, cookieMaxAgeMs));
+    }
+
+    logEvent('password_changed', username, { ip: getClientIp(req) });
+    return res.json({ success: true, message: 'Password updated successfully.' });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Password change failed';
+    logEvent('password_change_failed', username, { ip: getClientIp(req), error: message });
+    console.error('Password change failed:', message);
+    return res.status(500).json({ success: false, message: 'Something went wrong. Please contact administrator.' });
   }
 };
 
