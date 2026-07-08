@@ -91,8 +91,7 @@ jobs:
 
             echo "==> Health checks..."
             sleep 3
-            curl -sf http://127.0.0.1:8060/api/test-db > /dev/null && echo "DB OK"
-            curl -sf http://127.0.0.1:8060/api/home/summary > /dev/null && echo "API OK"
+            curl -sf http://127.0.0.1:8060/api/health > /dev/null && echo "API/DB OK"
             curl -sf http://127.0.0.1:8060/api/auth/captcha > /dev/null && echo "CAPTCHA OK"
 
             echo "==> Deploy complete."

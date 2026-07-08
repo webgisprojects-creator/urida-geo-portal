@@ -13,8 +13,10 @@ import authRoutes from './routes/authRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import roadNetworkRoutes from './roadNetwork.js';
 import { auditLogger, tryVerifyToken, verifyToken, verifyRole } from './middleware/authMiddleware.js';
+import { pool } from './config/db.js';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import chainageRoutes from "./routes/chainage.js";//chainage
+import kmcRoutes from "./routes/kmc.js";
 import tileRoutes, { startTileCacheEvictionSchedule } from "./routes/tiles.js";
 import telemetryRoutes from "./routes/telemetry.js";
 import wfsCacheRoutes, { startWfsCacheEvictionSchedule } from "./routes/wfsCache.js";
@@ -59,7 +61,6 @@ const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 const cspConnectSources = [
   "'self'",
   'https://27.100.38.133',
-  'https://kmc.igilesolutions.com',
   'https://nominatim.openstreetmap.org',
   'https://photon.komoot.io',
   'https://overpass-api.de',
@@ -126,7 +127,7 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '15mb' }));
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -167,10 +168,19 @@ app.use((req, res, next) => {
 app.use(auditLogger);
 
 // Routes
+app.get('/api/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ ok: true });
+  } catch {
+    res.status(503).json({ ok: false });
+  }
+});
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/road-networks', roadNetworkRoutes);
 app.use(chainageRoutes);//chainage
+app.use(kmcRoutes);
 app.use(tileRoutes);
 app.use(wfsCacheRoutes);
 app.use(telemetryRoutes);

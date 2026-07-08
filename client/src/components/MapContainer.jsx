@@ -7347,8 +7347,14 @@ if (cfg1) {
   const params = new URLSearchParams(location.search);//chainage
   const projectId = params.get("project_id");//chainage
   const userId = params.get("user_id");//chainage
-  const KMC_WRITE_URL = "https://kmc.igilesolutions.com/api/v1/writedata";//chainage
-  const KMC_API_KEY = process.env.REACT_APP_KMC_API_KEY ;//chainage
+
+  const blobToDataUrl = (blob) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("Unable to read captured map image"));
+      reader.readAsDataURL(blob);
+    });
   //chainage
   const handleSubmitProjectPatches = async () => {
   try {
@@ -7432,62 +7438,39 @@ if (cfg1) {
       patches: groupedData.patches,
     };
 
-    console.log("FINAL PAYLOAD:", finalPayload);
-    console.log("KMC API KEY CHECK:", {
-  exists: Boolean(KMC_API_KEY),
-  length: KMC_API_KEY?.length,
-});
-    // 4. Send JSON to KMC API
-    const jsonRes = await fetch(KMC_WRITE_URL, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-
-    "X-API-KEY": KMC_API_KEY,
-  },
-  body: JSON.stringify(finalPayload),
-});
-
-    const jsonText = await jsonRes.text();
-    console.log("KMC JSON response:", jsonRes.status, jsonText);
-
-    if (!jsonRes.ok) {
-  throw new Error(`KMC JSON submit failed. Status: ${jsonRes.status}`);
-}
-    console.log("JSON payload sent to KMC:", finalPayload);
-
-    // 5. Send captured map image to KMC API
+    // 4. Send the KMC payload through our backend so the KMC secret stays in
+    // server/.env instead of being bundled into public browser JavaScript.
     let imageBlob = finalImageBlobRef.current;
+    let imageDataUrl = mapImage;
 
     if (!imageBlob) {
       const captured = await captureMapImageBlob();
       imageBlob = captured.blob;
+      imageDataUrl = captured.dataUrl;
       finalImageBlobRef.current = imageBlob;
       setMapImage(captured.dataUrl);
     }
+    if (!imageDataUrl && imageBlob) {
+      imageDataUrl = await blobToDataUrl(imageBlob);
+    }
 
-    const formData = new FormData();
-    formData.append("file", imageBlob, `${city}_project_${projectId}_map.png`);
-    formData.append("project_id", String(projectId));
-    formData.append("user_id", String(userId));
+    const submitRes = await fetch("/api/kmc/submit-project-patches", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        city,
+        ...finalPayload,
+        imageDataUrl,
+        imageFilename: `${city}_project_${projectId}_map.png`,
+      }),
+    });
 
-
-    const imageRes = await fetch(KMC_WRITE_URL, {
-  method: "POST",
-  headers: {
-    Accept: "application/json",
-    "X-API-KEY": KMC_API_KEY,
-  },
-  body: formData,
-});
-
-    const imageText = await imageRes.text();
-    console.log("KMC IMAGE response:", imageRes.status, imageText);
-
-    if (!imageRes.ok) {
-  throw new Error(`KMC image submit failed. Status: ${imageRes.status}`);
-}
-    console.log("Image payload sent to KMC");
+    const submitData = await submitRes.json().catch(() => ({}));
+    if (!submitRes.ok) {
+      throw new Error(submitData?.error || "KMC submit failed");
+    }
 
     alert("Data and map image submitted successfully");
 

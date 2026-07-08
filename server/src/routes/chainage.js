@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { pool as pool1 } from "../config/db.js";
 import { verifyToken } from "../middleware/authMiddleware.js";
+import { authorizeCityAccess } from "../utils/cityAccess.js";
 
 const router = express.Router();
 
@@ -94,7 +95,8 @@ const chainageDbConfig = {
     },
 };
 router.get("/api/chainage/:city/:roadId", verifyToken, async (req, res) => {
-    const city = String(req.params.city || "").toLowerCase().trim();
+    const city = authorizeCityAccess(req, res, req.params.city);
+    if (!city) return;
     const roadId = String(req.params.roadId || "").trim();
 
     const cfg = chainageDbConfig[city];
@@ -217,7 +219,8 @@ router.get("/api/chainage/:city/:roadId", verifyToken, async (req, res) => {
 // exact map/image preview before they confirm "Save" on /api/create-patch,
 // which runs the same range query but inside an insert transaction.
 router.get("/api/patch-preview/:city/:roadId", verifyToken, async (req, res) => {
-    const cityKey = String(req.params.city || "").toLowerCase().trim();
+    const cityKey = authorizeCityAccess(req, res, req.params.city);
+    if (!cityKey) return;
     const roadId = String(req.params.roadId || "").trim();
     const cfg = chainageDbConfig[cityKey];
 
@@ -264,7 +267,8 @@ router.get("/api/patch-preview/:city/:roadId", verifyToken, async (req, res) => 
 router.post("/api/create-patch", verifyToken, async (req, res) => {
     const { city, road_id, startPoint, endPoint } = req.body;
 
-    const cityKey = city?.toLowerCase();
+    const cityKey = authorizeCityAccess(req, res, city);
+    if (!cityKey) return;
     const cfg = chainageDbConfig[cityKey];
 
     if (!cfg) return res.status(400).json({ error: "Invalid city" });
@@ -359,7 +363,8 @@ if (existingPatchRes.rows.length > 0) {
 });
 
 router.get("/api/patches/:city/:roadId", verifyToken, async (req, res) => {
-    const city = String(req.params.city || "").toLowerCase().trim();
+    const city = authorizeCityAccess(req, res, req.params.city);
+    if (!city) return;
     const roadId = String(req.params.roadId || "").trim();
 
     const cfg = chainageDbConfig[city];
@@ -391,7 +396,9 @@ router.get("/api/patches/:city/:roadId", verifyToken, async (req, res) => {
 router.post("/api/patch-segments", verifyToken, async (req, res) => {
     const { city, patchIds } = req.body;
 
-    const cfg = chainageDbConfig[city?.toLowerCase()];
+    const cityKey = authorizeCityAccess(req, res, city);
+    if (!cityKey) return;
+    const cfg = chainageDbConfig[cityKey];
     if (!cfg) return res.status(400).json({ error: "Invalid city" });
 
     if (!patchIds || patchIds.length === 0) {
@@ -446,7 +453,8 @@ router.post("/api/patch-segments", verifyToken, async (req, res) => {
 // });
 
 router.get("/api/chainage-search/:city", verifyToken, async (req, res) => {
-    const city = req.params.city?.toLowerCase();
+    const city = authorizeCityAccess(req, res, req.params.city);
+    if (!city) return;
     const q = req.query.q || "";
 
     const cfg = chainageDbConfig[city];
@@ -488,7 +496,8 @@ router.get("/api/chainage-search/:city", verifyToken, async (req, res) => {
 router.post("/api/map-project-patches", verifyToken, async (req, res) => {
     const { city, project_id, user_id, patchIds } = req.body;
 
-    const cityKey = city?.toLowerCase();
+    const cityKey = authorizeCityAccess(req, res, city);
+    if (!cityKey) return;
     const cfg = chainageDbConfig[cityKey];
 
     if (!cfg) {
@@ -535,7 +544,8 @@ router.post("/api/map-project-patches", verifyToken, async (req, res) => {
 router.post("/api/grouped-patches-by-selection", verifyToken, async (req, res) => {
     const { city, project_id, patchIds } = req.body;
 
-    const cityKey = city?.toLowerCase();
+    const cityKey = authorizeCityAccess(req, res, city);
+    if (!cityKey) return;
     const cfg = chainageDbConfig[cityKey];
 
     if (!cfg) {
