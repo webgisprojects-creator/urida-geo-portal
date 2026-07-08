@@ -20,11 +20,9 @@ import hotelIcon from "../assets/Amenities_Icons/hotel.png";
 import fuelIcon from "../assets/Amenities_Icons/fuel.png";
 import metroIcon from "../assets/Amenities_Icons/metro.webp";
 import defaultIcon from "../assets/Amenities_Icons/place.png";
+import { getGeoserverBase } from "../utils/geoserverBase";
 
-
-const GEOSERVER_BASE = window.location.port === "8060"
-    ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-    : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+const GEOSERVER_BASE = getGeoserverBase();
 
 ChartJS.register(
     CategoryScale,
@@ -230,7 +228,7 @@ const doughnutOptions = {
 
 
 
-function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FILTERS, onFilterChange, onClassificationChange, onChartClick, roadWmsSource, panelSide = "right" }) {
+function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters = DEFAULT_FILTERS, onFilterChange, onClassificationChange, onChartClick, roadWmsSource, panelSide = "right", tableOpen = false }) {
     const [activeFilter, setActiveFilter] = useState(null);
 
     const [metrics, setMetrics] = useState({ total_roads: "--", total_length_km: "--", });
@@ -252,8 +250,8 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
     const [selectedWard, setSelectedWard] = useState("");
     const [showZoneDropdown, setShowZoneDropdown] = useState(false);
     const [showWardDropdown, setShowWardDropdown] = useState(false);
-    const zoneBtnRef = useRef(null);
-    const wardBtnRef = useRef(null);
+    const zoneDropdownRef = useRef(null);//new
+const wardDropdownRef = useRef(null);//new
 
     const panelRef = useRef(null);
     const dragStateRef = useRef({ dragging: false });
@@ -265,17 +263,28 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
     const legendColorCacheRef = useRef(new Map());
 
     useEffect(() => {
-        const handleClickOutside = (event) => {
-            if (zoneBtnRef.current && !zoneBtnRef.current.contains(event.target)) {
-                setShowZoneDropdown(false);
-            }
-            if (wardBtnRef.current && !wardBtnRef.current.contains(event.target)) {
-                setShowWardDropdown(false);
-            }
-        };
-        document.addEventListener("mousedown", handleClickOutside);
-        return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, []);
+    const handleClickOutside = (event) => {
+        if (
+            zoneDropdownRef.current &&
+            !zoneDropdownRef.current.contains(event.target)
+        ) {
+            setShowZoneDropdown(false);
+        }
+
+        if (
+            wardDropdownRef.current &&
+            !wardDropdownRef.current.contains(event.target)
+        ) {
+            setShowWardDropdown(false);
+        }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+
+    return () => {
+        document.removeEventListener("mousedown", handleClickOutside);
+    };
+}, []);//new
 
 
     const cityKey = resolveCityKey(city);
@@ -495,13 +504,13 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
 
     const handleOverviewClick = (filterKey, label) => {
         if (!label || label === "No data") return;
-        
+
         // 1. Switch the map layer to match this category
         handleFilterClick(filterKey);
-        
+
         // 2. Set the internal chart segment state
         setSelectedChartValue(label);
-        
+
         // 3. Trigger the table filter via the prop
         if (onChartClick) {
             onChartClick(filterKey, label);
@@ -510,18 +519,25 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
 
 
 
+    // Reset the WMS SLD back to default only when this panel is actually
+    // unmounted (a real Close) — not on every isOpen flip, since Minimize
+    // now keeps the component mounted (just visually hidden) specifically
+    // so filters/layers are preserved and restorable.
+    const roadWmsSourceRef = useRef(roadWmsSource);
+    roadWmsSourceRef.current = roadWmsSource;
+    const cityLayerRef = useRef(cityLayer);
+    cityLayerRef.current = cityLayer;
     useEffect(() => {
-        if (isOpen) return; // only run when panel CLOSES
-        if (!roadWmsSource) return;
-
-        // Reset SLD back to default
-        if (!cityLayer) return;
-        roadWmsSource.updateParams({
-            LAYERS: cityLayer,
-            _t: Date.now(),
-        });
-
-    }, [isOpen, roadWmsSource]);
+        return () => {
+            const source = roadWmsSourceRef.current;
+            const layer = cityLayerRef.current;
+            if (!source || !layer) return;
+            source.updateParams({
+                LAYERS: layer,
+                _t: Date.now(),
+            });
+        };
+    }, []);
 
 
 
@@ -561,7 +577,7 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
                 }
 
                 const labels = rows.map(r => r.label ?? r.name ?? "Unknown");
-                
+
                 // Use the selected metric: count vs length, ensuring length is parsed as a Number
                 const values = rows.map(r => chartMetric === "length" ? (Number(r.length_km) || 0) : (Number(r.count) || 0));
 
@@ -847,9 +863,9 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
             </div>
             <div style={scrollListStyle} className="custom-scroll">
                 {(d?.byCategory || []).map((r) => (
-                <div 
-                    key={`cat-${r.label}`} 
-                    style={{ ...listItemStyle, cursor: "pointer" }} 
+                <div
+                    key={`cat-${r.label}`}
+                    style={{ ...listItemStyle, cursor: "pointer" }}
                     onClick={() => handleOverviewClick("category", r.label)}
                     className="overview-list-item"
                 >
@@ -859,7 +875,7 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
                 ))}
             </div>
             </div>
-            
+
             <div style={cardStyle}>
             <div style={labelStyle}>
                 <span>Road Count by Condition</span>
@@ -867,8 +883,8 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
             </div>
             <div style={scrollListStyle} className="custom-scroll">
                 {(d?.byCondition || []).map((r) => (
-                <div 
-                    key={`cond-${r.label}`} 
+                <div
+                    key={`cond-${r.label}`}
                     style={{ ...listItemStyle, cursor: "pointer" }}
                     onClick={() => handleOverviewClick("condition", r.label)}
                     className="overview-list-item"
@@ -887,8 +903,8 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
             </div>
             <div style={scrollListStyle} className="custom-scroll">
                 {(d?.byCus || []).map((r) => (
-                <div 
-                    key={`cus-${r.label}`} 
+                <div
+                    key={`cus-${r.label}`}
                     style={{ ...listItemStyle, cursor: "pointer" }}
                     onClick={() => handleOverviewClick("cus_class", r.label)}
                     className="overview-list-item"
@@ -899,7 +915,7 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
                 ))}
             </div>
             </div>
-            
+
             <div style={cardSecondRowStyle}>
             <div style={labelStyle}>
                 <span>Road Count of Material</span>
@@ -907,8 +923,8 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
             </div>
             <div style={scrollListStyle} className="custom-scroll">
                 {(d?.byMaterial || []).map((r) => (
-                <div 
-                    key={`mat-${r.label}`} 
+                <div
+                    key={`mat-${r.label}`}
                     style={{ ...listItemStyle, cursor: "pointer" }}
                     onClick={() => handleOverviewClick("material", r.label)}
                     className="overview-list-item"
@@ -919,7 +935,7 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
                 ))}
             </div>
             </div>
-            
+
             <div style={cardSecondRowStyle}>
             <div style={labelStyle}>
                 <span>Road Count of Ownership</span>
@@ -927,8 +943,8 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
             </div>
             <div style={scrollListStyle} className="custom-scroll">
                 {(d?.byOwnership || []).map((r) => (
-                <div 
-                    key={`own-${r.label}`} 
+                <div
+                    key={`own-${r.label}`}
                     style={{ ...listItemStyle, cursor: "pointer" }}
                     onClick={() => handleOverviewClick("ownership", r.label)}
                     className="overview-list-item"
@@ -949,20 +965,33 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
     return (
         <div
             ref={panelRef}
-            className={`summary-panel ${isOpen ? "open" : ""} ${panelSide === "left" ? "summary-panel-left" : ""} ${isChartsVisible ? "charts-active" : ""}`} style={panelPos ? { left: panelPos.x, top: panelPos.y, right: "auto", resize: "both", overflow: "hidden" } : { resize: "both", overflow: "hidden" }}
+            className={`summary-panel ${isOpen ? "open" : ""} ${panelSide === "left" ? "summary-panel-left" : ""} ${isChartsVisible ? "charts-active" : ""} ${tableOpen ? "table-open" : ""}`} style={panelPos ? { left: panelPos.x, top: panelPos.y, right: "auto", resize: "both", overflow: "hidden" } : { resize: "both", overflow: "hidden" }}
         >
 
 
             <div className="summary-header" onPointerDown={startDrag} style={{ touchAction: "none" }}>
                 <span>ROAD NET SUMMARY</span>
-                <button className="summary-close" onPointerDown={(e) => e.stopPropagation()} onClick={onClose}>×</button>
+                <div className="summary-header-actions">
+                    {onMinimize && (
+                        <button
+                            className="summary-minimize"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={onMinimize}
+                            title="Minimize (keeps filters and layers)"
+                        >
+                            —
+                        </button>
+                    )}
+                    <button className="summary-close" onPointerDown={(e) => e.stopPropagation()} onClick={onClose} title="Close (clears filters and layers)">×</button>
+                </div>
             </div>
 
             <div className="summary-filters-row" style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
                 {/* Custom Zone Dropdown */}
-                <div style={{ flex: 1, position: 'relative' }}>
-                    <div 
-                        ref={zoneBtnRef}
+                {/* new */}
+                <div ref={zoneDropdownRef} style={{ flex: 1, position: 'relative' }}>
+                    <div
+
                         className="custom-select-trigger"
                         onClick={() => {
                             setShowZoneDropdown(!showZoneDropdown);
@@ -976,8 +1005,8 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
                         <div className="custom-select-options custom-scroll">
                             <div className="option-item" onClick={() => { setSelectedZone(""); setShowZoneDropdown(false); }}>All Zones</div>
                             {zones.map(z => (
-                                <div 
-                                    key={z.zone_no} 
+                                <div
+                                    key={z.zone_no}
                                     className={`option-item ${String(selectedZone) === String(z.zone_no) ? 'selected' : ''}`}
                                     onClick={() => {
                                         setSelectedZone(z.zone_no);
@@ -992,9 +1021,9 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
                 </div>
 
                 {/* Custom Ward Dropdown */}
-                <div style={{ flex: 1, position: 'relative' }}>
-                    <div 
-                        ref={wardBtnRef}
+                <div ref={wardDropdownRef} style={{ flex: 1, position: 'relative' }}>
+                    <div
+
                         className={`custom-select-trigger ${!selectedZone ? 'disabled' : ''}`}
                         onClick={() => {
                             if (!selectedZone) return;
@@ -1009,8 +1038,8 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
                         <div className="custom-select-options custom-scroll">
                             <div className="option-item" onClick={() => { setSelectedWard(""); setShowWardDropdown(false); }}>All Wards</div>
                             {wards.map(w => (
-                                <div 
-                                    key={w.ward_no} 
+                                <div
+                                    key={w.ward_no}
                                     className={`option-item ${String(selectedWard) === String(w.ward_no) ? 'selected' : ''}`}
                                     onClick={() => {
                                         setSelectedWard(w.ward_no);
@@ -1067,7 +1096,7 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
 
 
             <div className="summary-section-toggle">
-                
+
                 <button
                     className={`tab-btn ${activeSection === "overview" ? "active" : ""}`}
                     onClick={() => setActiveSection("overview")}
@@ -1107,13 +1136,13 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
 
             {activeSection === "charts" && activeFilter && (
                 <div className="metric-toggle-row">
-                    <button 
+                    <button
                         className={`metric-toggle-btn ${chartMetric === "length" ? "active" : ""}`}
                         onClick={() => setChartMetric("length")}
                     >
                         By Length (km)
                     </button>
-                    <button 
+                    <button
                         className={`metric-toggle-btn ${chartMetric === "count" ? "active" : ""}`}
                         onClick={() => setChartMetric("count")}
                     >
@@ -1144,11 +1173,11 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
                                                     if (label) { label += ': '; }
                                                     const val = context.parsed.y;
                                                     const unit = context.dataset.metricUnit === "km" ? " km" : " roads";
-                                                    
+
                                                     const dataArr = context.chart.data.datasets[0].data;
                                                     const total = dataArr.reduce((a, b) => a + b, 0);
                                                     const pct = total > 0 ? ((val / total) * 100).toFixed(1) : 0;
-                                                    
+
                                                     if (context.dataset.metricUnit === "km") {
                                                         return `${label}${val.toFixed(2)}${unit} (${pct}%)`;
                                                     }
@@ -1188,11 +1217,11 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, filters = DEFAULT_FIL
                                             label: function(context) {
                                                 const val = context.parsed;
                                                 const unit = context.dataset.metricUnit === "km" ? " km" : " roads";
-                                                
+
                                                 const dataArr = context.chart.data.datasets[0].data;
                                                 const total = dataArr.reduce((a, b) => a + b, 0);
                                                 const pct = total > 0 ? ((val / total) * 100).toFixed(1) : 0;
-                                                
+
                                                 if (context.dataset.metricUnit === "km") {
                                                     return ` ${val.toFixed(2)}${unit} (${pct}%)`;
                                                 }

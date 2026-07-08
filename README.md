@@ -58,7 +58,7 @@ cd server && npm run dev
 cd client && npm start
 ```
 
-> **Note:** `client/package.json` has `"proxy": "http://localhost:8061"`. If your local backend is on `:8060`, update the proxy or change the backend `PORT` to match.
+> `client/package.json`'s `"proxy"` already points at `http://localhost:8060`, matching the backend's default `PORT` in `server/.env` — no change needed unless you deliberately run the backend on a different port.
 
 ### 4. Run in production (PM2)
 
@@ -74,11 +74,12 @@ pm2 logs
 |---|---|
 | [`context.md`](./context.md) | Single-page project overview — start here |
 | [`docs/PROJECT_ANALYSIS.md`](./docs/PROJECT_ANALYSIS.md) | Canonical architecture, infrastructure, runbooks |
-| [`docs/PROJECT_CONTEXT.md`](./docs/PROJECT_CONTEXT.md) | Long-form context (city schemas, query patterns) |
-| [`docs/DEVELOPER_CONTEXT.md`](./docs/DEVELOPER_CONTEXT.md) | Onboarding notes for new devs |
-| [`docs/TASK_CONTEXT.md`](./docs/TASK_CONTEXT.md) | Per-task implementation notes |
-| [`docs/Whatfixed.md`](./docs/Whatfixed.md) | Historical fix log |
+| [`docs/LOCAL_DEVELOPMENT.md`](./docs/LOCAL_DEVELOPMENT.md) | Local setup and troubleshooting |
+| [`docs/DEVELOPER_GUIDE.md`](./docs/DEVELOPER_GUIDE.md) | Developer workflow and contribution guide |
+| [`docs/DB_NOTES.md`](./docs/DB_NOTES.md) | Database and spatial-index notes |
 | [`docs/GEOSERVER_NOTES.md`](./docs/GEOSERVER_NOTES.md) | GeoServer admin / layer-publishing notes |
+| [`docs/GEOSERVER_RHEL_MIGRATION.md`](./docs/GEOSERVER_RHEL_MIGRATION.md) | GeoServer migration runbook |
+| [`docs/LB2_NGINX_PERFORMANCE_AUDIT.md`](./docs/LB2_NGINX_PERFORMANCE_AUDIT.md) | Load balancer / Nginx performance audit |
 | [`docs/DESIGN_AUDIT.md`](./docs/DESIGN_AUDIT.md) | Frontend design audit |
 
 ## Cities supported

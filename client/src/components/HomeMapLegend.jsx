@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from "react";
+import { getGeoserverBase } from "../utils/geoserverBase";
 
-const GEOSERVER_BASE = window.location.port === "8060"
-    ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-    : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+const GEOSERVER_BASE = getGeoserverBase();
 
-const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl }) => {
+const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl, style }) => {
     const [legendItems, setLegendItems] = useState(isManual ? items : []);
     const [loading, setLoading] = useState(!isManual);
     const [featureCount, setFeatureCount] = useState(null);
@@ -16,11 +15,12 @@ const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl }) => {
         let isMounted = true;
 
         const fetchLegendGraphic = async () => {
+            const styleParam = style ? `&STYLE=${encodeURIComponent(style)}` : "";
             try {
                 // Try JSON first for dynamic parsing
                 const wmsUrl = `${effectiveBaseUrl}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=application/json&LAYER=${encodeURIComponent(
                     layerName
-                )}`;
+                )}${styleParam}`;
 
                 const res = await fetch(wmsUrl);
                 if (!res.ok) throw new Error("JSON legend not supported");
@@ -40,7 +40,7 @@ const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl }) => {
                     else if (sym?.Line?.stroke) color = sym.Line.stroke;
                     else if (sym?.Point?.graphics?.[0]?.mark?.fill) color = sym.Point.graphics[0].mark.fill;
 
-                    let iconUrl = `${effectiveBaseUrl}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(layerName)}&LEGEND_OPTIONS=forceLabels:off`;
+                    let iconUrl = `${effectiveBaseUrl}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(layerName)}${styleParam}&LEGEND_OPTIONS=forceLabels:off`;
                     if (rule.name) iconUrl += `&RULE=${encodeURIComponent(rule.name)}`;
 
                     return { label: title, name: rule.name, color, iconUrl };
@@ -48,11 +48,10 @@ const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl }) => {
 
                 setLegendItems(parsedItems);
             } catch (err) {
-                console.warn("Fallback to image-based legend for:", layerName);
                 if (isMounted) {
                     setLegendItems([{
                         label: label,
-                        iconUrl: `${effectiveBaseUrl}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&LAYER=${encodeURIComponent(layerName)}&LEGEND_OPTIONS=forceLabels:on;fontName:Arial;fontSize:11`
+                        iconUrl: `${effectiveBaseUrl}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&LAYER=${encodeURIComponent(layerName)}${styleParam}&LEGEND_OPTIONS=forceLabels:on;fontName:Arial;fontSize:11`
                     }]);
                 }
             } finally {
@@ -71,7 +70,7 @@ const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl }) => {
                         }
                     }
                 } catch (countErr) {
-                    console.error("Error fetching feature counts:", countErr);
+                    if (isMounted) setFeatureCount(null);
                 }
 
                 if (isMounted) setLoading(false);
@@ -80,7 +79,7 @@ const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl }) => {
 
         fetchLegendGraphic();
         return () => { isMounted = false; };
-    }, [layerName, isManual, effectiveBaseUrl, label]);
+    }, [layerName, isManual, effectiveBaseUrl, label, style]);
 
     if (!isManual && loading && legendItems.length === 0) {
         return <div style={{ fontSize: '11px', color: '#888' }}>Loading {label}...</div>;
@@ -252,7 +251,7 @@ const HomeMapLegend = ({ layers }) => {
             {!minimized && (
                 <div style={{ padding: "12px", overflowY: "auto", maxHeight: "450px", display: "flex", flexDirection: "column", gap: "12px" }}>
                     {layers.map((layerProps) => (
-                        <DynamicLegendItem key={layerProps.layerName} layerName={layerProps.layerName} label={layerProps.label} isManual={layerProps.isManual} items={layerProps.items} baseUrl={layerProps.baseUrl} />
+                        <DynamicLegendItem key={layerProps.layerName} layerName={layerProps.layerName} label={layerProps.label} isManual={layerProps.isManual} items={layerProps.items} baseUrl={layerProps.baseUrl} style={layerProps.style} />
                     ))}
                 </div>
             )}

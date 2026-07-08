@@ -1,17 +1,17 @@
 export const chainageCityConfig = {
     kanpur: {
         workspace: "Chainage",
-        roadLayer: "Chainage:Kanpur_segmentszone2roads",
-        chainageLayer: "Chainage:Kanpur_interpolatedpoints",
+        roadLayer: "Chainage:Kanpur_Chainage_Segments",
+        chainageLayer: "Chainage:Kanpur_Chainage_Points",
         roadIdField: "road_id",
         chainageField: "distance",
         chainageApi: "/api/chainage",
     },
 
     agra: {
-        workspace: "Chainage",
-        roadLayer: "Chainage:agra_seg1",
-        chainageLayer: "Chainage:agra_points",
+        workspace: "Road_Network",
+        roadLayer: "Road_Network:agra_seg1",
+        chainageLayer: "Road_Network:agra_points",
         roadIdField: "road_id",
         chainageField: "distance",
         chainageApi: "/api/chainage",

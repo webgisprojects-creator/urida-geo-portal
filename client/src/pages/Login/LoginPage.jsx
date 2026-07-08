@@ -96,12 +96,18 @@ export default function LoginPage() {
     setLoading(true);
     setMessage("");
 
+    // Passed straight through to the backend, which uses it to confirm a
+    // shared field-task account (e.g. "chainage") is actually being used as
+    // part of a KMC/iGile redirect and not typed into this form directly —
+    // see authController.js's login() for the actual gate.
+    const redirectContext = new URLSearchParams(window.location.search).get("redirect");
+
     try {
       const response = await fetch(`${API_BASE_URL}/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ username, password, captcha }),
+        body: JSON.stringify({ username, password, captcha, redirect: redirectContext }),
       });
 
       if (!response.ok) {
@@ -122,14 +128,32 @@ export default function LoginPage() {
       localStorage.setItem("authUser", String(profile.user.username || username || ""));
       if (profile.user.role != null) localStorage.setItem("authRole", String(profile.user.role));
       if (profile.user.city != null) localStorage.setItem("authCity", String(profile.user.city));
+//new
+      // const role = String(profile.user.role || "").toLowerCase();
+      // const target = role === "admin" ? "/admin" : "/home";
 
+      // setMessage("Login successful. Redirecting...");
+      // setTimeout(() => {
+      //   window.location.href = target;
+      // }, 300);
       const role = String(profile.user.role || "").toLowerCase();
-      const target = role === "admin" ? "/admin" : "/home";
 
-      setMessage("Login successful. Redirecting...");
-      setTimeout(() => {
-        window.location.href = target;
-      }, 300);
+const params = new URLSearchParams(window.location.search);
+const redirect = params.get("redirect");
+
+const safeRedirect =
+  redirect &&
+  redirect.startsWith("/") &&
+  !redirect.startsWith("//")
+    ? redirect
+    : null;
+
+const target = safeRedirect || (role === "admin" ? "/admin" : "/home");
+
+setMessage("Login successful. Redirecting...");
+setTimeout(() => {
+  window.location.href = target;
+}, 300);
     } catch (error) {
       console.error(error);
       setMessage("Server not reachable. Please try again.");

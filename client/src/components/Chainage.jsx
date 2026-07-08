@@ -7,10 +7,9 @@ import OSM from "ol/source/OSM";
 import TileWMS from "ol/source/TileWMS";
 import { fromLonLat } from "ol/proj";
 import { defaults as defaultControls } from "ol/control";
+import { getGeoserverBase } from "../utils/geoserverBase";
 
-const GEOSERVER_BASE = window.location.port === "8060"
-  ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-  : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+const GEOSERVER_BASE = getGeoserverBase();
 const GEOSERVER_WMS = `${GEOSERVER_BASE}/Chainage/wms`;
 
 const Chainage = () => {

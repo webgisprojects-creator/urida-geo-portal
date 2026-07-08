@@ -2,6 +2,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import "../assets/styles/Dashboard.css";
 import QueryPanel from "./QueryPanel";
+import { useLocation, useNavigate } from "react-router-dom";
+import { isChainageAvailable, chainageUnavailableMessage } from "../utils/chainageAvailability";
 
 const MapToolbar = ({
   onDataAnalysis,
@@ -11,6 +13,10 @@ const MapToolbar = ({
   onSummary,
   onClear,
   city,
+  mapRef,
+  onChainageToggle,
+  chainageActive,
+  chainageDisabled,
   onRoadSelected,
   onApplyRoadFilter, // ⭐ ADDED — this will send filter to MapContainer
   onZoomToFilter, // ⭐ ADDED — this will trigger zoom to filtered features
@@ -27,7 +33,24 @@ const MapToolbar = ({
   onStreetViewToggle,
   onLatLngSearch,
   onPlaceSearch,
+  // Field-task deep links (KMC/iGile redirects) restrict the toolbar to
+  // just viewing/creating chainage patches — these general-purpose
+  // exploration tools aren't part of that scoped workflow.
+  restrictedMode = false,
+  // The URL's own zone_no, and the ward_no list (target ward + whatever
+  // borders it) already resolved in Dashboard — the Road Network panel
+  // reuses both instead of ever fetching/loading a full zone or city.
+  lockedZone = null,
+  lockedWardList = null,
+  // The task's own assigned ward specifically — kept separate from
+  // lockedWardList because that list's order isn't guaranteed to put the
+  // primary ward first (it comes back from /adjacent-wards sorted by ward
+  // number, which only coincidentally matches for some assignments).
+  primaryWard = null,
 }) => {
+  const restrictedBtnStyle = restrictedMode
+    ? { opacity: 0.45, cursor: "not-allowed" }
+    : undefined;
   // const [showRoadFilter, setShowRoadFilter] = useState(false); // REMOVED local state
   const [isLoading, setIsLoading] = useState(false);
 
@@ -41,6 +64,7 @@ const MapToolbar = ({
   const [selectedRoad, setSelectedRoad] = useState("null");
   const [nestedList, setNestedList] = useState([]);
   const [nestedTitle, setNestedTitle] = useState("");
+  const navigate = useNavigate();
 
   const [activeTool, setActiveTool] = useState(null);
   const [activeQueryTab, setActiveQueryTab] = useState("attributes");
@@ -105,6 +129,44 @@ const MapToolbar = ({
     basePanelTop +
     (controlsVisible ? controlsPanelHeight + panelGap : 0) +
     (showSearchBox ? searchPanelHeight + panelGap : 0);
+
+  // Field-task mode's "scope" is always zone + (target ward plus whatever
+  // borders it) — every restricted-mode load/filter below reuses this
+  // instead of ever touching a whole-zone or whole-city query.
+  const summaryScopeFilter = () => {
+    const zoneNum = lockedZone ? Number(lockedZone) : NaN;
+    const wardNums = (lockedWardList || []).map(Number).filter(Number.isFinite);
+    const parts = [];
+    if (Number.isFinite(zoneNum)) parts.push(`zone_no=${zoneNum}`);
+    if (wardNums.length === 1) parts.push(`ward_no=${wardNums[0]}`);
+    else if (wardNums.length > 1) parts.push(`ward_no IN (${wardNums.join(",")})`);
+    return parts.join(" AND ");
+  };
+
+  // Shared by loadCategories/loadCondition/loadMaterial/loadOwnership/
+  // loadCus's restricted-mode branch — same shape as each function's own
+  // (unmodified) non-restricted path below, just scoped to the locked
+  // ward(s) via the generic `filter` param instead of GeoServer's zone-only
+  // `zone` param.
+  const applyRestrictedSummaryLoad = async (summaryField, title, classificationKey) => {
+    onClassificationChange?.(classificationKey);
+    const scopeFilter = summaryScopeFilter();
+    onApplyRoadFilter?.(scopeFilter);
+    try {
+      const cityLower = city.toLowerCase();
+      const res = await fetch(
+        `/api/road-networks/${cityLower}/summary?filter=${encodeURIComponent(scopeFilter)}`
+      );
+      setNestedTitle(title);
+      const summary = await res.json();
+      const list = Array.isArray(summary?.[summaryField])
+        ? summary[summaryField].filter((r) => (r?.count ?? 0) > 0).map((r) => r.label)
+        : [];
+      setNestedList(sortNestedList(title, list));
+    } catch (err) {
+      setNestedList([]);
+    }
+  };
 
   const closeRoadFilter = () => {
     onToggleRoadNetworkPanel(false);
@@ -200,6 +262,15 @@ const MapToolbar = ({
     }));
   };
 
+  // Field-task mode scopes the search dropdown/results to the locked ward
+  // set (target ward + neighbors) instead of the whole city — appended to
+  // every /search call below, a no-op string when not in that mode.
+  const wardsQueryParam = () => {
+    if (!restrictedMode) return "";
+    const wardNums = (lockedWardList || []).map(Number).filter(Number.isFinite);
+    return wardNums.length ? `&wards=${wardNums.join(",")}` : "";
+  };
+
   const handleSearchClick = async () => {
     setShowSearchBox(true);
     // setIsRoadDropdownOpen(true);
@@ -207,7 +278,7 @@ const MapToolbar = ({
     setHasMore(true);
 
     try {
-      const res = await fetch(`/api/road-networks/${city.toLowerCase()}/search?page=1&limit=50`);
+      const res = await fetch(`/api/road-networks/${city.toLowerCase()}/search?page=1&limit=50${wardsQueryParam()}`);
       const data = await res.json();
       const roads = Array.isArray(data) ? data : [];
       setRoadDropdown(roads);
@@ -254,7 +325,7 @@ const MapToolbar = ({
       const response = await fetch(
         `/api/road-networks/${city.toLowerCase()}/search?q=${encodeURIComponent(
           query
-        )}&page=1&limit=50`
+        )}&page=1&limit=50${wardsQueryParam()}`
       );
       if (!response.ok) throw new Error("Search failed");
       const data = await response.json();
@@ -428,7 +499,7 @@ const MapToolbar = ({
     const nextPage = page + 1;
 
     try {
-      let url = `/api/road-networks/${city.toLowerCase()}/search?page=${nextPage}&limit=50`;
+      let url = `/api/road-networks/${city.toLowerCase()}/search?page=${nextPage}&limit=50${wardsQueryParam()}`;
       if (searchQuery && searchQuery.trim() !== "") {
         url += `&q=${encodeURIComponent(searchQuery)}`;
       }
@@ -469,7 +540,16 @@ const MapToolbar = ({
       }
       if (!parseLatLng(val)) {
         handleSearch(val);
-        fetchPlaceSuggestions(val);
+        // A purely numeric query (road IDs in this dataset look like
+        // "093400900604") can never match a real place name — skip the
+        // external Nominatim/Photon geocoding round trip entirely instead
+        // of firing it and throwing away a guaranteed-empty result.
+        if (/^\d{4,}$/.test(val.trim())) {
+          setPlaceResults([]);
+          setIsPlaceLoading(false);
+        } else {
+          fetchPlaceSuggestions(val);
+        }
       }
     }, 300);
   };
@@ -519,6 +599,16 @@ const MapToolbar = ({
   };
 
   const loadWards = async () => {
+    if (restrictedMode) {
+      // The ward list (target + neighbors) is already known from Dashboard's
+      // /adjacent-wards lookup — no need to fetch every ward in the zone.
+      onClassificationChange?.("zone");
+      onApplyRoadFilter?.(summaryScopeFilter());
+      setNestedTitle("Wards");
+      const list = (lockedWardList || []).map((w) => ({ ward_no: w, name: `Ward ${w}` }));
+      setNestedList(sortNestedList("Wards", list));
+      return;
+    }
     onClassificationChange?.(hasZones && selectedZone?.zone_no ? "zone" : null);
     onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
     try {
@@ -544,6 +634,7 @@ const MapToolbar = ({
   };
 
   const loadCategories = async () => {
+    if (restrictedMode) return applyRestrictedSummaryLoad("byCategory", "Road Category", "category");
     onClassificationChange?.("category");
     onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
     try {
@@ -575,6 +666,7 @@ const MapToolbar = ({
   };
 
   const loadCondition = async () => {
+    if (restrictedMode) return applyRestrictedSummaryLoad("byCondition", "Road Condition", "condition");
     onClassificationChange?.("condition");
     onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
     try {
@@ -606,6 +698,7 @@ const MapToolbar = ({
   };
 
   const loadMaterial = async () => {
+    if (restrictedMode) return applyRestrictedSummaryLoad("byMaterial", "Road Material", "material");
     onClassificationChange?.("material");
     onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
     try {
@@ -637,6 +730,7 @@ const MapToolbar = ({
   };
 
   const loadOwnership = async () => {
+    if (restrictedMode) return applyRestrictedSummaryLoad("byOwnership", "Road Ownership", "ownership");
     onClassificationChange?.("ownership");
     onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
     try {
@@ -668,6 +762,7 @@ const MapToolbar = ({
   };
 
   const loadCus = async () => {
+    if (restrictedMode) return applyRestrictedSummaryLoad("byCus", "Road CUS Class", "cus");
     onClassificationChange?.("cus");
     onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
     try {
@@ -723,8 +818,20 @@ const MapToolbar = ({
       filter = `cus_class='${item}'`;
     }
 
-    // ✅ ONLY add zone filter if city actually has zones
-    if (hasZones && selectedZone?.zone_no) {
+    if (restrictedMode) {
+      // Picking one specific ward scopes down to just that ward (same as
+      // normal-dashboard behavior); every other nested list (Category,
+      // Condition, ...) stays scoped to the full locked ward set rather
+      // than widening back out to the whole zone.
+      if (nestedTitle === "Wards") {
+        const zoneNum = lockedZone ? Number(lockedZone) : NaN;
+        if (Number.isFinite(zoneNum)) filter = `zone_no=${zoneNum} AND ${filter}`;
+      } else {
+        const scopeFilter = summaryScopeFilter();
+        if (scopeFilter) filter = `${scopeFilter} AND ${filter}`;
+      }
+    } else if (hasZones && selectedZone?.zone_no) {
+      // ✅ ONLY add zone filter if city actually has zones
       filter = `zone_no='${selectedZone.zone_no}' AND ${filter}`;
     }
     console.log("Applying filter:", filter);
@@ -748,6 +855,16 @@ const MapToolbar = ({
     setNestedTitle("");
     onClassificationChange?.("zone"); // Switch to Zone classification layer
 
+    if (restrictedMode) {
+      // Opening the zone submenu must never load that zone's full road set —
+      // apply the locked ward-scoped filter instead of the bare zone filter
+      // a normal-dashboard click would use.
+      const scopeFilter = summaryScopeFilter();
+      onApplyRoadFilter?.(scopeFilter);
+      onZoomToFilter?.(scopeFilter);
+      return;
+    }
+
     // ✅ Only apply zone filter when city actually has zones
     if (hasZones && zone?.zone_no) {
       const zoneFilter = `zone_no='${zone.zone_no}'`;
@@ -760,7 +877,12 @@ const MapToolbar = ({
     <>
       {/* Left Toolbar */}
       <div className="map-toolbar left-toolbar">
-        <button className="map-btn wide-btn" onClick={() => onStreetViewToggle?.(!streetViewVisible)}>
+        <button
+          className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+          disabled={restrictedMode}
+          style={restrictedBtnStyle}
+          onClick={() => !restrictedMode && onStreetViewToggle?.(!streetViewVisible)}
+        >
           <i className="fas fa-street-view" /> <span>Street View</span>
         </button>
 
@@ -768,13 +890,60 @@ const MapToolbar = ({
           <i className="fas fa-road" /> <span>Road Network</span>
         </button>
 
-        <button className="map-btn wide-btn" onClick={handleDataAnalysis}>
+        <button
+          className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+          disabled={restrictedMode}
+          style={restrictedBtnStyle}
+          onClick={() => !restrictedMode && handleDataAnalysis()}
+        >
           <i className="fas fa-chart-column" /> <span>Data Analysis</span>
         </button>
 
-        <button className="map-btn wide-btn" onClick={() => onDssRoad?.()}>
+        <button
+          className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+          disabled={restrictedMode}
+          style={restrictedBtnStyle}
+          onClick={() => !restrictedMode && onDssRoad?.()}
+        >
           <i className="fas fa-sitemap" /> <span>DSS</span>
         </button>
+         {/* chainage — "Patch Creation / View Chainage": grayed out (but still
+             clickable, so it can explain why) until some road layer is
+             visible on the map, since chainage needs a road to click. */}
+              <button
+            className={`map-btn wide-btn${chainageActive ? " active" : ""}${
+              !chainageActive && chainageDisabled ? " map-btn--disabled-look" : ""
+            }`}
+              onClick={() => {
+                if (!isChainageAvailable(city)) {
+                  if (mapRef?.current?.showFeatureNotice) {
+                    mapRef.current.showFeatureNotice({
+                      feature: "Chainage",
+                      message: chainageUnavailableMessage(city),
+                      dedupeKey: `${city}|chainage-unavailable`,
+                    });
+                  } else {
+                    window.alert(chainageUnavailableMessage(city));
+                  }
+                  return;
+                }
+                if (onChainageToggle) {
+                  onChainageToggle();
+                } else {
+                  // Fallback for any context without an in-place toggle handler.
+                  navigate(`/chainage?city=${city?.toLowerCase()}&mode=CHAINAGE`);
+                }
+              }}
+              title={
+                chainageActive
+                  ? "Exit Patch Creation / View Chainage (select a road on the map)"
+                  : chainageDisabled
+                    ? "Patch Creation / View Chainage — open a road layer first"
+                    : "Patch Creation / View Chainage"
+              }
+            >
+            🔗
+          </button>
 
       </div>
 
@@ -851,7 +1020,12 @@ const MapToolbar = ({
           )}
         </div>
 
-        {/* SEARCH BUTTON WITH FLYOUT DROPDOWN */}
+        {/* SEARCH BUTTON WITH FLYOUT DROPDOWN — in field-task mode this stays
+            usable but scoped: its preloaded list and search results are
+            restricted to the locked ward set via the `wards` param below,
+            and searching also matches road_id (a field worker is more
+            likely to have a road number than a name) so this reuses the
+            already-optimized search flow rather than being hidden. */}
         <div style={{ position: "relative" }}>
           {/* THE SEARCH BOX (FLYOUT TO LEFT) */}
           {showSearchBox && (
@@ -878,7 +1052,6 @@ const MapToolbar = ({
                   height: "38px"
                 }}
               >
-                <i className="fas fa-search" style={{ color: "#666", marginRight: "8px" }} />
                 <input
                   type="text"
                   placeholder="Search Road or Lat,Lng"
@@ -899,7 +1072,8 @@ const MapToolbar = ({
                     outline: "none",
                     width: "100%",
                     fontSize: "14px",
-                    color: "#333"
+                    color: "#333",
+                    paddingLeft: "4px"
                   }}
                 />
                 <i
@@ -1069,8 +1243,11 @@ const MapToolbar = ({
         </div>
 
         <button
-          className="map-btn wide-btn right-btn"
+          className={`map-btn wide-btn right-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+          disabled={restrictedMode}
+          style={restrictedBtnStyle}
           onClick={() => {
+            if (restrictedMode) return;
             setActiveTool("query");
             setShowSearchBox(false);
             setControlsVisible(false);
@@ -1079,7 +1256,12 @@ const MapToolbar = ({
           <span>Query</span> <i className="fas fa-filter" />
         </button>
 
-        <button className="map-btn wide-btn right-btn" onClick={onSummary}>
+        <button
+          className={`map-btn wide-btn right-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+          disabled={restrictedMode}
+          style={restrictedBtnStyle}
+          onClick={() => !restrictedMode && onSummary?.()}
+        >
           <span>Summary</span> <i className="fas fa-table" />
         </button>
 
@@ -1115,29 +1297,53 @@ const MapToolbar = ({
             </button>
           </div>
 
+          {/* Field-task users can't tell from the menu alone whether "Zone
+              2" here means the whole zone or just their assigned ward — it's
+              always the latter (ward + bordering wards), but that needs to
+              be stated plainly rather than inferred from the zone/ward
+              numbers already visible on the map. */}
+          {restrictedMode && (
+            <div className="road-network-scope-banner">
+              Showing roads for Zone {lockedZone}, Ward {primaryWard || "—"}
+              {(() => {
+                const others = (lockedWardList || [])
+                  .map(String)
+                  .filter((w) => w !== String(primaryWard));
+                return others.length ? ` + adjacent wards (${others.join(", ")})` : "";
+              })()}
+            </div>
+          )}
+
           {/* LEVEL 1 */}
           <ul className="menu-list">
-            <li
-              className="menu-item"
-              onClick={() => {
-                setSelectedZone(null);
-                setIsAllRoadsSelected(true);
-                setNestedList([]);
-                setNestedTitle("");
-                onApplyRoadFilter?.("INCLUDE");
-                onClassificationChange?.(null); // Reset to base layer
-              }}
-            >
-              {cityLabel} All Roads »
-            </li>
+            {!restrictedMode && (
+              <li
+                className="menu-item"
+                onClick={() => {
+                  setSelectedZone(null);
+                  setIsAllRoadsSelected(true);
+                  setNestedList([]);
+                  setNestedTitle("");
+                  onApplyRoadFilter?.("INCLUDE");
+                  onClassificationChange?.(null); // Reset to base layer
+                }}
+              >
+                {cityLabel} All Roads »
+              </li>
+            )}
 
-            {/* ZONE CITIES */}
+            {/* ZONE CITIES — field-task mode only ever shows the URL's own
+                zone; there's nothing useful a different zone could do here
+                since the whole page is locked to one ward's task anyway. */}
             {/* ZONE CITIES */}
             {hasZones &&
               (isLoading ? (
                 <li className="menu-item">Loading zones...</li>
               ) : (
-                zones.map((zone, index) => (
+                (restrictedMode
+                  ? zones.filter((z) => String(z.zone_no) === String(lockedZone))
+                  : zones
+                ).map((zone, index) => (
                   <li
                     key={index}
                     className="menu-item"

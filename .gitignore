@@ -37,15 +37,43 @@ test_*
 debug_*
 find_roads.js
 output.xml
+scripts/test-db-nagarnigams.mjs
+scripts/test-geoserver-layers.mjs
+scripts/build-local-context.mjs
+.codex/
 *.zip
 *.rar
 *.7z
 
 # ─── Caches ───────────────────────────────────────────────────
 .npm/
+.npm-cache/
 .cache/
+server/tile-cache/
+server/boundary-cache/
+server/wfs-cache/
+server/mbtiles/
+server/mbtiles/
+
+# Local assistant/session state
+.claude/
+server/_tmp_*.mjs
+server/server/
+server/servernew/
+servernew/
+
+# Local audit/report artifacts
+2026-Q2-Nagar Vikas Road Updation-WebApp-SecurityTest-Report-v2.0.pdf
+
+# ─── graphify (local knowledge graph, regenerate with /graphify) ──
+graphify-out/
+.graphify_*
+.graphify_python
 
 # Local backup files created during server hotfixes
 *.bak
 *.bak.*
+
+# ─── Internal infra docs (kept local, not in git history) ─────
+URIDA_Production_Server_Baseline_Report.xlsx
 

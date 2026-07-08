@@ -3,6 +3,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { exportToPDF, exportToExcel, exportToKML, captureMapCanvas, drawWatermark } from "../utils/gisExport";
+import { getIsLowBandwidth } from "../utils/networkStatus";
+import { logEvent } from "../utils/telemetry";
 import { saveAs } from "file-saver";
 
 import "../assets/styles/Dashboard.css";
@@ -16,12 +18,25 @@ import SummaryTable from "../components/SummaryTable";
 import ChartPanel from "../components/ChartPanel";
 
 import { cityConfig } from "../assets/configs/cityConfig.js";
-const GEOSERVER_BASE = window.location.port === "8060"
-  ? `${window.location.protocol}//${window.location.hostname}:8080/geoserver`
-  : (process.env.REACT_APP_GEOSERVER_BASE || "/geoserver");
+import { getGeoserverBase } from "../utils/geoserverBase";
+import { isChainageAvailable } from "../utils/chainageAvailability"; //chainage
+const GEOSERVER_BASE = getGeoserverBase();
 
 // ⭐ Internal Component for Filter Dropdown
 const NUMERIC_COLS = ['yoc', 'row_meter', 'carriage_w', 'length_km'];
+
+// Keeps the top-loading-strip message short and readable regardless of how
+// many things happen to be loading at once — a long comma-joined list of
+// layer titles can overflow no matter how generous the CSS truncation is,
+// so cap it at two names and summarize the rest instead of ellipsis-cutting
+// mid-word.
+function formatLoadingMessage(labels) {
+  const list = (labels || []).filter(Boolean);
+  if (!list.length) return "Loading, please wait…";
+  if (list.length === 1) return `Loading ${list[0]}, please wait…`;
+  if (list.length === 2) return `Loading ${list[0]} and ${list[1]}, please wait…`;
+  return `Loading ${list[0]}, ${list[1]} and ${list.length - 2} more, please wait…`;
+}
 
 const RangeSlider = ({ col, min, max, value, onChange }) => {
   const [lo, setLo] = React.useState(value?.[0] ?? min);
@@ -375,14 +390,127 @@ const DashboardPage = () => {
   const queryParams = new URLSearchParams(location.search);
   const city = (queryParams.get("city") || "Lucknow").toLowerCase();
 
+  // A field-task deep link (KMC/iGile redirect) carries project_id/user_id
+  // alongside mode=CHAINAGE — a plain manual "Chainage" button click never
+  // has these. This is what distinguishes "someone was sent here to work on
+  // one specific patch" from "a logged-in user is browsing Chainage mode
+  // normally," which is why the whole restricted-chrome/scoped-data mode
+  // below hangs off this specific combination, not just `mode` alone.
+  const urlProjectId = queryParams.get("project_id");
+  const urlUserId = queryParams.get("user_id");
+  const urlZone = queryParams.get("zone");
+  const urlWard = queryParams.get("ward");
+  const urlTaskTitle = queryParams.get("title");
+  const isFieldTaskMode =
+    queryParams.get("mode") === "CHAINAGE" && !!(urlProjectId && urlUserId);
+
+  useEffect(() => {
+    logEvent("dashboard_opened", { city });
+  }, [city]);
+
   const [showRoadSearch, setShowRoadSearch] = useState(false);
   // const [roadOptions, setRoadOptions] = useState([]);
   const [selectedRoad, setSelectedRoad] = useState("");
 
-  const [roadFilter, setRoadFilter] = useState(""); // ⭐ FILTER FOR WMS LAYER
+  // Shared by roadFilter/baseFilter's initial state just below — field-task
+  // deep links need this value available synchronously on the very first
+  // render, not one tick later via the "combine filters" effect further
+  // down. roadFilter in particular is read directly by MapContainer's own
+  // effects (the WFS hit-test fetch, the road layer's CQL) — if it started
+  // at "" and only got the real value a render later, those effects fired
+  // at least once fully unfiltered (a real, observed burst of "every road
+  // in the city" requests) before catching up.
+  const computeFieldTaskZoneWardFilter = () => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("mode") !== "CHAINAGE") return "";
+    const rawZone = params.get("zone");
+    const rawWard = params.get("ward");
+    const zoneNum = rawZone ? Number(rawZone) : NaN;
+    const wardNum = rawWard ? Number(rawWard) : NaN;
+    const parts = [];
+    if (Number.isFinite(zoneNum)) parts.push(`zone_no=${zoneNum}`);
+    if (Number.isFinite(wardNum)) parts.push(`ward_no=${wardNum}`);
+    return parts.length ? parts.join(" AND ") : "";
+  };
+  const [roadFilter, setRoadFilter] = useState(computeFieldTaskZoneWardFilter); // ⭐ FILTER FOR WMS LAYER
   const [zoomFilter, setZoomFilter] = useState(""); // ⭐ FILTER FOR AUTO-ZOOM
-  const [baseFilter, setBaseFilter] = useState(""); // ⭐ NEW: Base filter from Sidebar/Search
+  // Field-task deep links seed the road table/road-layer filter straight
+  // from the URL's zone/ward on first render — without this, the table's
+  // own data-fetch effect (driven entirely by baseFilter/roadFilter) has no
+  // idea a specific zone/ward was requested and would load/export the
+  // whole city's ~30k roads instead of the one patch task's area.
+  const [baseFilter, setBaseFilter] = useState(computeFieldTaskZoneWardFilter); // ⭐ NEW: Base filter from Sidebar/Search
+  // Starts as just the URL's own ward (fast, matches the initial baseFilter
+  // above) then widens once /adjacent-wards resolves — loading roads for
+  // the assigned ward plus whichever wards actually border it keeps the
+  // "reduce load" goal while still showing a sensible working area instead
+  // of a single ward isolated with no surrounding context.
+  const [fieldTaskWardList, setFieldTaskWardList] = useState(() =>
+    isFieldTaskMode && urlWard ? [String(urlWard)] : []
+  );
+  useEffect(() => {
+    if (!isFieldTaskMode || !urlZone || !urlWard) return;
+    let cancelled = false;
+    fetch(
+      `/api/road-networks/${city}/adjacent-wards?zone=${encodeURIComponent(urlZone)}&ward=${encodeURIComponent(urlWard)}`
+    )
+      .then((res) => (res.ok ? res.json() : []))
+      .then((rows) => {
+        if (cancelled) return;
+        const wards = Array.isArray(rows)
+          ? [...new Set(rows.map((r) => String(r.ward_no)).filter(Boolean))]
+          : [];
+        if (wards.length) setFieldTaskWardList(wards);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isFieldTaskMode, city, urlZone, urlWard]);
+  // Recomputed whenever fieldTaskWardList changes (single ward → widened
+  // adjacency list) so both the "still untouched default" zoom-guard below
+  // and the effect that pushes this into baseFilter stay in sync through
+  // that transition.
+  const fieldTaskDefaultFilter = isFieldTaskMode
+    ? (() => {
+        const zoneNum = urlZone ? Number(urlZone) : NaN;
+        const parts = [];
+        if (Number.isFinite(zoneNum)) parts.push(`zone_no=${zoneNum}`);
+        const wardNums = fieldTaskWardList.map(Number).filter(Number.isFinite);
+        if (wardNums.length === 1) parts.push(`ward_no=${wardNums[0]}`);
+        else if (wardNums.length > 1) parts.push(`ward_no IN (${wardNums.join(",")})`);
+        return parts.length ? parts.join(" AND ") : null;
+      })()
+    : null;
+  useEffect(() => {
+    if (!isFieldTaskMode || !fieldTaskDefaultFilter) return;
+    setBaseFilter(fieldTaskDefaultFilter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fieldTaskDefaultFilter, isFieldTaskMode]);
   const [queryVersion, setQueryVersion] = useState(0);
+  const [showChainage, setShowChainage] = useState(false); //chainage
+  // In-place Chainage mode toggle — replaces navigating to a separate
+  // /chainage page. "/chainage" deep links (e.g. from the mobile field-task
+  // app) redirect here with ?mode=CHAINAGE preserved, so this also picks
+  // that up on load. //chainage
+  const [mode, setMode] = useState(() =>
+    new URLSearchParams(location.search).get("mode") === "CHAINAGE" ? "CHAINAGE" : "DASHBOARD"
+  ); //chainage
+  const handleChainageToggle = () => {
+    setMode((m) => {
+      if (m === "CHAINAGE") return "DASHBOARD";
+      if (!hasVisibleRoadLayer) {
+        mapRef.current?.showFeatureNotice?.({
+          feature: "Chainage",
+          message: "Please open a road layer first — patch creation only works on a road layer.",
+          dedupeKey: `chainage-no-road-layer|${city}|${Date.now()}`,
+          autoDismissMs: 4500,
+        });
+        return m;
+      }
+      return "CHAINAGE";
+    });
+  }; //chainage
 
   // ⭐ NEW: Generic Layer Filters (for Attribute Query)
   const [layerFilters, setLayerFilters] = useState({});
@@ -405,8 +533,31 @@ const DashboardPage = () => {
     roadClassifications: {},
     specializedOptions: {}, // e.g. { sewage: 'diameter' }
   });
+  // Chainage/patch creation only makes sense once some road layer is on the
+  // map — it needs a road to click. Covers the main Road Network toggle, any
+  // road-classification (category) layer, and the "INCLUDE" sentinel
+  // baseFilter uses when roads are shown via a filter/summary-chart click. //chainage
+  const hasVisibleRoadLayer =
+    !!layerVisibility?.network?.roads ||
+    Object.values(layerVisibility?.roadClassifications || {}).some(Boolean) ||
+    baseFilter === "INCLUDE" ||
+    (!!roadFilter && roadFilter.trim() !== ""); //chainage
   const [currentPage, setCurrentPage] = useState(1);
-  const [recordsPerPage] = useState(100);
+  // Field-task/KMC deep-link sessions (the "redirection page") get a
+  // smaller page size - that flow is used on phones in the field, where a
+  // 100-row page is unwieldy. The normal dashboard table keeps 100.
+  const recordsPerPage = isFieldTaskMode ? 25 : 100;
+  // Live extent sync: [minLon, minLat, maxLon, maxLat] of the map's current
+  // viewport, reported (debounced) by MapContainer via onMapExtentChange.
+  const [mapExtent, setMapExtent] = useState(null);
+  const handleMapExtentChange = useCallback((extent) => {
+    setMapExtent((prev) => {
+      if (prev && prev.length === 4 && extent.every((v, i) => Math.abs(v - prev[i]) < 1e-6)) {
+        return prev;
+      }
+      return extent;
+    });
+  }, []);
   const [isTableMinimized, setIsTableMinimized] = useState(false);
   const [selectedRoadId, setSelectedRoadId] = useState(null);
   const [selectedRoadIds, setSelectedRoadIds] = useState([]);
@@ -433,6 +584,42 @@ const DashboardPage = () => {
   const [specializedAllRows, setSpecializedAllRows] = useState([]);
   const [specializedColumnFilters, setSpecializedColumnFilters] = useState({});
   const [isLoading, setIsLoading] = useState(false); // ⭐ NEW: Global loading state
+  const [loadingLabels, setLoadingLabels] = useState([]); // Friendly names of whatever's currently loading
+  // Reference-counted loading registry: any number of independent things
+  // (map tiles/layers, table fetches, future features) can be loading at
+  // once — each keeps its own key so one finishing early doesn't hide the
+  // indicator while another is still in flight. To show a spinner/loading
+  // strip for a new feature, just call beginLoading('myKey', 'Friendly
+  // label') / endLoading('myKey') around it; no other wiring needed.
+  const loadingRegistryRef = useRef(new Map());
+  const loadingStartedAtRef = useRef(new Map());
+  const recomputeLoading = useCallback(() => {
+    const labels = Array.from(new Set(loadingRegistryRef.current.values()));
+    setLoadingLabels(labels);
+    setIsLoading(labels.length > 0);
+  }, []);
+  const beginLoading = useCallback((key, label) => {
+    loadingRegistryRef.current.set(key, label || "Loading");
+    loadingStartedAtRef.current.set(key, performance.now());
+    // "map" is logged with per-layer detail by mapLoadingTracker.js already
+    // — logging it again here would just be a redundant, less-detailed
+    // duplicate of the same event.
+    if (key !== "map") logEvent("table_load_start", { key, label });
+    recomputeLoading();
+  }, [recomputeLoading]);
+  const endLoading = useCallback((key) => {
+    loadingRegistryRef.current.delete(key);
+    const startedAt = loadingStartedAtRef.current.get(key);
+    loadingStartedAtRef.current.delete(key);
+    if (key !== "map" && startedAt !== undefined) {
+      logEvent("table_load_end", { key, durationMs: Math.round(performance.now() - startedAt) });
+    }
+    recomputeLoading();
+  }, [recomputeLoading]);
+  const handleMapLoadingChange = useCallback((loading, labels) => {
+    if (loading) beginLoading("map", (labels && labels.length ? labels : ["map"]).join(", "));
+    else endLoading("map");
+  }, [beginLoading, endLoading]);
   const [isDownloading, setIsDownloading] = useState(false); // ⭐ Download in progress
   const [activeFilterColumn, setActiveFilterColumn] = useState(null);
   const [filterPosition, setFilterPosition] = useState(null);
@@ -588,10 +775,14 @@ const DashboardPage = () => {
 
     // Sync zoom filter if main filter changes (except when clicking rows which handles zoom separately)
     // Note: We check if finalFilter differs to avoid loops, though setRoadFilter does that too.
-    if (finalFilter !== roadFilter && lastFilterSourceRef.current !== "map") {
+    const isUntouchedFieldTaskDefault =
+      fieldTaskDefaultFilter &&
+      finalFilter === fieldTaskDefaultFilter &&
+      lastFilterSourceRef.current === null;
+    if (finalFilter !== roadFilter && lastFilterSourceRef.current !== "map" && !isUntouchedFieldTaskDefault) {
       setZoomFilter(finalFilter);
     }
-  }, [baseFilter, columnFilters, queryVersion]); // Removed roadFilter from dependency to avoid loop
+  }, [baseFilter, columnFilters, queryVersion, fieldTaskDefaultFilter]); // Removed roadFilter from dependency to avoid loop
 
   const requestLiveMetrics = useCallback((filterExpr) => {
     if (liveMetricsTimerRef.current) {
@@ -838,10 +1029,28 @@ const DashboardPage = () => {
   const [showRoadNetworkPanel, setShowRoadNetworkPanel] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [showChartPanel, setShowChartPanel] = useState(false);
+  // Minimize keeps the panel mounted (filters/zones/layers preserved) but
+  // visually hidden; only an explicit Close actually resets everything.
+  const [chartPanelMinimized, setChartPanelMinimized] = useState(false);
+  const handleChartPanelToggle = () => {
+    logEvent("chart_panel_toggle", { wasOpen: showChartPanel, wasMinimized: chartPanelMinimized });
+    setShowChartPanel((prev) => {
+      if (prev && chartPanelMinimized) {
+        setChartPanelMinimized(false); // was minimized — restore, don't close
+        return true;
+      }
+      if (prev) return false; // was open — toolbar click closes it fully
+      setChartPanelMinimized(false);
+      return true; // was closed — open fresh
+    });
+  };
   const [streetViewVisible, setStreetViewVisible] = useState(false);
 
   const toggleSidebar = () => {
-    setIsSidebarOpen((prev) => !prev);
+    setIsSidebarOpen((prev) => {
+      logEvent("sidebar_toggle", { opening: !prev });
+      return !prev;
+    });
   };
 
   const loadSpecializedNetworkTable = useCallback(
@@ -890,11 +1099,12 @@ const DashboardPage = () => {
       setShouldFetchTable(true);
       setIsTableMinimized(false);
 
-      setIsLoading(true);
+      beginLoading("specializedTable", specCfg.label || formatGenericColumnLabel(networkId));
       try {
+        const pageLimit = getIsLowBandwidth() ? 500 : 2000;
         const url = `/api/road-networks/${cityKey}/specialized-details?network=${encodeURIComponent(
           networkId
-        )}&option=${encodeURIComponent(optionKey)}&layer=${encodeURIComponent(layerName)}&page=1&limit=2000`;
+        )}&option=${encodeURIComponent(optionKey)}&layer=${encodeURIComponent(layerName)}&page=1&limit=${pageLimit}`;
         const res = await fetch(url);
         const payload = await res.json();
         if (!res.ok) throw new Error(payload?.error || `HTTP ${res.status}`);
@@ -918,7 +1128,7 @@ const DashboardPage = () => {
       } catch (err) {
         console.error("Specialized network table load error:", err);
       } finally {
-        setIsLoading(false);
+        endLoading("specializedTable");
       }
     },
     [city, tableDataset.kind, tableDataset.networkId]
@@ -938,6 +1148,7 @@ const DashboardPage = () => {
       "option:",
       option
     );
+    logEvent("layer_toggle", { group, id, checked, option });
     if (group === "roadClassifications") {
       if (id === "none") {
         setLayerVisibility((prev) => ({
@@ -1118,9 +1329,29 @@ const DashboardPage = () => {
     tableFetchIdRef.current = fetchId;
     const controller = new AbortController();
 
-    setIsLoading(true);
+    beginLoading("roadTable", "Road Network data");
+    // Explicit limit (server defaults to 1000 rows when omitted) so a
+    // detected slow connection pulls a smaller first batch instead of the
+    // full 1000-row page every time the filter changes.
+    const roadTableLimit = getIsLowBandwidth() ? 300 : 1000;
+    // Live extent sync: whenever the table is open, only ask for roads
+    // actually within the current map viewport instead of the whole
+    // filtered set - MapContainer reports this (debounced) via
+    // onMapExtentChange, so this effect re-fetches as the user pans/zooms.
+    const bboxParam = mapExtent ? `&bbox=${encodeURIComponent(mapExtent.join(","))}` : "";
+    // A road click typically also pans/zooms the map, which changes
+    // mapExtent and re-triggers this same fetch - guarantee the just-
+    // clicked/selected road is always in the result (even if its exact
+    // geometry sits just outside the computed bbox) by OR-ing it into the
+    // server-side filter directly, in the same query. Without this, that
+    // second fetch's plain bbox filter can race the separate "missing road"
+    // prepend-fetch below and silently drop the road (and its table
+    // highlight) right after a click.
+    const includeRoadIdParam = (!isMultiSelectMode && selectedRoadId)
+      ? `&includeRoadId=${encodeURIComponent(selectedRoadId)}`
+      : "";
     fetch(
-      `/api/road-networks/${city}/details?filter=${encodeURIComponent(roadFilter)}`,
+      `/api/road-networks/${city}/details?filter=${encodeURIComponent(roadFilter)}&limit=${roadTableLimit}${bboxParam}${includeRoadIdParam}`,
       { signal: controller.signal }
     )
       .then((res) => res.json())
@@ -1132,15 +1363,15 @@ const DashboardPage = () => {
           total_roads: data.total || (data.data || []).length,
           total_length_km: data.total_length_km || 0
         });
-        setIsLoading(false);
+        endLoading("roadTable");
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
         console.error("Table load error:", err);
-        setIsLoading(false);
+        endLoading("roadTable");
       });
     return () => controller.abort();
-  }, [roadFilter, city, shouldFetchTable, analysisResults]);
+  }, [roadFilter, city, shouldFetchTable, analysisResults, mapExtent, selectedRoadId, isMultiSelectMode]);
 
   // Pagination calculations
   const indexOfLastRecord = currentPage * recordsPerPage;
@@ -1150,10 +1381,14 @@ const DashboardPage = () => {
 
   // Pagination controls
   // const paginate = (pageNumber) => setCurrentPage(pageNumber);
-  const goToPreviousPage = () =>
+  const goToPreviousPage = () => {
+    logEvent("table_page_change", { direction: "previous" });
     setCurrentPage((prev) => Math.max(prev - 1, 1));
-  const goToNextPage = () =>
+  };
+  const goToNextPage = () => {
+    logEvent("table_page_change", { direction: "next" });
     setCurrentPage((prev) => Math.min(prev + 1, totalPages));
+  };
 
   const getRowSelectionId = (row) =>
     row?.road_id ??
@@ -1161,6 +1396,39 @@ const DashboardPage = () => {
     row?.roadid ??
     row?.ROAD_ID ??
     null;
+
+  // Field-task mode's multi-road patch selection: fetches roads adjacent to
+  // every currently-selected road and narrows the table's own filter down
+  // to exactly (selection + candidates) — so picking the next road for the
+  // patch only ever means picking from what's already visible in the
+  // table, never browsing the whole ward. Growing the selection re-runs
+  // this with the new, larger set, which is what makes the candidate pool
+  // expand road-by-road along the connected chain instead of staying fixed
+  // to the first road's own neighbors.
+  const fetchAndApplyMultiRoadCandidates = async (selectedIds) => {
+    const wardNums = (fieldTaskWardList || []).map(Number).filter(Number.isFinite);
+    const wardsParam = wardNums.length ? `&wards=${wardNums.join(",")}` : "";
+    try {
+      const results = await Promise.all(
+        selectedIds.map((id) =>
+          fetch(`/api/road-networks/${city}/adjacent-roads?road_id=${encodeURIComponent(id)}${wardsParam}`)
+            .then((res) => (res.ok ? res.json() : []))
+            .catch(() => [])
+        )
+      );
+      const candidateIds = new Set(selectedIds.map(String));
+      results.forEach((list) => {
+        (Array.isArray(list) ? list : []).forEach((r) => candidateIds.add(String(r.road_id)));
+      });
+      const filter = buildSelectionFilter([...candidateIds]);
+      lastFilterSourceRef.current = "table";
+      setBaseFilter(filter);
+      setQueryVersion((v) => v + 1);
+    } catch {
+      // Leave the table on whatever filter it already had — worst case the
+      // candidate pool just doesn't narrow further this round.
+    }
+  };
 
   const handleRowClick = (row) => {
     const rowId = getRowSelectionId(row);
@@ -1172,9 +1440,13 @@ const DashboardPage = () => {
       if (!rowId) return;
       setSelectedRoadIds((prev) => {
         const idStr = String(rowId);
-        return prev.includes(idStr)
+        const next = prev.includes(idStr)
           ? prev.filter((id) => id !== idStr)
           : [...prev, idStr];
+        if (isFieldTaskMode && next.length) {
+          fetchAndApplyMultiRoadCandidates(next);
+        }
+        return next;
       });
       return;
     }
@@ -1188,6 +1460,13 @@ const DashboardPage = () => {
       const idStr = String(rowId);
       const isNumeric = /^-?\d+(?:\.\d+)?$/.test(idStr);
       setZoomFilter(isNumeric ? `road_id=${idStr}` : `road_id='${idStr.replace(/'/g, "''")}'`);
+    }
+
+    // Field-task mode: table selection opens the same chainage panel a map
+    // click would — someone working through the table shouldn't also have
+    // to go find and click the road on the map.
+    if (isFieldTaskMode && rowId != null && rowId !== "") {
+      mapRef.current?.openChainageForRoadId?.(rowId, row);
     }
 
     // The selected row is highlighted via CSS.
@@ -1239,6 +1518,16 @@ const DashboardPage = () => {
     return false;
   };
 
+  // Table-state stacking around the chainage patch table: reuses the same
+  // snapshot/restore mechanism as the road-detail table's Back/Close flow
+  // above, just triggered from the patch table's own open/close instead. //chainage
+  const handlePatchTableOpen = () => {
+    prevTableStateRef.current = capturePrevState();
+  }; //chainage
+  const handlePatchTableClose = () => {
+    restorePrevTableState();
+  }; //chainage
+
 
   const buildSelectionFilter = useCallback((ids) => {
     if (!ids || ids.length === 0) return "";
@@ -1253,6 +1542,29 @@ const DashboardPage = () => {
 
   const applyMultiSelection = () => {
     if (!selectedRoadIds.length) return;
+
+    if (isFieldTaskMode) {
+      // Multi-road patch creation — hand the selected roads to
+      // MapContainer's existing preview -> confirm -> save flow (the same
+      // one the single-road Create Patch form uses) instead of just
+      // filtering the table/map to show them.
+      if (selectedRoadIds.length < 2) {
+        mapRef.current?.showFeatureNotice?.({
+          feature: "Chainage",
+          message: "Select at least one more connected road before creating a multi-road patch.",
+          dedupeKey: `multi-road-too-few|${Date.now()}`,
+          autoDismissMs: 4000,
+        });
+        return;
+      }
+      const roadInfos = selectedRoadIds.map((id) => {
+        const row = tableRows.find((r) => String(getRowSelectionId(r)) === String(id));
+        return { road_id: id, road_name: row?.road_name || row?.roadName || row?.roadname || id };
+      });
+      mapRef.current?.createMultiRoadPatch?.(roadInfos);
+      return;
+    }
+
     if (!prevTableStateRef.current) {
       prevTableStateRef.current = capturePrevState();
     }
@@ -1268,6 +1580,19 @@ const DashboardPage = () => {
   };
 
   const clearMultiSelection = () => {
+    if (isFieldTaskMode) {
+      // Drop back to the normal ward-scoped view (target ward + neighbors)
+      // instead of the generic "no filter"/"INCLUDE" reset, which would
+      // otherwise lose the field-task scope entirely.
+      setSelectedRoadIds([]);
+      setBaseFilter(fieldTaskDefaultFilter || "");
+      setQueryVersion((v) => v + 1);
+      if (isMultiSelectMode) {
+        setSelectedRoadId(null);
+        setSelectedRoad("");
+      }
+      return;
+    }
     if (
       lastFilterSourceRef.current === "table" &&
       /road_id\s+in\s*\(/i.test(String(baseFilter || ""))
@@ -1289,10 +1614,28 @@ const DashboardPage = () => {
       const next = !prev;
       if (next) {
         if (selectedRoadId !== null && selectedRoadId !== undefined) {
-          setSelectedRoadIds([String(selectedRoadId)]);
+          const seedId = String(selectedRoadId);
+          setSelectedRoadIds([seedId]);
+          if (isFieldTaskMode) {
+            // Narrow the table to the seed road + whatever's actually
+            // connected to it — same "adjacent, not everything" principle
+            // as the ward scoping, just at road granularity.
+            fetchAndApplyMultiRoadCandidates([seedId]);
+          }
+        } else if (isFieldTaskMode) {
+          mapRef.current?.showFeatureNotice?.({
+            feature: "Chainage",
+            message: "Select a road first, then turn on Multi to add connected roads to the same patch.",
+            dedupeKey: `multi-road-no-selection|${Date.now()}`,
+            autoDismissMs: 4000,
+          });
         }
       } else {
         setSelectedRoadIds([]);
+        if (isFieldTaskMode) {
+          setBaseFilter(fieldTaskDefaultFilter || "");
+          setQueryVersion((v) => v + 1);
+        }
       }
       return next;
     });
@@ -1384,11 +1727,30 @@ const DashboardPage = () => {
     }
   }, [tableRows, selectedRoadId, isMultiSelectMode, recordsPerPage, city, currentPage]);
 
+  // Table-row-highlight-only counterpart to handleRoadSelectedFromMap, used
+  // specifically by field-task mode's chainage click flow (openChainageForRoadId)
+  // instead of the full callback above, since that one resets baseFilter/
+  // zoomFilter in ways that would fight field-task's own ward-scoped default
+  // filter. Mirrors the table's own selection state so clicking a road on the
+  // map highlights the same row a table click on that road would.
+  //
+  // Passing null clears the highlight - this is required, not optional: the
+  // road-panel's own close (X) button only clears MapContainer's local
+  // selectedRoad state, but this component's own "armed mode" effect
+  // re-opens the panel automatically whenever selectedRoadId (this state)
+  // is still set and doesn't match the current selectedRoad. Without
+  // clearing selectedRoadId here too, closing the panel via X immediately
+  // reopens it.
+  const handleFieldTaskRoadHighlight = useCallback((roadId) => {
+    setSelectedRoadId(roadId == null ? null : String(roadId));
+  }, []);
+
   const handleRoadSelectedFromMap = useCallback((road) => {
     if (!road) return;
     let roadId = road.road_id ?? null;
     const gisId = road.gis_id ?? null;
     const roadName = road.road_name ?? null;
+    logEvent("road_selected_on_map", { roadId, gisId });
 
     console.log("[handleRoadSelectedFromMap] received:", JSON.stringify(road), "roadId:", roadId, "gisId:", gisId, "tableRows:", tableRows.length);
 
@@ -1467,7 +1829,7 @@ const DashboardPage = () => {
           const alreadyInTable = tableRows.some((r) => String(r.road_id) === idStr);
           if (!alreadyInTable) {
             const filter = roadId ? `road_id='${roadId}'` : `gis_id='${gisId}'`;
-            setIsLoading(true);
+            beginLoading("roadDetailFetch", "Road details");
             fetch(`/api/road-networks/${city}/details?filter=${encodeURIComponent(filter)}`)
               .then((res) => res.json())
               .then((data) => {
@@ -1480,11 +1842,11 @@ const DashboardPage = () => {
                     return [fetchedRoad, ...prev];
                   });
                 }
-                setIsLoading(false);
+                endLoading("roadDetailFetch");
               })
               .catch((err) => {
                 console.error("[handleRoadSelectedFromMap] multi-select fetch failed:", err);
-                setIsLoading(false);
+                endLoading("roadDetailFetch");
               });
           }
         }
@@ -1537,6 +1899,7 @@ const DashboardPage = () => {
   };
 
   const handleBaseMapChange = (selectedBaseMap) => {
+    logEvent("basemap_switch", { from: baseMap, to: selectedBaseMap });
     const map =
       mapRef.current?.instance || mapRef.current?.map || mapRef.current;
     if (!map || typeof map.getLayers !== "function") {
@@ -1721,6 +2084,8 @@ const DashboardPage = () => {
   // ⭐ Handle Download Actions — delegates to gisExport utility
   const handleDownloadAction = async (action) => {
     console.log("Download action triggered:", action);
+    const downloadStartedAt = performance.now();
+    logEvent("download_start", { action });
 
     setIsDownloading(true);
     try {
@@ -1785,7 +2150,7 @@ const DashboardPage = () => {
           alert("No data to export. Please adjust your filter and try again.");
           return;
         }
-        exportToExcel(rows, city, { title: tableDataset.title || "table_data" });
+        await exportToExcel(rows, city, { title: tableDataset.title || "table_data" });
 
       } else if (action === "pdf") {
         let rows = [];
@@ -1826,7 +2191,9 @@ const DashboardPage = () => {
     } catch (err) {
       console.error("Download error:", err);
       alert(`Export failed: ${err.message}`);
+      logEvent("download_error", { action, message: err.message });
     } finally {
+      logEvent("download_end", { action, durationMs: Math.round(performance.now() - downloadStartedAt) });
       setIsDownloading(false);
     }
   };
@@ -1844,9 +2211,22 @@ const DashboardPage = () => {
         onSearchClick={handleSearchClick}
         onDownloadAction={handleDownloadAction}
         isDownloading={isDownloading}
+        hideBack={isFieldTaskMode}
+        hideHamburger={isFieldTaskMode}
+        hideDownload={isFieldTaskMode}
+        isFieldTaskMode={isFieldTaskMode}
+        fieldTaskLabel={isFieldTaskMode ? urlTaskTitle || null : null}
+        kmcUserId={isFieldTaskMode ? urlUserId : null}
       />
 
-      {isLoading && <div className="top-loading-strip" />}
+      {isLoading && (
+        <div className="top-loading-strip">
+          <span className="top-loading-strip-message">
+            <span className="top-loading-strip-spinner" aria-hidden="true" />
+            {formatLoadingMessage(loadingLabels)}
+          </span>
+        </div>
+      )}
 
       {isSidebarOpen && (
         <Sidebar
@@ -1863,7 +2243,7 @@ const DashboardPage = () => {
           drainageController={{
             setLayerVisibility,
             tableDataset,
-            setIsLoading,
+            setIsLoading: (v) => (v ? beginLoading("drainFilter", "Drain data") : endLoading("drainFilter")),
             setSelectedRoadId,
             setSelectedRoadIds,
             setIsMultiSelectMode,
@@ -1896,6 +2276,7 @@ const DashboardPage = () => {
         <MapContainer
           ref={mapRef}
           city={city}
+          mode={mode} //chainage
           baseMap={baseMap} // ⭐ Passed for adaptive colors
           layerVisibility={layerVisibility}
           streetViewVisible={streetViewVisible}
@@ -1916,12 +2297,27 @@ const DashboardPage = () => {
           onAnalysisDataLoaded={handleAnalysisDataLoaded} // ⭐ NEW
           onRoadSelected={handleRoadSelectedFromMap}
           onPopupClosed={handlePopupClosed}
-          onMapLoadingChange={setIsLoading} // ⭐ NEW: Map loading prop
+          onMapLoadingChange={handleMapLoadingChange} // ⭐ NEW: Map loading prop
+          showChainage={showChainage} //chainage
+          onPatchTableOpen={handlePatchTableOpen} //chainage
+          onPatchTableClose={handlePatchTableClose} //chainage
+          onFieldTaskRoadHighlight={handleFieldTaskRoadHighlight} //chainage
+          onMapExtentChange={handleMapExtentChange}
+          fieldTaskWardList={isFieldTaskMode ? fieldTaskWardList : null} //chainage
+          isMultiSelectModeProp={isMultiSelectMode} //chainage
         />
 
         {/* ⭐ TOOLBAR — updated */}
         <MapToolbar
           city={city}
+          mapRef={mapRef}
+          restrictedMode={isFieldTaskMode}
+          lockedZone={isFieldTaskMode ? urlZone : null}
+          lockedWardList={isFieldTaskMode ? fieldTaskWardList : null}
+          primaryWard={isFieldTaskMode ? urlWard : null}
+          onChainageToggle={handleChainageToggle} //chainage
+          chainageActive={mode === "CHAINAGE"} //chainage
+          chainageDisabled={!hasVisibleRoadLayer || !isChainageAvailable(city)} //chainage
           showRoadNetworkPanel={showRoadNetworkPanel} // ⭐ Pass state
           onToggleRoadNetworkPanel={setShowRoadNetworkPanel} // ⭐ Pass setter
           baseMap={baseMap}
@@ -1958,11 +2354,24 @@ const DashboardPage = () => {
           onClear={() => {
             console.log("Clearing road selection");
             setSelectedRoad("");
-            setBaseFilter("");
+            // Field-task mode: "Clear" undoes a category/condition/etc.
+            // drill-down, not the whole redirect scope — resetting to ""
+            // dropped the ward filter entirely, which hid the road layer
+            // and let the view fall back toward the full zone/city instead
+            // of staying on the assigned ward + its neighbors.
+            setBaseFilter(isFieldTaskMode ? fieldTaskDefaultFilter || "" : "");
             setStreetViewVisible(false);
             // setZoomFilter(""); // ⭐ Handled by useEffect
             setColumnFilters({}); // ⭐ Clear column filters
-            setTableRows([]); // ⭐ Clear table
+            if (isFieldTaskMode) {
+              // Table should keep showing the ward-scoped rows, not go
+              // blank — if baseFilter ends up the same value as before (no
+              // drill-down was active), the combine-filters effect wouldn't
+              // otherwise re-run and refetch on its own.
+              setQueryVersion((v) => v + 1);
+            } else {
+              setTableRows([]); // ⭐ Clear table
+            }
             setShowRoadSearch(false);
             setShowRoadNetworkPanel(false); // ⭐ Ensure Road Network panel and its legend are closed
             setLayerFilters({}); // ⭐ Clear generic filters
@@ -1973,7 +2382,7 @@ const DashboardPage = () => {
               roadClassifications: {},
               network: {
                 ...prev.network,
-                roads: false
+                roads: isFieldTaskMode ? true : false
               }
             }));
           }}
@@ -1981,15 +2390,23 @@ const DashboardPage = () => {
           onCloseSearch={() => setShowRoadSearch(false)}
           onLatLngSearch={handleLatLngSearch}
           onPlaceSearch={handlePlaceSearch}
-          onDataAnalysis={() => setShowChartPanel((prev) => !prev)}
+          onDataAnalysis={handleChartPanelToggle}
           onQuery={handleQuery}
-          onSummary={() => setShowChartPanel((prev) => !prev)} // Re-routed to new consolidated ChartPanel
+          onSummary={handleChartPanelToggle} // Re-routed to new consolidated ChartPanel
         />
+
+
         {showChartPanel && (
+          <div style={chartPanelMinimized ? { display: "none" } : undefined}>
           <ChartPanel
             city={city}
-            isOpen={showChartPanel}
-            onClose={() => setShowChartPanel(false)}
+            isOpen={!chartPanelMinimized}
+            tableOpen={tableRows.length > 0 && !isTableMinimized}
+            onClose={() => {
+              setShowChartPanel(false);
+              setChartPanelMinimized(false);
+            }}
+            onMinimize={() => setChartPanelMinimized(true)}
             panelSide="left"
             onChartClick={(col, val) => {
               if (val) {
@@ -2013,6 +2430,7 @@ const DashboardPage = () => {
             onClassificationChange={handleClassificationChange}
             roadWmsSource={mapRef.current?.getRoadWmsSource?.()}
           />
+          </div>
         )}
       </div>
 
@@ -2024,7 +2442,7 @@ const DashboardPage = () => {
         tableRows.length > 0
       )) && (
         <div
-          className={`bottom-table ${isTableMinimized ? "minimized" : ""}`}
+          className={`bottom-table ${isTableMinimized ? "minimized" : ""} ${isFieldTaskMode ? "field-task-table" : ""}`}
         >
           {/* ADD PAGINATION CONTROLS HERE */}
           {/* Simplified Pagination Controls */}
@@ -2088,7 +2506,10 @@ const DashboardPage = () => {
                   <span style={{ marginLeft: 2, fontSize: 14 }}>×</span>
                 </div>
               )}
-              {/* Inline Export Buttons */}
+              {/* Inline Export Buttons — hidden entirely for field-task
+                  redirects (KMC/iGile), not just disabled, per that mode's
+                  restricted toolbar. */}
+              {!isFieldTaskMode && (
               <div style={{ display: "flex", gap: "4px", marginLeft: "auto" }}>
                 <button
                   title="Export Excel"
@@ -2121,6 +2542,7 @@ const DashboardPage = () => {
                   {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-image" style={{ fontSize: 11 }} />} Print
                 </button>
               </div>
+              )}
             </div>
             <div className="pagination-buttons">
               <button
@@ -2190,6 +2612,15 @@ const DashboardPage = () => {
               <button
                 className="table-close-btn"
                 onClick={() => {
+                  if (mode === "CHAINAGE") {
+                    mapRef.current?.showFeatureNotice?.({
+                      feature: "Chainage",
+                      message: "Please switch off Chainage mode before closing this table.",
+                      dedupeKey: `chainage-table-close-blocked|${city}|${Date.now()}`,
+                      autoDismissMs: 4500,
+                    });
+                    return;
+                  }
                   if (restorePrevTableState()) return;
 
                   // Securely hide the table and reset selection state
@@ -2362,7 +2793,7 @@ const DashboardPage = () => {
           localRows={tableDataset.kind === "specialized" ? specializedAllRows : null}
         />
       )}
-      {/* 
+      {/*
       // ROLLBACK OPTION: Kept old SummaryTable intact per user request. Uncomment to restore legacy view.
       showSummary && (
         <SummaryTable

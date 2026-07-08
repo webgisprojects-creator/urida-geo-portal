@@ -14,7 +14,7 @@ const Footer = () => {
       </div>
       <div className="footer-right">
         <span>
-          © {currentYear} Remote Sensing and Applications Center. RSAC-UP{" "}
+          © {currentYear} Remote Sensing and Applications Centre. RSAC-UP{" "}
         </span>
         <img src={rightLogo} alt="RSAC Logo" className="footer-logo" />
       </div>
