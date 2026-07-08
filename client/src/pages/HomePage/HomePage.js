@@ -487,6 +487,17 @@ const cityCardData = {
 export default function HomePage() {
   const navigate = useNavigate();
   const mapRef = useRef(null);
+  // addBoundaryLayer awaits fitViewToCityBoundary, which can itself poll
+  // for up to ~5s waiting on WFS boundary data. If the user picks another
+  // city (or the component unmounts) before that resolves, the stale
+  // call's eventual `map.renderSync()` was firing against a map whose
+  // internal render state OpenLayers had already torn down/replaced —
+  // "Cannot read properties of null (reading 'renderFrame')" inside OL's
+  // own rAF-deferred Map.renderFrame_, reproducible just by switching
+  // cities before the previous selection's boundary finished loading.
+  // Only the most recently started call is allowed to touch the map
+  // afterward.
+  const boundaryLayerRequestRef = useRef(0);
   // Flattened UP-district coordinate rings, read every render frame by the
   // base-layer clip listeners below — null/empty renders unclipped.
   const upClipRingsRef = useRef(null);
@@ -2469,6 +2480,7 @@ export default function HomePage() {
 
   const addBoundaryLayer = async (city) => {
     if (!mapRef.current) return;
+    const requestId = ++boundaryLayerRequestRef.current;
 
     const map =
       mapRef.current?.instance || mapRef.current?.map || mapRef.current;
@@ -2522,7 +2534,21 @@ export default function HomePage() {
     } else {
       await fitViewToCityBoundary(city);
     }
-    map.renderSync(); // ✅ Force OpenLayers to redraw with WMS layers
+    // A newer city selection (or unmount) may have started while the
+    // await above was pending — only the most recent call may still touch
+    // the map. getTargetElement() is OpenLayers' own way of reporting
+    // whether this Map instance is still attached to the DOM (null once
+    // disposed/setTarget(null)); the request-id check catches the more
+    // common case of "still mounted, but a different city was picked
+    // since this call started."
+    if (
+      boundaryLayerRequestRef.current === requestId &&
+      map &&
+      typeof map.getTargetElement === "function" &&
+      map.getTargetElement()
+    ) {
+      map.renderSync(); // ✅ Force OpenLayers to redraw with WMS layers
+    }
   };
 
   // Above 10m roads from live DB-backed GeoJSON, not the static GeoServer WMS.

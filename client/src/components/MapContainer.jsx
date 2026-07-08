@@ -62,7 +62,7 @@ import { cityConfig } from "../assets/configs/cityConfig";
 import MapLegend from "./MapLegend";
 import Overlay from "ol/Overlay";
 import { drawWatermark } from "../utils/gisExport"; //chainage
-import rsacBanner from "../assets/Login/rsac_banner.png"; //chainage
+import rsacBanner from "../assets/Login/rsac_banner2.png"; //chainage
 import { getGeoserverBase } from "../utils/geoserverBase";
 
 const EMPTY_ARRAY = [];
@@ -7886,7 +7886,16 @@ const getSelectedRoadIdsOnly = () => {
     // basemap/road tiles to be useful, so cap the wait and snapshot
     // whatever's already rendered rather than blocking indefinitely.
     const fallbackTimer = setTimeout(() => {
-      map.renderSync();
+      // If the user navigated away / closed chainage mode during this 4s
+      // wait, the map may already be disposed (setTarget(null)) — calling
+      // renderSync() on it throws inside OL's own internals ("Cannot read
+      // properties of null (reading 'renderFrame')", the same crash fixed
+      // in HomePage.js's addBoundaryLayer). getTargetElement() is null
+      // once disposed, so this is skipped rather than crashing; runCapture
+      // itself still proceeds to snapshot whatever's already there.
+      if (typeof map.getTargetElement === "function" && map.getTargetElement()) {
+        map.renderSync();
+      }
       runCapture();
     }, 4000);
 

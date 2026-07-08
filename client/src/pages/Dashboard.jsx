@@ -8,7 +8,7 @@ import { logEvent } from "../utils/telemetry";
 import { saveAs } from "file-saver";
 
 import "../assets/styles/Dashboard.css";
-import rsacBanner from "../assets/Login/rsac_banner.png";
+import rsacBanner from "../assets/Login/rsac_banner2.png";
 import Header from "../components/Header";
 import Sidebar from "../components/Sidebar";
 import MapContainer from "../components/MapContainer";
@@ -626,6 +626,12 @@ const DashboardPage = () => {
     else endLoading("map");
   }, [beginLoading, endLoading]);
   const [isDownloading, setIsDownloading] = useState(false); // ⭐ Download in progress
+  // Excel export scope choice ("current filtered view" vs "complete city
+  // data") — null when closed. counts/estimates are filled in async right
+  // after opening (see openExcelScopeModal), so the dialog first renders
+  // with a loading state rather than blocking on the network before
+  // showing anything.
+  const [excelScopeModal, setExcelScopeModal] = useState(null);
   const [activeFilterColumn, setActiveFilterColumn] = useState(null);
   const [filterPosition, setFilterPosition] = useState(null);
   // Only one bottom table (road table vs. chainage patch table) may be
@@ -2128,10 +2134,24 @@ const DashboardPage = () => {
   };
 
   // ─── Helper: fetch full road data from backend ───────────────────────────
-  const fetchExportData = async (includeGeom = false) => {
+  // filterOverride lets a caller bypass the currently-active roadFilter
+  // entirely (empty string = every road in the city) — used by the Excel
+  // "complete city data" scope choice below, which is deliberately NOT
+  // what the map/table are currently filtered to. bboxOverride mirrors the
+  // same mapExtent-based viewport scoping the live table itself already
+  // uses (see the bboxParam usage above) — "current view" should mean
+  // what's actually on screen right now (filter AND extent), not just the
+  // attribute filter with whatever's panned off-screen still included.
+  const fetchExportData = async (includeGeom = false, filterOverride = undefined, bboxOverride = undefined) => {
+    const effectiveFilter =
+      filterOverride !== undefined
+        ? filterOverride
+        : roadFilter && roadFilter !== "INCLUDE" ? roadFilter : "";
+    const effectiveBbox = bboxOverride !== undefined ? bboxOverride : mapExtent;
+    const bboxParam = effectiveBbox ? `&bbox=${encodeURIComponent(effectiveBbox.join(","))}` : "";
     const url = `/api/road-networks/${city}/details?filter=${encodeURIComponent(
-      roadFilter && roadFilter !== "INCLUDE" ? roadFilter : ""
-    )}${includeGeom ? "&include_geom=true" : ""}&limit=0`;
+      effectiveFilter
+    )}${includeGeom ? "&include_geom=true" : ""}${bboxParam}&limit=0`;
     const res = await fetch(url);
     if (!res.ok) {
       const errText = await res.text();
@@ -2140,9 +2160,92 @@ const DashboardPage = () => {
     return await res.json(); // { data: [...], total, page, limit }
   };
 
+  // Cheap row-count probe (limit=1 — the endpoint always computes `total`
+  // via its own COUNT(*) regardless of limit, so this returns the real
+  // total without transferring the full dataset) used to show the Excel
+  // scope-choice dialog's row counts and time estimate before committing
+  // to the actual export fetch.
+  const fetchExportCount = async (filterOverride, bboxOverride) => {
+    const bboxParam = bboxOverride ? `&bbox=${encodeURIComponent(bboxOverride.join(","))}` : "";
+    const url = `/api/road-networks/${city}/details?filter=${encodeURIComponent(
+      filterOverride
+    )}${bboxParam}&limit=1`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    return Number.isFinite(data?.total) ? data.total : null;
+  };
+
+  // Rough, deliberately conservative heuristic — not a measured rate —
+  // just enough to give the user a realistic "this will take a moment"
+  // expectation instead of an unlabeled spinner for a 50k-row city-wide
+  // export. Rounded up to whole seconds, floor of 2s so it never claims
+  // something misleadingly instantaneous.
+  const estimateExportSeconds = (count) =>
+    Number.isFinite(count) ? Math.max(2, Math.ceil(count / 1500)) : null;
+  const formatExportCount = (count) => (Number.isFinite(count) ? count.toLocaleString() : "an unknown number of");
+
+  const openExcelScopeModal = async () => {
+    const currentFilter = roadFilter && roadFilter !== "INCLUDE" ? roadFilter : "";
+    setExcelScopeModal({ loadingCounts: true, currentCount: null, completeCount: null });
+    // "Current View" mirrors exactly what the live table is showing right
+    // now — filter AND the map's current pan/zoom extent — not just the
+    // attribute filter with off-screen roads still silently included.
+    const [currentCount, completeCount] = await Promise.all([
+      fetchExportCount(currentFilter, mapExtent),
+      fetchExportCount(""),
+    ]);
+    setExcelScopeModal((prev) =>
+      prev ? { ...prev, loadingCounts: false, currentCount, completeCount } : prev
+    );
+  };
+
+  const runExcelExport = async (scope) => {
+    setExcelScopeModal(null);
+    setIsDownloading(true);
+    const downloadStartedAt = performance.now();
+    logEvent("download_start", { action: "excel", scope });
+    try {
+      const currentFilter = roadFilter && roadFilter !== "INCLUDE" ? roadFilter : "";
+      const result = await fetchExportData(
+        false,
+        scope === "complete" ? "" : currentFilter,
+        scope === "complete" ? null : mapExtent
+      );
+      const rows = result?.data || [];
+      if (!rows.length) {
+        alert("No data to export. Please adjust your filter and try again.");
+        return;
+      }
+      await exportToExcel(rows, city, {
+        title: scope === "complete" ? `${city}_complete_road_data` : (tableDataset.title || "table_data"),
+      });
+    } catch (err) {
+      console.error("Download error:", err);
+      alert(`Export failed: ${err.message}`);
+      logEvent("download_error", { action: "excel", scope, message: err.message });
+    } finally {
+      logEvent("download_end", { action: "excel", scope, durationMs: Math.round(performance.now() - downloadStartedAt) });
+      setIsDownloading(false);
+    }
+  };
+
   // ⭐ Handle Download Actions — delegates to gisExport utility
   const handleDownloadAction = async (action) => {
     console.log("Download action triggered:", action);
+
+    // Excel export against the live road-network table asks the user to
+    // pick a scope first (current filtered view vs. the whole city) with a
+    // time estimate for each — runExcelExport (below) owns the rest of
+    // this action's lifecycle (isDownloading, logEvent, the actual fetch),
+    // so this returns immediately rather than falling into the generic
+    // handling below. Specialized/table datasets (drainage etc.) have no
+    // "whole city" equivalent, so they keep the old immediate-export path.
+    if (action === "excel" && tableDataset.kind === "roads") {
+      await openExcelScopeModal();
+      return;
+    }
+
     const downloadStartedAt = performance.now();
     logEvent("download_start", { action });
 
@@ -2198,13 +2301,10 @@ const DashboardPage = () => {
         }
 
       } else if (action === "excel") {
-        let rows = [];
-        if (tableDataset.kind === "roads") {
-          const result = await fetchExportData(false);
-          rows = result?.data || [];
-        } else {
-          rows = Array.isArray(tableRows) ? tableRows : [];
-        }
+        // Only reachable for non-"roads" (specialized) datasets — the
+        // roads case is short-circuited to openExcelScopeModal() above,
+        // before isDownloading/logEvent for this generic path even starts.
+        const rows = Array.isArray(tableRows) ? tableRows : [];
         if (!rows || rows.length === 0) {
           alert("No data to export. Please adjust your filter and try again.");
           return;
@@ -2596,43 +2696,6 @@ const DashboardPage = () => {
                   <span style={{ marginLeft: 2, fontSize: 14 }}>×</span>
                 </div>
               )}
-              {/* Inline Export Buttons — hidden entirely for field-task
-                  redirects (KMC/iGile), not just disabled, per that mode's
-                  restricted toolbar. */}
-              {!isFieldTaskMode && (
-              <div style={{ display: "flex", gap: "4px", marginLeft: "auto" }}>
-                <button
-                  title="Export Excel"
-                  disabled={isDownloading}
-                  onClick={() => {
-                    handleDownloadAction("excel");
-                  }}
-                  style={{ background: "#16a34a", color: "#fff", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}
-                >
-                  {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-file-excel" style={{ fontSize: 11 }} />} Excel
-                </button>
-                <button
-                  title="Export PDF with Map"
-                  disabled={isDownloading}
-                  onClick={() => {
-                    handleDownloadAction("pdf");
-                  }}
-                  style={{ background: "#dc2626", color: "#fff", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}
-                >
-                  {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-file-pdf" style={{ fontSize: 11 }} />} PDF
-                </button>
-                <button
-                  title="Export Map Image"
-                  disabled={isDownloading}
-                  onClick={() => {
-                    handleDownloadAction("print");
-                  }}
-                  style={{ background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}
-                >
-                  {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-image" style={{ fontSize: 11 }} />} Print
-                </button>
-              </div>
-              )}
             </div>
             <div className="pagination-buttons">
               <button
@@ -2883,6 +2946,97 @@ const DashboardPage = () => {
         >
           <i className="fas fa-list" /> Show Roads
         </button>
+      )}
+
+      {/* Excel export scope choice — current filtered view vs. the whole
+          city, each with a time estimate, before committing to the fetch.
+          See openExcelScopeModal/runExcelExport above. */}
+      {excelScopeModal && (
+        <div className="submit-confirm-overlay" onClick={() => setExcelScopeModal(null)}>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff",
+              borderRadius: 12,
+              padding: "24px 28px",
+              width: "min(420px, 92vw)",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.35)",
+            }}
+          >
+            <h3 style={{ margin: "0 0 6px", fontSize: 17, color: "#0f172a" }}>
+              Export Excel
+            </h3>
+            <p style={{ margin: "0 0 18px", fontSize: 13, color: "#475569" }}>
+              Choose what to include in the download.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => runExcelExport("current")}
+              disabled={excelScopeModal.loadingCounts}
+              style={{
+                width: "100%",
+                textAlign: "left",
+                background: "#eff6ff",
+                border: "1px solid #bfdbfe",
+                borderRadius: 8,
+                padding: "12px 14px",
+                marginBottom: 10,
+                cursor: excelScopeModal.loadingCounts ? "wait" : "pointer",
+              }}
+            >
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#1d4ed8" }}>
+                Current View
+              </div>
+              <div style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>
+                {excelScopeModal.loadingCounts
+                  ? "Checking row count..."
+                  : `${formatExportCount(excelScopeModal.currentCount)} roads in your current filtered view (map extent + filters) — ~${estimateExportSeconds(excelScopeModal.currentCount) ?? "a few"}s to prepare`}
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => runExcelExport("complete")}
+              disabled={excelScopeModal.loadingCounts}
+              style={{
+                width: "100%",
+                textAlign: "left",
+                background: "#f0fdf4",
+                border: "1px solid #bbf7d0",
+                borderRadius: 8,
+                padding: "12px 14px",
+                marginBottom: 16,
+                cursor: excelScopeModal.loadingCounts ? "wait" : "pointer",
+              }}
+            >
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#15803d" }}>
+                Complete City Data
+              </div>
+              <div style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>
+                {excelScopeModal.loadingCounts
+                  ? "Checking row count..."
+                  : `${formatExportCount(excelScopeModal.completeCount)} roads total for ${city} — ~${estimateExportSeconds(excelScopeModal.completeCount) ?? "a few"}s to prepare`}
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setExcelScopeModal(null)}
+              style={{
+                width: "100%",
+                background: "transparent",
+                border: "none",
+                color: "#64748b",
+                fontSize: 13,
+                cursor: "pointer",
+                padding: "4px 0",
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
 
       {/* ⭐ FILTER DROPDOWN PORTAL (Fixed Position) */}

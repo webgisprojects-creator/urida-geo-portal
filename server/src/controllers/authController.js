@@ -483,7 +483,17 @@ export const login = async (req, res) => {
       await pool.query(resetSql, [0, null, user.username]);
     }
     const userIdForToken = user.user_id ?? user.username;
-    const mustChangePassword = Boolean(user.must_change_password);
+    // Field-task/chainage is one shared login used by many field staff at
+    // once, on purpose (see FIELD_TASK_ONLY_USERNAMES above) — the normal
+    // 2-session-per-account limit exists to catch a single person's
+    // credentials leaking to a second device, which doesn't apply here,
+    // and evicting one field worker's session to let another sign in would
+    // just break whoever was already mid-task. Whatever password the admin
+    // sets for this account is meant to keep working indefinitely too, so
+    // it never goes through the forced-change flow even if
+    // must_change_password was set on it by a generic admin action.
+    const isFieldTaskAccount = FIELD_TASK_ONLY_USERNAMES.has(String(user.username).toLowerCase());
+    const mustChangePassword = isFieldTaskAccount ? false : Boolean(user.must_change_password);
     const payload = {
       user_id: userIdForToken,
       username: user.username,
@@ -491,11 +501,20 @@ export const login = async (req, res) => {
       city: user.city || null,
       must_change_password: mustChangePassword,
     };
-    await enforceSessionLimit(userIdForToken, MAX_SESSIONS_PER_USER);
+    if (!isFieldTaskAccount) {
+      await enforceSessionLimit(userIdForToken, MAX_SESSIONS_PER_USER);
+    }
     const token = jwt.sign(payload, secret, { expiresIn: jwtExpiresIn });
     const issuedAt = new Date();
     const expiresAt = new Date(issuedAt.getTime() + absoluteTimeoutMs);
-    await storeActiveToken({ token, userId: userIdForToken, issuedAt, expiresAt });
+    await storeActiveToken({
+      token,
+      userId: userIdForToken,
+      issuedAt,
+      expiresAt,
+      ip: getClientIp(req),
+      userAgent: String(req.headers['user-agent'] || ''),
+    });
     res.cookie(cookieName, token, buildCookieOptions(req, cookieMaxAgeMs));
     logEvent('login', user.username, { ip: req.ip, mustChangePassword });
     return res.json({ success: true, role: payload.role, city: payload.city, mustChangePassword, user: payload });
@@ -573,7 +592,14 @@ export const changePassword = async (req, res) => {
       const token = jwt.sign(payload, secret, { expiresIn: jwtExpiresIn });
       const issuedAt = new Date();
       const expiresAt = new Date(issuedAt.getTime() + absoluteTimeoutMs);
-      await storeActiveToken({ token, userId: payload.user_id, issuedAt, expiresAt });
+      await storeActiveToken({
+        token,
+        userId: payload.user_id,
+        issuedAt,
+        expiresAt,
+        ip: getClientIp(req),
+        userAgent: String(req.headers['user-agent'] || ''),
+      });
       if (req.token) {
         await updateActiveTokenStatus(req.token, 'password_changed');
       }

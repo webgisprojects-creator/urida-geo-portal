@@ -59,6 +59,13 @@ body {
   cursor: default;
   user-select: none;
   caret-color: transparent;
+  /* NOT overflow:hidden — the profile/download dropdown menus are
+     deliberately position:absolute with top:130% so they hang below this
+     bar; clipping overflow here hid them entirely. The actual overflow bug
+     (title/logos spilling past the bottom edge) was .lucknow-header__title
+     being a bare <h2> with its default ~0.83em top/bottom browser margin
+     inflating the row past this fixed 45px height — fixed at the source
+     via margin:0 on that rule instead. */
 }
 
 /* --- Sleek Hamburger Icon --- */
@@ -271,6 +278,11 @@ body {
 }
 
 .lucknow-header__title {
+  /* h2's default ~0.83em top/bottom browser margin was the actual cause of
+     the logos/title spilling out past the header's fixed 45px height on
+     desktop — this element was never actually taller than it needed to
+     be, its invisible margin was. */
+  margin: 0;
   font-size: 1.2em;
   color: #ffffff;
   font-weight: bold;
@@ -1211,6 +1223,14 @@ right-btn {
   min-width: 0;
 }
 
+/* Was no gap at all between the copyright text and the RSAC logo — the
+   trailing space in Footer.jsx's JSX text node isn't reliable spacing in a
+   flex row, so the icon rendered crammed directly against the text. */
+.dashboard-footer .footer-middle {
+  gap: 8px;
+  justify-content: center;
+}
+
 /* Was an equal 1fr third like the other two columns, with the legal
    disclaimer text forced to nowrap+ellipsis inside it — on any desktop
    width narrower than ~1450px (a laptop, a half-width browser window, or
@@ -1241,8 +1261,15 @@ right-btn {
 }
 
 .dashboard-footer .footer-logo {
-  height: 20px;
-  width: auto;
+  /* Was width:auto — the source image (images.jpg) has its own white
+     padding around the circular RSAC emblem, so an unconstrained
+     rectangular box just showed that padding as a visible square instead
+     of a clean circle. Forcing an equal-sided box + object-fit:cover crops
+     into the emblem itself, same treatment as .lucknow-header__logo. */
+  height: 22px;
+  width: 22px;
+  border-radius: 50%;
+  object-fit: cover;
   filter: brightness(1.1);
 }
 
@@ -2573,6 +2600,31 @@ right-btn {
   }
 }
 
+/* Between the full desktop 3-column footer and the <=720px stacked-rows
+   layout there was nothing — the disclaimer column (flex:2) just kept
+   getting squeezed as the viewport (or an equivalent effective width from
+   browser zoom, which shrinks how many CSS px fit on screen the same way
+   a narrower window does) shrank, with no intermediate relief until it
+   suddenly jumped to full-width stacking at 720px. This softens that
+   transition instead of the footer looking visibly cramped for the whole
+   721-1024px range. */
+@media (max-width: 1024px) and (min-width: 721px) {
+  .dashboard-footer {
+    padding: 4px 12px;
+    gap: 8px;
+    font-size: 12px;
+  }
+
+  .dashboard-footer .footer-right span {
+    font-size: 11px;
+  }
+
+  .dashboard-footer .footer-logo {
+    height: 18px;
+    width: 18px;
+  }
+}
+
 @media (max-width: 720px) {
   /* Was one forced row with each section ellipsis-truncated to
      max-width:30vw — at 9px font that clipped the legal disclaimer
@@ -2608,6 +2660,7 @@ right-btn {
 
   .dashboard-footer .footer-logo {
     height: 14px;
+    width: 14px;
   }
 
   .summary-panel {

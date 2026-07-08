@@ -121,6 +121,11 @@ export const ensureActiveTokensTable = async () => {
     await pool.query(`ALTER TABLE active_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE active_tokens ADD COLUMN IF NOT EXISTS last_activity_time TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE active_tokens ADD COLUMN IF NOT EXISTS status TEXT`);
+    // "Which machine is this user logged in from" (admin panel session
+    // list) had nothing to show — this table never recorded it. Nullable
+    // so existing rows (issued before this column existed) don't break.
+    await pool.query(`ALTER TABLE active_tokens ADD COLUMN IF NOT EXISTS ip_address TEXT`);
+    await pool.query(`ALTER TABLE active_tokens ADD COLUMN IF NOT EXISTS user_agent TEXT`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS active_tokens_token_hash_uidx ON active_tokens (token_hash)`);
     const { rows } = await pool.query(
       `SELECT data_type
@@ -144,21 +149,23 @@ export const ensureActiveTokensTable = async () => {
   return activeTokensReady;
 };
 
-export const storeActiveToken = async ({ token, userId, issuedAt, expiresAt }) => {
+export const storeActiveToken = async ({ token, userId, issuedAt, expiresAt, ip = null, userAgent = null }) => {
   if (!token || !userId) return;
   await ensureActiveTokensTable();
   const tokenHash = hashToken(token);
   try {
     await pool.query(
-      `INSERT INTO active_tokens (token_hash, user_id, issued_at, expires_at, last_activity_time, status)
-       VALUES ($1, $2, $3, $4, $5, 'active')
+      `INSERT INTO active_tokens (token_hash, user_id, issued_at, expires_at, last_activity_time, status, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)
        ON CONFLICT (token_hash) DO UPDATE
        SET user_id = EXCLUDED.user_id,
            issued_at = EXCLUDED.issued_at,
            expires_at = EXCLUDED.expires_at,
            last_activity_time = EXCLUDED.last_activity_time,
-           status = 'active'`,
-      [tokenHash, String(userId), issuedAt, expiresAt, issuedAt]
+           status = 'active',
+           ip_address = EXCLUDED.ip_address,
+           user_agent = EXCLUDED.user_agent`,
+      [tokenHash, String(userId), issuedAt, expiresAt, issuedAt, ip, userAgent]
     );
   } catch (err) {
     console.error('active_tokens insert failed:', err?.message || err);
@@ -431,3 +438,37 @@ export const auditLogger = (req, res, next) => {
   });
   next();
 };
+
+// active_tokens gets a new row on every login and never had anything
+// deleting old ones — non-active rows (logged_out, expired, inactivated,
+// revoked, password_changed) just accumulated forever, with only the
+// admin panel's manual "Clear Inactive History" button as a way to shrink
+// it. Deliberately scoped to status <> 'active' only — an active session
+// is left alone regardless of idle time, so a returning user's session
+// (and anything it was legitimately still relying on) is never pulled out
+// from under them by a background sweep. Same shape as tiles.js/
+// wfsCache.js's own eviction schedules: a single lightweight DELETE on a
+// long interval, off the request path, so this can never itself spike
+// load.
+const ACTIVE_TOKENS_RETENTION_MS = Number(process.env.ACTIVE_TOKENS_RETENTION_MS || 45 * 24 * 60 * 60 * 1000); // 45 days
+const ACTIVE_TOKENS_SWEEP_INTERVAL_MS = Number(process.env.ACTIVE_TOKENS_SWEEP_INTERVAL_MS || 6 * 60 * 60 * 1000); // 6 hours
+
+export async function runActiveTokensRetentionSweep() {
+  try {
+    await ensureActiveTokensTable();
+    const cutoff = new Date(Date.now() - ACTIVE_TOKENS_RETENTION_MS);
+    const result = await pool.query(
+      `DELETE FROM active_tokens WHERE status <> 'active' AND last_activity_time < $1`,
+      [cutoff]
+    );
+    if ((result.rowCount || 0) > 0) {
+      console.log(`[active_tokens] retention sweep removed ${result.rowCount} stale inactive session record(s)`);
+    }
+  } catch (err) {
+    console.error('active_tokens retention sweep failed:', err?.message || err);
+  }
+}
+
+export function startActiveTokensRetentionSchedule() {
+  setInterval(runActiveTokensRetentionSweep, ACTIVE_TOKENS_SWEEP_INTERVAL_MS);
+}

@@ -1,3 +1,18 @@
+/* Overrides Dashboard.css's global `overflow: hidden` reset (loaded here
+   via the shared <Footer/> import) — that reset is correct for the
+   OpenLayers map pages, which never need real page scroll, but it also
+   silently made this ordinary scrolling admin page unable to scroll at
+   all: anything below the fold had no way to be reached. !important
+   because AdminPanel.css's load order relative to Dashboard.css isn't
+   guaranteed, and this must win regardless. See the admin-page-active
+   class toggle in AdminPanel.jsx. */
+html.admin-page-active,
+body.admin-page-active,
+#root.admin-page-active {
+  overflow-y: auto !important;
+  height: auto !important;
+}
+
 .admin-page {
   padding: 16px 16px 60px;
   background: #f8fafc;
@@ -183,9 +198,15 @@
   font-size: 15px;
 }
 
+/* Was a flat 550px regardless of the actual window — on a shorter browser
+   window (laptop, non-maximized window) that alone, plus the header/stat
+   cards/session panel around it, pushed the page's real content past the
+   bottom of the viewport. min() caps it at 550px on tall screens but lets
+   it shrink to a fraction of the actual viewport height on short ones,
+   so the table scrolls internally instead of the whole page overflowing. */
 .user-table-scroll {
-  height: 550px;
-  max-height: 550px;
+  height: min(550px, 55vh);
+  max-height: min(550px, 55vh);
   overflow-y: auto;
   overflow-x: auto;
   border: 1px solid #e2e8f0;
@@ -193,11 +214,11 @@
 }
 
 .user-table-scroll-inactive {
-  max-height: 220px;
+  max-height: min(220px, 30vh);
 }
 
 .user-table-scroll-deleted {
-  max-height: 220px;
+  max-height: min(220px, 30vh);
 }
 
 .user-partition-heading {
@@ -292,7 +313,7 @@ td {
 
 .session-overview-panel {
   width: 320px;
-  min-height: 320px;
+  min-height: min(320px, 40vh);
   justify-self: end;
   align-self: start;
   display: flex;
@@ -402,6 +423,17 @@ td {
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 12px;
+}
+
+.admin-form-success {
+  grid-column: 1 / -1;
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 @media (max-width: 1100px) {

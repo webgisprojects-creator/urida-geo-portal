@@ -2,7 +2,7 @@
    password login (must_change_password=true — see authController.js's
    login()/changePassword()). Reuses LoginPage's own form styling so it
    doesn't need its own stylesheet. */
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import "./LoginPage.css";
 
 const API_BASE_URL = "/api/auth";
@@ -13,6 +13,21 @@ export default function ForceChangePassword() {
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("error");
   const [loading, setLoading] = useState(false);
+  // localStorage's authUser is set at login (see LoginPage.jsx), but this
+  // route is also reachable via a direct redirect (App.js's Protected
+  // guard) where that may be stale/absent — profile is the source of truth.
+  const [username, setUsername] = useState(() => localStorage.getItem("authUser") || "");
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/profile`, { credentials: "include" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.success && data?.user?.username) {
+          setUsername(String(data.user.username));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -74,6 +89,12 @@ export default function ForceChangePassword() {
           <p style={{ color: "#475569", fontSize: 13, marginTop: -10, marginBottom: 20 }}>
             Your password was reset by an administrator. Please create a new
             password to continue.
+            {username && (
+              <>
+                <br />
+                Signed in as <strong>{username}</strong>.
+              </>
+            )}
           </p>
           {message && (
             <div
