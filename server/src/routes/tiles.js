@@ -113,6 +113,26 @@ function tileCachePath(style, z, x, y) {
   return path.join(CACHE_ROOT, style, String(z), String(x), `${y}.png`);
 }
 
+// z/x/y arrive as raw route-param strings straight from the request URL and
+// flow, unvalidated, into fs paths (tileCachePath/gwcTileCachePath/
+// filteredWmsCachePath/maskedTileCachePath) and into upstream URLs
+// (buildUrl/tileBounds3857). Without this check, a value like `..` or a
+// %2f-encoded `../../../etc` segment lets an authenticated caller write/read
+// outside CACHE_ROOT/BOUNDARY_CACHE_ROOT — path traversal via the tile proxy.
+// Every tile route below must reject before touching the filesystem.
+const MAX_TILE_ZOOM = 24;
+function parseTileParams(z, x, y) {
+  if (!/^\d+$/.test(z) || !/^\d+$/.test(x) || !/^\d+$/.test(y)) return null;
+  const zn = Number(z);
+  const xn = Number(x);
+  const yn = Number(y);
+  if (!Number.isInteger(zn) || zn < 0 || zn > MAX_TILE_ZOOM) return null;
+  const maxIndex = 2 ** zn - 1;
+  if (!Number.isInteger(xn) || xn < 0 || xn > maxIndex) return null;
+  if (!Number.isInteger(yn) || yn < 0 || yn > maxIndex) return null;
+  return { z: zn, x: xn, y: yn };
+}
+
 // Mirrors ordered starting from a deterministic-but-distributed pick (same
 // idea as the {a,b,c}/{1-4} subdomain rotation the client used to rely on
 // directly), wrapping around so every mirror gets tried before giving up.
@@ -899,7 +919,7 @@ function prefetchNeighborTiles(fetchOne, z, x, y) {
 }
 
 router.get("/api/gwc-tiles/:layerPath/:z/:x/:y.png", verifyToken, async (req, res) => {
-  const { layerPath, z, x, y } = req.params;
+  const { layerPath } = req.params;
   if (!layerPath) {
     return res.status(400).json({ error: "Missing layer" });
   }
@@ -910,6 +930,11 @@ router.get("/api/gwc-tiles/:layerPath/:z/:x/:y.png", verifyToken, async (req, re
   if (!isKnownGeoserverLayer(layerPath)) {
     return res.status(400).json({ error: "Unknown layer" });
   }
+  const coords = parseTileParams(req.params.z, req.params.x, req.params.y);
+  if (!coords) {
+    return res.status(400).json({ error: "Invalid tile coordinates" });
+  }
+  const { z, x, y } = coords;
   const meta = {};
   try {
     const buffer = await getGwcTileBuffer(layerPath, z, x, y, "normal", meta, req);
@@ -935,7 +960,7 @@ router.get("/api/gwc-tiles/:layerPath/:z/:x/:y.png", verifyToken, async (req, re
 // by filter+style as well as layer/z/x/y, and fetching from GeoServer's
 // regular WMS renderer instead of GWC's pre-tiled endpoint.
 router.get("/api/wms-tile-cache/:layerPath/:z/:x/:y.png", verifyToken, async (req, res) => {
-  const { layerPath, z, x, y } = req.params;
+  const { layerPath } = req.params;
   const cqlFilter = req.query.cqlFilter ? String(req.query.cqlFilter) : "";
   const styles = req.query.styles ? String(req.query.styles) : "";
   if (!layerPath) {
@@ -944,6 +969,11 @@ router.get("/api/wms-tile-cache/:layerPath/:z/:x/:y.png", verifyToken, async (re
   if (!isKnownGeoserverLayer(layerPath)) {
     return res.status(400).json({ error: "Unknown layer" });
   }
+  const coords = parseTileParams(req.params.z, req.params.x, req.params.y);
+  if (!coords) {
+    return res.status(400).json({ error: "Invalid tile coordinates" });
+  }
+  const { z, x, y } = coords;
   const meta = {};
   try {
     const buffer = await getFilteredWmsTileBuffer(layerPath, cqlFilter, styles, z, x, y, "normal", meta, req);
@@ -969,7 +999,7 @@ router.get("/api/wms-tile-cache/:layerPath/:z/:x/:y.png", verifyToken, async (re
 router.get("/api/tiles/:style/:z/:x/:y.png", verifyToken, async (req, res) => {
   // Express/path-to-regexp matches the literal ".png" suffix in the route
   // pattern itself, so req.params.y is already just the numeric part.
-  const { style, z, x, y } = req.params;
+  const { style } = req.params;
   const boundary = req.query.boundary ? String(req.query.boundary) : null;
 
   if (!STYLES[style]) {
@@ -978,6 +1008,11 @@ router.get("/api/tiles/:style/:z/:x/:y.png", verifyToken, async (req, res) => {
   if (boundary && !isKnownGeoserverLayer(boundary)) {
     return res.status(400).json({ error: "Unknown boundary" });
   }
+  const coords = parseTileParams(req.params.z, req.params.x, req.params.y);
+  if (!coords) {
+    return res.status(400).json({ error: "Invalid tile coordinates" });
+  }
+  const { z, x, y } = coords;
 
   const meta = {};
   try {
