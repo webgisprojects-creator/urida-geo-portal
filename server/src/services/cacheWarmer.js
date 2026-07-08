@@ -438,14 +438,68 @@ async function rewarmGwcOnly() {
 // exporter make this near-free on restarts where nothing new was fetched.
 // Set TILE_MBTILES_EXPORT=0 to disable (e.g. on a dev machine where
 // rewriting multi-hundred-MB archives after every warm is unwanted).
+async function exportIfEnabled() {
+  if (process.env.TILE_MBTILES_EXPORT === "0") return;
+  const { exportAllMbtiles } = await import("./mbtilesExport.js");
+  exportAllMbtiles();
+}
+
+// True once every configured zoom/style combination has at least attempted
+// a fetch with no outstanding gap — used to decide whether the connectivity
+// watchdog below should keep re-running the full warm pass. A pass that
+// finished with zero failures is fully done; any failures mean either the
+// internet window wasn't open yet or closed partway through, so it's worth
+// re-checking later (the warm is resumable — already-cached tiles are
+// millisecond stat-hits, so a re-run only costs what's still missing).
+function passIsComplete(totals) {
+  return totals && totals.fail === 0;
+}
+
+// Air-gapped auto-resume: this deployment may only get real internet access
+// once every several months, for an unpredictable, possibly short window.
+// Rather than requiring someone to manually restart the server or re-run
+// the warm script the moment that window opens, this loop polls upstream
+// connectivity on a timer and re-runs the full warm pass (skipping
+// already-cached tiles) the instant it detects the network is reachable —
+// so "open the firewall for an hour" is genuinely all that's required, no
+// manual step on this end. Stops polling once a pass completes with zero
+// failures (fully warmed); a completed MBTiles export at that point is the
+// definitive "safe to rely on offline indefinitely" signal.
+function scheduleConnectivityWatchdog() {
+  const timer = setInterval(async () => {
+    const online = await probeUpstreamConnectivity();
+    if (!online) return;
+    console.log("[cache-warmer] connectivity detected — resuming warm pass");
+    try {
+      const totals = await warmAllCaches();
+      await exportIfEnabled();
+      if (passIsComplete(totals)) {
+        console.log("[cache-warmer] full coverage reached — stopping connectivity watchdog");
+        clearInterval(timer);
+      }
+    } catch (err) {
+      console.error("[cache-warmer] resumed warm pass failed:", err);
+    }
+  }, CONNECTIVITY_RECHECK_MS);
+  return timer;
+}
+
+// Starts the whole pre-warming lifecycle: one initial full pass (basemaps +
+// GWC + MBTiles export), then two recurring timers — a GWC-only re-warm
+// (short-TTL, real editable GIS data) and the connectivity watchdog above
+// (long-TTL, only matters when the initial pass didn't fully succeed).
+// Fire-and-forget by design — never blocks server startup, never throws
+// past this call.
 export function startCacheWarmer() {
   warmAllCaches()
-    .then(async () => {
-      if (process.env.TILE_MBTILES_EXPORT === "0") return;
-      const { exportAllMbtiles } = await import("./mbtilesExport.js");
-      exportAllMbtiles();
+    .then(async (totals) => {
+      await exportIfEnabled();
+      if (!passIsComplete(totals)) scheduleConnectivityWatchdog();
     })
-    .catch((err) => console.error("[cache-warmer] initial pass failed:", err));
+    .catch((err) => {
+      console.error("[cache-warmer] initial pass failed:", err);
+      scheduleConnectivityWatchdog();
+    });
   setInterval(() => {
     rewarmGwcOnly().catch((err) => console.error("[cache-warmer] GWC re-warm failed:", err));
   }, GWC_REWARM_INTERVAL_MS);
