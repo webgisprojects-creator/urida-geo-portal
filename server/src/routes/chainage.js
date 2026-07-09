@@ -65,7 +65,7 @@ const sendFeatureUnavailable = (res, city, feature = "Chainage") => res.status(5
 //     },
 // };
 
-const chainageDbConfig = {
+export const chainageDbConfig = {
     kanpur: {
         schema: "kanpur",
         chainageTable: "Kanpur.chainage_points",
@@ -356,6 +356,20 @@ if (existingPatchRes.rows.length > 0) {
         if (isMissingRelationError(err)) {
             return sendFeatureUnavailable(res, cityKey, "Chainage patch creation");
         }
+        // 23505 = unique_violation on patch_table_natural_key. The SELECT
+        // pre-check above is a fast path, not a guarantee — two concurrent
+        // requests for the same range can both pass it before either
+        // commits. The DB constraint is the real guard; when it fires, this
+        // returns the exact same response the pre-check already returns, so
+        // no frontend change is needed for either path.
+        if (err?.code === "23505") {
+            return res.status(409).json({
+                success: false,
+                alreadyExists: true,
+                patch_id: patchId,
+                message: "Patch already exists. Please select it from the checkbox list.",
+            });
+        }
         res.status(500).json({ error: "Unable to create patch" });
     } finally {
         client.release();
@@ -509,6 +523,11 @@ router.post("/api/map-project-patches", verifyToken, async (req, res) => {
     }
 
     try {
+        // ON CONFLICT targets project_table_natural_key (project_id, user_id,
+        // road_id, patch_id) — a retried submit becomes a no-op instead of a
+        // duplicate audit row. This does NOT block the same patch being
+        // linked to a different project_id/user_id; only an exact repeat of
+        // all four keys is skipped.
         const query = `
             INSERT INTO ${cfg.schema}.project_table
                 (project_id, user_id, road_id, patch_id, created_at)
@@ -521,7 +540,7 @@ router.post("/api/map-project-patches", verifyToken, async (req, res) => {
             FROM ${cfg.schema}.patch_table p
             WHERE p.patch_id = ANY($3)
             GROUP BY p.road_id, p.patch_id
-
+            ON CONFLICT (project_id, user_id, road_id, patch_id) DO NOTHING
         `;
 
         await pool1.query(query, [

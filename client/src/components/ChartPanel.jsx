@@ -248,6 +248,12 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters =
 
     const [selectedZone, setSelectedZone] = useState("");
     const [selectedWard, setSelectedWard] = useState("");
+    // Whether the zones fetch below has resolved at least once for the
+    // current city — without this, `zones.length === 0` is indistinguishable
+    // from "still loading" during the fetch, which would flash the
+    // zone-less UI (see hasZones below) for every city on open, not just
+    // ones that genuinely have no zone tier.
+    const [zonesLoaded, setZonesLoaded] = useState(false);
     const [showZoneDropdown, setShowZoneDropdown] = useState(false);
     const [showWardDropdown, setShowWardDropdown] = useState(false);
     const zoneDropdownRef = useRef(null);//new
@@ -395,19 +401,51 @@ const wardDropdownRef = useRef(null);//new
         const cacheKey = cityKey;
         if (zonesCacheRef.current.has(cacheKey)) {
             setZones(zonesCacheRef.current.get(cacheKey));
+            setZonesLoaded(true);
             return;
         }
 
+        setZonesLoaded(false);
         fetch(`${baseApi}/${cityKey}`)
             .then(r => r.json())
             .then((data) => {
                 zonesCacheRef.current.set(cacheKey, data);
                 setZones(data);
+                setZonesLoaded(true);
             });
     }, [isOpen, cityKey]);
 
+    // True only once we've actually confirmed (not just defaulted) that
+    // this city's road table has zone_no values — e.g. Firozabad has wards
+    // but no zone tier at all, per cityConfig.js's wardLayer-only setup for
+    // it. Driving this off the real /zones response (not cityConfig) keeps
+    // it correct even if a city's zone data is added/removed later without
+    // a matching cityConfig.js edit.
+    const hasZones = zonesLoaded && zones.length > 0;
 
     useEffect(() => {
+        if (!zonesLoaded) return;
+
+        // Zone-less city: there's no zone tier to scope by, so fetch the
+        // city's full ward list once, unscoped — previously this branch
+        // never ran (the effect bailed out on `!selectedZone`), which meant
+        // a zone-less city's ward dropdown stayed permanently empty AND
+        // disabled, since selecting a zone first was never possible.
+        if (!hasZones) {
+            const cacheKey = `${cityKey}|__all__`;
+            if (wardsCacheRef.current.has(cacheKey)) {
+                setWards(wardsCacheRef.current.get(cacheKey));
+                return;
+            }
+            fetch(`${baseApi}/${cityKey}/wards`)
+                .then(r => r.json())
+                .then((data) => {
+                    wardsCacheRef.current.set(cacheKey, data);
+                    setWards(data);
+                });
+            return;
+        }
+
         if (!selectedZone) {
             setWards([]);
             setSelectedWard("");
@@ -426,7 +464,7 @@ const wardDropdownRef = useRef(null);//new
                 wardsCacheRef.current.set(cacheKey, data);
                 setWards(data);
             });
-    }, [selectedZone, cityKey]);
+    }, [selectedZone, cityKey, zonesLoaded, hasZones]);
 
 
     useEffect(() => {
@@ -970,7 +1008,7 @@ const wardDropdownRef = useRef(null);//new
 
 
             <div className="summary-header" onPointerDown={startDrag} style={{ touchAction: "none" }}>
-                <span>ROAD NET SUMMARY</span>
+                <span>{hasZones ? "ROAD NET SUMMARY" : "ROAD NET SUMMARY — WARD WISE"}</span>
                 <div className="summary-header-actions">
                     {onMinimize && (
                         <button
@@ -987,8 +1025,11 @@ const wardDropdownRef = useRef(null);//new
             </div>
 
             <div className="summary-filters-row" style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
-                {/* Custom Zone Dropdown */}
-                {/* new */}
+                {/* Custom Zone Dropdown — cities with no zone tier at all
+                    (e.g. Firozabad: wards only, see cityConfig.js) have
+                    nothing to show here; the ward dropdown below takes the
+                    full row width instead. */}
+                {hasZones && (
                 <div ref={zoneDropdownRef} style={{ flex: 1, position: 'relative' }}>
                     <div
 
@@ -1019,14 +1060,18 @@ const wardDropdownRef = useRef(null);//new
                         </div>
                     )}
                 </div>
+                )}
 
-                {/* Custom Ward Dropdown */}
+                {/* Custom Ward Dropdown — only ever gated on "no zone
+                    selected yet" for cities that actually have a zone tier;
+                    zone-less cities' wards are fetched unscoped (see the
+                    wards effect above), so there's nothing to wait on here. */}
                 <div ref={wardDropdownRef} style={{ flex: 1, position: 'relative' }}>
                     <div
 
-                        className={`custom-select-trigger ${!selectedZone ? 'disabled' : ''}`}
+                        className={`custom-select-trigger ${hasZones && !selectedZone ? 'disabled' : ''}`}
                         onClick={() => {
-                            if (!selectedZone) return;
+                            if (hasZones && !selectedZone) return;
                             setShowWardDropdown(!showWardDropdown);
                             setShowZoneDropdown(false);
                         }}
@@ -1056,6 +1101,7 @@ const wardDropdownRef = useRef(null);//new
 
 
             <div className="summary-metrics">
+                {hasZones && (
                 <div className="metric-card">
                     <div className="metric-value">
                         {metrics.total_zones === "--" ? "--" : Number(metrics.total_zones).toLocaleString()}
@@ -1064,6 +1110,7 @@ const wardDropdownRef = useRef(null);//new
                         Total Zones
                     </div>
                 </div>
+                )}
 
                 <div className="metric-card">
                     <div className="metric-value">

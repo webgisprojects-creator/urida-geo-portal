@@ -2,7 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { pool } from "../config/db.js";
-import { verifyToken, verifyRole } from "../middleware/authMiddleware.js";
+import { verifyToken, verifyRole, ensureActiveTokensTable } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
@@ -78,6 +78,8 @@ const getUsersContext = async () => {
     must_change_password: resolveColumn(columns, ["must_change_password"]),
     deleted_at: resolveColumn(columns, ["deleted_at"]),
     password_changed_at: resolveColumn(columns, ["password_changed_at"]),
+    failed_attempts: resolveColumn(columns, ["failed_attempts", "failed_attempt", "login_attempts"]),
+    lock_until: resolveColumn(columns, ["lock_until", "locked_until"]),
   };
   return { schema, table, columns, columnMeta, tableRef, selected };
 };
@@ -453,6 +455,48 @@ router.patch("/users/:userId/reset-password", async (req, res) => {
   }
 });
 
+// Counterpart to authController.js's lockout — clears failed_attempts/
+// lock_until so a normal user locked out after 5 failed attempts can get
+// back in without waiting out the 15-minute window. This is the admin
+// action the login page's own lockout message ("contact RSAC-UP to unlock
+// your account") points to.
+router.patch("/users/:userId/unlock", async (req, res) => {
+  try {
+    const userId = String(req.params.userId || "").trim();
+    if (!userId) return res.status(400).json({ error: "userId is required" });
+    const { tableRef, selected } = await getUsersContext();
+    if (!selected.failed_attempts && !selected.lock_until) {
+      return res.status(400).json({ error: "This users table has no lockout columns to clear" });
+    }
+    if (!buildLookupClause(selected, "$1")) {
+      return res.status(400).json({ error: "No id column found in users table" });
+    }
+    const values = [];
+    const setParts = [];
+    if (selected.failed_attempts) {
+      values.push(0);
+      setParts.push(`${quoteIdentifier(selected.failed_attempts)} = $${values.length}`);
+    }
+    if (selected.lock_until) {
+      values.push(null);
+      setParts.push(`${quoteIdentifier(selected.lock_until)} = $${values.length}`);
+    }
+    const sql = `
+      UPDATE ${tableRef}
+      SET ${setParts.join(", ")}
+      WHERE ${buildLookupClause(selected, `$${values.length + 1}`)}
+    `;
+    const result = await pool.query(sql, [...values, userId]);
+    if ((result.rowCount || 0) === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    return res.json({ status: "ok" });
+  } catch (err) {
+    console.error("admin unlock user error:", err);
+    return res.status(500).json({ error: "Failed to unlock user" });
+  }
+});
+
 const handleGenerateTempPassword = async (req, res) => {
   try {
     const userId = String(req.params.userId || "").trim();
@@ -570,6 +614,14 @@ router.delete("/users/:userId", async (req, res) => {
 
 router.get("/active-tokens/summary", async (req, res) => {
   try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 15));
+    const offset = (page - 1) * limit;
+
+    // Guarantees ip_address/user_agent exist even on a freshly-started
+    // server process that hasn't handled a login yet this run (those
+    // columns are added by this same idempotent migration on first call).
+    await ensureActiveTokensTable();
     const tokenTable = await findTableByName("active_tokens");
     if (!tokenTable) {
       return res.status(404).json({ error: "active_tokens table not found" });
@@ -605,20 +657,32 @@ router.get("/active-tokens/summary", async (req, res) => {
       const userIdCol = resolveColumn(userColumns, ["user_id", "id"]);
 
       if (usernameCol && userIdCol) {
+        // active_tokens.user_id is whatever login() put there — user_id if
+        // the users table actually has that column populated, otherwise
+        // username as a fallback (see authController.js's
+        // `userIdForToken = user.user_id ?? user.username`). Most accounts
+        // here have a NULL user_id column, so login sessions are keyed by
+        // username in practice — joining on user_id alone left every one
+        // of those rows unmatched, showing "Unknown user" for virtually
+        // everyone. Matching on either covers both cases.
         const sessionsSql = `
           SELECT
+            t.token_hash,
             u.${quoteIdentifier(usernameCol)} AS username,
             t.status,
             t.issued_at,
             t.expires_at,
-            t.last_activity_time
+            t.last_activity_time,
+            t.ip_address,
+            t.user_agent
           FROM ${tokenRef} t
           LEFT JOIN ${userRef} u
             ON t.user_id = u.${quoteIdentifier(userIdCol)}::text
+            OR t.user_id = u.${quoteIdentifier(usernameCol)}
           ORDER BY t.last_activity_time DESC NULLS LAST
-          LIMIT 15
+          LIMIT $1 OFFSET $2
         `;
-        const sessionsRes = await pool.query(sessionsSql);
+        const sessionsRes = await pool.query(sessionsSql, [limit, offset]);
         recentSessions = sessionsRes.rows || [];
       }
     }
@@ -631,10 +695,55 @@ router.get("/active-tokens/summary", async (req, res) => {
         timestamp: now.toISOString(),
       },
       recent_sessions: recentSessions,
+      page,
+      limit,
+      total_pages: Math.max(1, Math.ceil((Number(counts.total_sessions) || 0) / limit)),
     });
   } catch (err) {
     console.error("admin active_tokens summary error:", err);
     return res.status(500).json({ error: "Failed to load active token summary" });
+  }
+});
+
+// Revoke a single session (e.g. "sign this device out") — identified by
+// its token_hash, the same opaque value returned in recent_sessions above
+// (a SHA-256 hash, not the actual bearer token, so returning it to the
+// admin UI reveals nothing that could itself be used to log in).
+router.patch("/active-tokens/:tokenHash/revoke", async (req, res) => {
+  try {
+    const tokenHash = String(req.params.tokenHash || "").trim();
+    if (!tokenHash) return res.status(400).json({ error: "tokenHash is required" });
+    const tokenTable = await findTableByName("active_tokens");
+    if (!tokenTable) return res.status(404).json({ error: "active_tokens table not found" });
+    const tokenRef = `${quoteIdentifier(tokenTable.table_schema)}.${quoteIdentifier(tokenTable.table_name)}`;
+    const result = await pool.query(
+      `UPDATE ${tokenRef} SET status = 'revoked_by_admin' WHERE token_hash = $1 AND status = 'active'`,
+      [tokenHash]
+    );
+    if ((result.rowCount || 0) === 0) {
+      return res.status(404).json({ error: "Session not found or already inactive" });
+    }
+    return res.json({ status: "ok" });
+  } catch (err) {
+    console.error("admin session revoke error:", err);
+    return res.status(500).json({ error: "Failed to revoke session" });
+  }
+});
+
+// Bulk cleanup — deletes every non-active row (logged_out, expired,
+// inactivated, revoked, etc.) so the list doesn't grow forever with
+// history nobody needs to keep. Never touches status='active' rows; use
+// the single-session revoke above for those.
+router.delete("/active-tokens/inactive", async (req, res) => {
+  try {
+    const tokenTable = await findTableByName("active_tokens");
+    if (!tokenTable) return res.status(404).json({ error: "active_tokens table not found" });
+    const tokenRef = `${quoteIdentifier(tokenTable.table_schema)}.${quoteIdentifier(tokenTable.table_name)}`;
+    const result = await pool.query(`DELETE FROM ${tokenRef} WHERE status <> 'active'`);
+    return res.json({ status: "ok", cleared: result.rowCount || 0 });
+  } catch (err) {
+    console.error("admin session cleanup error:", err);
+    return res.status(500).json({ error: "Failed to clear inactive sessions" });
   }
 });
 

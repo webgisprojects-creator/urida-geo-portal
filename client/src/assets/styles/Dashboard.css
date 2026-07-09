@@ -24,9 +24,14 @@ body {
 
 /* ================= HEADER ================= */
 .lucknow-header {
-  display: flex;
+  /* 3 explicit columns instead of flex — left/right are both 1fr, so they
+     stay equal width (and the center title stays truly centered on the
+     viewport) whether or not back/hamburger are actually rendered on the
+     left, rather than the title only centering in whatever space happens
+     to be left over next to the profile icon. */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: center;
   height: 45px;
   width: 100%;
   /* background-image: linear-gradient(#6190E8, #a7bfeb); /* Venice Blue */
@@ -54,6 +59,13 @@ body {
   cursor: default;
   user-select: none;
   caret-color: transparent;
+  /* NOT overflow:hidden — the profile/download dropdown menus are
+     deliberately position:absolute with top:130% so they hang below this
+     bar; clipping overflow here hid them entirely. The actual overflow bug
+     (title/logos spilling past the bottom edge) was .lucknow-header__title
+     being a bare <h2> with its default ~0.83em top/bottom browser margin
+     inflating the row past this fixed 45px height — fixed at the source
+     via margin:0 on that rule instead. */
 }
 
 /* --- Sleek Hamburger Icon --- */
@@ -230,11 +242,31 @@ body {
   cursor: pointer;
 }
 
+.lucknow-header__side {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  min-width: 0;
+}
+
+.lucknow-header__side--left {
+  justify-self: start;
+}
+
 .lucknow-header__center {
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-grow: 2;
+  justify-self: center;
+  min-width: 0;
+}
+
+/* Third grid column (auto-placed by DOM order) — the actions block's own
+   inline styles (Header.jsx) don't set this, so without it the item would
+   default to stretching across the column instead of hugging the right
+   edge like the title-centering fix above depends on. */
+.lucknow-header__actions {
+  justify-self: end;
 }
 
 .lucknow-header__logo {
@@ -246,6 +278,11 @@ body {
 }
 
 .lucknow-header__title {
+  /* h2's default ~0.83em top/bottom browser margin was the actual cause of
+     the logos/title spilling out past the header's fixed 45px height on
+     desktop — this element was never actually taller than it needed to
+     be, its invisible margin was. */
+  margin: 0;
   font-size: 1.2em;
   color: #ffffff;
   font-weight: bold;
@@ -272,7 +309,16 @@ body {
   transition: transform 0.3s ease-in-out;
   box-shadow: 3px 0 8px rgba(0, 0, 0, 0.35);
   overflow-y: auto;
-  z-index: 2000;
+  /* Was 2000 — .modern-panel (the Road Network/CUS-class cascade cards,
+     z-index 99999) is positioned at left:62px, squarely inside this
+     drawer's 0-300px strip. With the old value, opening the hamburger
+     drawer while any cascade card was still up rendered the drawer BEHIND
+     it — a full-height nav drawer silently unclickable under a leftover
+     popup. A drawer is expected to sit above ordinary page content when
+     open; kept below .bottom-table (100001) and .submit-confirm-overlay
+     (100010), the two elements explicitly documented as needing to stay
+     topmost, so this doesn't create the reverse problem for them. */
+  z-index: 100000;
   padding: 12px 0 16px;
 }
 
@@ -445,6 +491,147 @@ body {
 
 .sidebar-section form label .text {
   color: #f9fafb;
+}
+
+/* LCLU transparency slider — only rendered while an LCLU layer is on
+   (see Sidebar.jsx's isLcluActive), sitting in the normal flow of the
+   LCLU tab's own section rather than as a fixed/absolute overlay, so
+   nothing else on the page can stack over it or hide it.
+   --fill (set inline from Sidebar.jsx, 0%-100%) drives the two-tone
+   filled/unfilled track below — a flat gradient that never moves with
+   the value doesn't actually read as a slider being used. */
+.lclu-opacity-control {
+  --fill: 100%;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: linear-gradient(160deg, rgba(54, 209, 214, 0.14), rgba(91, 134, 229, 0.1));
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 4px 14px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(6px);
+}
+
+.lclu-opacity-control__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #e2e8f0;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.lclu-opacity-control__label i {
+  color: #67e8f9;
+  font-size: 12px;
+}
+
+.lclu-opacity-control__value {
+  margin-left: auto;
+  min-width: 38px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #ffffff;
+  background: linear-gradient(135deg, #36d1dc, #5b86e5);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.lclu-opacity-control__track-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lclu-opacity-control__end-icon {
+  flex-shrink: 0;
+  color: rgba(226, 232, 240, 0.55);
+  font-size: 10px;
+}
+
+.lclu-opacity-control__end-icon--max {
+  color: rgba(103, 232, 249, 0.85);
+  font-size: 12px;
+}
+
+.lclu-opacity-control__slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 auto;
+  height: 5px;
+  border-radius: 999px;
+  /* Filled portion up to the thumb, then a dim unfilled remainder — the
+     actual "modern slider" signal, not just a static color bar. */
+  background: linear-gradient(
+    90deg,
+    #36d1dc 0%,
+    #5b86e5 var(--fill),
+    rgba(255, 255, 255, 0.16) var(--fill),
+    rgba(255, 255, 255, 0.16) 100%
+  );
+  outline: none;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+}
+
+.lclu-opacity-control__slider:focus-visible {
+  box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.35);
+}
+
+.lclu-opacity-control__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -0.5px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 3px solid #2563eb;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.5);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.lclu-opacity-control__slider:hover::-webkit-slider-thumb {
+  transform: scale(1.15);
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.7);
+}
+
+.lclu-opacity-control__slider:active::-webkit-slider-thumb {
+  transform: scale(1.05);
+}
+
+.lclu-opacity-control__slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 3px solid #2563eb;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.5);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.lclu-opacity-control__slider:hover::-moz-range-thumb {
+  transform: scale(1.15);
+}
+
+.lclu-opacity-control__slider::-moz-range-track {
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    #36d1dc 0%,
+    #5b86e5 var(--fill),
+    rgba(255, 255, 255, 0.16) var(--fill),
+    rgba(255, 255, 255, 0.16) 100%
+  );
 }
 
 
@@ -1119,12 +1306,36 @@ right-btn {
 }
 
 /* ==================== FOOTER ==================== */
+/* Shared by Dashboard and HomePage (both render <Footer/>, Footer.jsx
+   pulls in this file) — HomePage.Module.css's own overlays (e.g.
+   .feature-progress-notice) reach z-index 40050, and this footer carries
+   the legal disclaimer, so it must never end up visually buried under
+   ordinary page chrome on either page. Kept below the two values Dashboard
+   itself documents as needing to stay topmost (.bottom-table 100001,
+   .submit-confirm-overlay 100010). */
+:root {
+  --dashboard-footer-z: 42000;
+  /* Conservative reserved height for the mobile (<=720px) footer, which can
+     now wrap to 3 stacked rows (see the mobile .dashboard-footer rules
+     below) instead of a fixed 20px — HomePage.Module.css's mobile
+     #map/.sidebar rules reference this so they leave genuine room instead
+     of a hardcoded guess that predates the wrap. */
+  --dashboard-footer-mobile-h: 76px;
+}
+
 .dashboard-footer {
   position: fixed;
   bottom: 0;
   left: 0;
   width: 100%;
-  height: 25px;
+  /* Was a fixed 25px, single row, with the legal-disclaimer text
+     ellipsis-truncated on mobile (see the max-width:30vw rule this
+     replaces below) — auto height + flex-wrap lets each section stack
+     onto its own row when the viewport is too narrow for all three side
+     by side, instead of silently cutting off the disclaimer text. */
+  min-height: 25px;
+  height: auto;
+  flex-wrap: wrap;
   background: linear-gradient(149deg, rgba(54, 209, 214, 0.85) 20%, rgba(91, 134, 229, 0.85) 35%);
   backdrop-filter: blur(2px);
   border-top: 1px solid rgba(255, 255, 255, 0.4);
@@ -1132,30 +1343,111 @@ right-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 20px;
+  gap: 12px;
+  padding: 4px 20px;
+  /* Bottom safe-area padding for notched phones (iPhone home-indicator
+     etc.) — without it, this fixed-bottom bar can sit partly under the
+     device's own gesture-bar overlay. Adds nothing on devices without a
+     safe-area inset. */
+  padding-bottom: max(4px, env(safe-area-inset-bottom));
   font-size: 13px;
   box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.25);
-  z-index: 2501;
+  z-index: var(--dashboard-footer-z);
   text-align: center;
 }
 
-.dashboard-footer .footer-left span {
+.dashboard-footer .footer-left,
+.dashboard-footer .footer-middle {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Was no gap at all between the copyright text and the RSAC logo — the
+   trailing space in Footer.jsx's JSX text node isn't reliable spacing in a
+   flex row, so the icon rendered crammed directly against the text. */
+.dashboard-footer .footer-middle {
+  gap: 8px;
+  justify-content: center;
+}
+
+/* Was an equal 1fr third like the other two columns, with the legal
+   disclaimer text forced to nowrap+ellipsis inside it — on any desktop
+   width narrower than ~1450px (a laptop, a half-width browser window, or
+   the same width with the sidebar open eating into it) that silently cut
+   the disclaimer off mid-sentence. Given twice the flex weight and allowed
+   to wrap, so it degrades to two short lines instead of losing the text
+   outright. */
+.dashboard-footer .footer-right {
+  flex: 2 1 0;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.dashboard-footer .footer-left span,
+.dashboard-footer .footer-middle span,
+.dashboard-footer .footer-right span {
   color: #000000;
   font-weight: 500;
 }
 
-.dashboard-footer .footer-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 500;
-  color: #000000;
+.dashboard-footer .footer-right span {
+  font-size: 12px;
+  white-space: normal;
+  line-height: 1.3;
 }
 
 .dashboard-footer .footer-logo {
-  height: 20px;
-  width: auto;
+  /* Was width:auto — the source image (images.jpg) has its own white
+     padding around the circular RSAC emblem, so an unconstrained
+     rectangular box just showed that padding as a visible square instead
+     of a clean circle. Forcing an equal-sided box + object-fit:cover crops
+     into the emblem itself, same treatment as .lucknow-header__logo. */
+  height: 22px;
+  width: 22px;
+  border-radius: 50%;
+  object-fit: cover;
   filter: brightness(1.1);
+}
+
+/* Persistent "get the road table back" handle for field-task sessions —
+   deliberately fixed/always-on-top (never conditionally hidden by table
+   state) since its entire purpose is being reachable when everything else
+   has been closed. Sits just above the footer, never overlapping it. */
+.reopen-road-table-btn {
+  position: fixed;
+  left: 50%;
+  bottom: 33px;
+  transform: translateX(-50%);
+  z-index: 2600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ff8800, #ff6a00);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(255, 106, 0, 0.4);
+  cursor: pointer;
+}
+
+.reopen-road-table-btn:active {
+  transform: translateX(-50%) scale(0.97);
+}
+
+@media (max-width: 720px) {
+  .reopen-road-table-btn {
+    bottom: 28px;
+    padding: 9px 16px;
+    font-size: 12px;
+  }
 }
 
 .map-container-wrapper {
@@ -2324,17 +2616,11 @@ right-btn {
   .lucknow-header {
     height: 48px;
     padding: 6px 8px;
-    justify-content: space-between;
   }
 
   .lucknow-header__search {
     position: static;
     margin-left: auto;
-  }
-
-  .lucknow-header__center {
-    flex: 1;
-    min-width: 0;
   }
 
   .lucknow-header__logo {
@@ -2455,27 +2741,67 @@ right-btn {
   }
 }
 
-@media (max-width: 720px) {
+/* Between the full desktop 3-column footer and the <=720px stacked-rows
+   layout there was nothing — the disclaimer column (flex:2) just kept
+   getting squeezed as the viewport (or an equivalent effective width from
+   browser zoom, which shrinks how many CSS px fit on screen the same way
+   a narrower window does) shrank, with no intermediate relief until it
+   suddenly jumped to full-width stacking at 720px. This softens that
+   transition instead of the footer looking visibly cramped for the whole
+   721-1024px range. */
+@media (max-width: 1024px) and (min-width: 721px) {
   .dashboard-footer {
-    height: 20px;
-    padding: 0 8px;
-    font-size: 9px;
-    gap: 6px;
-  }
-
-  .dashboard-footer .footer-right {
-    gap: 4px;
+    padding: 4px 12px;
+    gap: 8px;
+    font-size: 12px;
   }
 
   .dashboard-footer .footer-right span {
-    max-width: 55vw;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: 11px;
+  }
+
+  .dashboard-footer .footer-logo {
+    height: 18px;
+    width: 18px;
+  }
+}
+
+@media (max-width: 720px) {
+  /* Was one forced row with each section ellipsis-truncated to
+     max-width:30vw — at 9px font that clipped the legal disclaimer
+     ("Data displayed is for departmental reference only and has no legal
+     validity.") down to a handful of characters, i.e. the actual
+     disclaimer was never readable on a phone. Each section now gets its
+     own full-width row instead, so nothing gets cut off. */
+  .dashboard-footer {
+    height: auto;
+    min-height: 20px;
+    padding: 4px 10px;
+    padding-bottom: max(4px, env(safe-area-inset-bottom));
+    font-size: 10px;
+    gap: 2px;
+  }
+
+  .dashboard-footer .footer-left,
+  .dashboard-footer .footer-middle,
+  .dashboard-footer .footer-right {
+    flex: 1 1 100%;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .dashboard-footer .footer-left span,
+  .dashboard-footer .footer-middle span,
+  .dashboard-footer .footer-right span {
+    max-width: none;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
   }
 
   .dashboard-footer .footer-logo {
     height: 14px;
+    width: 14px;
   }
 
   .summary-panel {
@@ -2499,37 +2825,115 @@ right-btn {
     gap: 4px;
   }
 
+  /* Row 1: page-traversal arrows (left) + the Roads/km badge (right), both
+     compact enough to actually share one row on a phone. Row 2 (forced by
+     .table-controls's flex-basis:100% below): Back/Multi/Apply/Clear/▼/✕.
+     flex-wrap (not flex-direction:column) is what makes "two specific
+     children share a row, third forced to its own" possible without a
+     JSX restructure — .table-controls's 100% basis is what forces the wrap. */
   .pagination-controls {
-    flex-direction: column;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
-    padding: 8px;
+    justify-content: space-between;
+    gap: 4px;
+    /* Was 8px all round — the header was eating a disproportionate slice
+       of a phone's vertical space before any actual table data showed. */
+    padding: 5px 8px;
   }
 
   .pagination-info {
     margin-left: 0;
-    text-align: center;
+    order: 2;
+  }
+
+  /* Redundant with the "N Roads | X.XX km" badge right next to it — on a
+     phone the two together wrapped onto two separate lines, which read as
+     broken/duplicated rather than as two pieces of information. Keeping
+     the badge (road count + length, genuinely useful in the field) and
+     dropping the generic pagination phrasing. */
+  .pagination-entries-text {
+    display: none;
+  }
+
+  /* The count badge — small enough that it and the page-nav arrows
+     reliably share one line instead of each wrapping to its own row.
+     Icons dropped entirely on mobile (they alone cost ~40px for two, more
+     than the compact text itself). */
+  .road-count-badge {
+    padding: 3px 7px !important;
+    font-size: 10px !important;
+    gap: 5px !important;
+  }
+
+  .road-count-badge__icon {
+    display: none;
   }
 
   .pagination-buttons {
-    width: 100%;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 6px;
+    order: 1;
+    width: auto;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    gap: 3px;
     margin-right: 0;
+  }
+
+  .page-numbers {
+    font-size: 11px;
+    white-space: nowrap;
+    padding: 0 2px;
   }
 
   /* .table-controls (Back/Multi/Apply/Clear) is absolutely positioned at
      top-right for desktop, which overlaps the "Showing X to Y of Z" info
-     row once .pagination-controls switches to column layout above — there
+     row once .pagination-controls switches to a wrapping row above — there
      just isn't enough horizontal room on a phone for both to coexist at
-     fixed corners. Drop it into the normal column flow as its own row
-     instead. */
+     fixed corners. flex-basis:100% forces it onto its own second row of
+     the wrapping flex container instead of a JSX restructure. */
   .table-controls {
+    order: 3;
+    flex-basis: 100%;
     position: static;
     width: 100%;
     justify-content: center;
     flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .table-back-btn,
+  .table-multi-btn,
+  .table-apply-btn,
+  .table-clear-btn,
+  .table-maximize-btn,
+  .table-close-btn {
+    padding: 4px 8px;
+    font-size: 11px;
+    min-height: 28px;
+  }
+
+  .pagination-btn--arrow {
+    padding: 4px 8px !important;
+    font-size: 12px;
+    min-width: 26px;
+  }
+
+  /* OpenLayers' default zoom control (defaultControls({zoom:true}) in
+     MapContainer.jsx) ships unstyled at its own ~40px size — plenty big
+     enough to eat real screen space on a phone next to everything else
+     that also needs room. Shrunk but kept comfortably tappable. */
+  .ol-zoom {
+    top: 6px;
+    left: 6px;
+  }
+
+  .ol-zoom button {
+    width: 28px !important;
+    height: 28px !important;
+    font-size: 14px !important;
+    line-height: 28px !important;
   }
 }
 
@@ -2905,9 +3309,9 @@ right-btn {
 }
 
 .road-panel-subtitle {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.6px;
-  color: rgba(30, 43, 58, 0.75);
+  color: rgba(20, 30, 42, 0.88);
   text-transform: uppercase;
 }
 
@@ -2980,7 +3384,10 @@ right-btn {
 }
 
 .road-item span:first-child {
-  color: rgba(30, 43, 58, 0.7);
+  /* Was 0.7 opacity — too washed out against the light teal/blue/purple
+     gradient behind it to read cleanly on a phone outdoors. */
+  color: rgba(15, 23, 32, 0.88);
+  font-weight: 500;
 }
 
 /* BADGES */

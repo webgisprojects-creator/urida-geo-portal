@@ -197,7 +197,6 @@ export const cityConfig = {
       cus: { layer: "Road_Network:Firozabad_Road_Network_CUS" },
       material: { layer: "Road_Network:Firozabad_Road_Network_Material" },
       ownership: { layer: "Road_Network:Firozabad_Road_Network_Ownership" },
-      // ward: { layer: "Road_Network:Firozabad_Road_Network_Ward" },
       ward: { layer: "Road_Network:Firozabad_Road_Network" },
     },
 

@@ -1,7 +1,7 @@
 /* Auth route definitions for login, profile, and logout. */
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { getCaptcha, login, profile, logout } from '../controllers/authController.js';
+import { getCaptcha, login, profile, logout, changePassword } from '../controllers/authController.js';
 import { verifyToken, tryVerifyToken, getClientIp } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -27,6 +27,7 @@ const loginLimiter = rateLimit({
 router.get('/captcha', captchaLimiter, getCaptcha);
 router.post('/login', loginLimiter, login);
 router.get('/profile', verifyToken, profile);
+router.post('/change-password', verifyToken, changePassword);
 router.post('/logout', tryVerifyToken, logout);
 
 export default router;

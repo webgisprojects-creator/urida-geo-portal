@@ -8,7 +8,7 @@ import { logEvent } from "../utils/telemetry";
 import { saveAs } from "file-saver";
 
 import "../assets/styles/Dashboard.css";
-import rsacBanner from "../assets/Login/rsac_banner.png";
+import rsacBanner from "../assets/Login/rsac_banner2.png";
 import Header from "../components/Header";
 import Sidebar from "../components/Sidebar";
 import MapContainer from "../components/MapContainer";
@@ -533,6 +533,12 @@ const DashboardPage = () => {
     roadClassifications: {},
     specializedOptions: {}, // e.g. { sewage: 'diameter' }
   });
+  // LCLU-only transparency control — a single slider covers whichever LCLU
+  // sub-layer(s) are currently toggled on, rather than one per layer
+  // (there's normally only one active at a time anyway, and the sidebar
+  // only shows this control while at least one is). 1 = fully opaque,
+  // matching every other layer's default rendering.
+  const [lcluOpacity, setLcluOpacity] = useState(1);
   // Chainage/patch creation only makes sense once some road layer is on the
   // map — it needs a road to click. Covers the main Road Network toggle, any
   // road-classification (category) layer, and the "INCLUDE" sentinel
@@ -562,6 +568,11 @@ const DashboardPage = () => {
   const [selectedRoadId, setSelectedRoadId] = useState(null);
   const [selectedRoadIds, setSelectedRoadIds] = useState([]);
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  // Adjacent-but-not-yet-selected roads from fetchAndApplyMultiRoadCandidates
+  // — rendered by MapContainer at a middle dimming tier (dimmed background,
+  // but distinguishable from fully-irrelevant roads) so a field worker can
+  // see what's pickable next, not just what's already selected. //chainage
+  const [multiSelectCandidateRoadIds, setMultiSelectCandidateRoadIds] = useState([]);
 
   const normalizeLayerName = (value) => String(value || "").replace(/\s*:\s*/g, ":").trim();
 
@@ -621,8 +632,18 @@ const DashboardPage = () => {
     else endLoading("map");
   }, [beginLoading, endLoading]);
   const [isDownloading, setIsDownloading] = useState(false); // ⭐ Download in progress
+  // Excel export scope choice ("current filtered view" vs "complete city
+  // data") — null when closed. counts/estimates are filled in async right
+  // after opening (see openExcelScopeModal), so the dialog first renders
+  // with a loading state rather than blocking on the network before
+  // showing anything.
+  const [excelScopeModal, setExcelScopeModal] = useState(null);
   const [activeFilterColumn, setActiveFilterColumn] = useState(null);
   const [filterPosition, setFilterPosition] = useState(null);
+  // Only one bottom table (road table vs. chainage patch table) may be
+  // visible at a time — set true while the patch table is open so the road
+  // table's render condition below can hide itself. //chainage
+  const [patchTableActive, setPatchTableActive] = useState(false); //chainage
   const prevTableStateRef = useRef(null);
   const lastStableStateRef = useRef(null);
   const mapFilterActiveRef = useRef(false);
@@ -779,7 +800,16 @@ const DashboardPage = () => {
       fieldTaskDefaultFilter &&
       finalFilter === fieldTaskDefaultFilter &&
       lastFilterSourceRef.current === null;
-    if (finalFilter !== roadFilter && lastFilterSourceRef.current !== "map" && !isUntouchedFieldTaskDefault) {
+    if (
+      finalFilter !== roadFilter &&
+      lastFilterSourceRef.current !== "map" &&
+      // "table-candidates" already set its own selection-only zoomFilter
+      // (see fetchAndApplyMultiRoadCandidates) — this generic sync would
+      // otherwise immediately overwrite it with the full candidate-pool
+      // filter, reintroducing the zoom-out-to-fit-everything bug.
+      lastFilterSourceRef.current !== "table-candidates" &&
+      !isUntouchedFieldTaskDefault
+    ) {
       setZoomFilter(finalFilter);
     }
   }, [baseFilter, columnFilters, queryVersion, fieldTaskDefaultFilter]); // Removed roadFilter from dependency to avoid loop
@@ -1406,6 +1436,21 @@ const DashboardPage = () => {
   // expand road-by-road along the connected chain instead of staying fixed
   // to the first road's own neighbors.
   const fetchAndApplyMultiRoadCandidates = async (selectedIds) => {
+    // Selection is capped at 2 roads (see handleRowClick) — once both slots
+    // are filled there's no third road to connect to, so the candidate
+    // pool (and the extra WMS/table load it costs) is no longer needed.
+    // Narrow everything down to exactly the 2 selected roads instead —
+    // this is the actual point of the cap: less data in flight, not just
+    // a smaller visible selection.
+    if (selectedIds.length >= 2) {
+      lastFilterSourceRef.current = "table-candidates";
+      const onlySelected = buildSelectionFilter(selectedIds);
+      setBaseFilter(onlySelected);
+      setZoomFilter(onlySelected);
+      setMultiSelectCandidateRoadIds([]);
+      setQueryVersion((v) => v + 1);
+      return;
+    }
     const wardNums = (fieldTaskWardList || []).map(Number).filter(Number.isFinite);
     const wardsParam = wardNums.length ? `&wards=${wardNums.join(",")}` : "";
     try {
@@ -1420,9 +1465,18 @@ const DashboardPage = () => {
       results.forEach((list) => {
         (Array.isArray(list) ? list : []).forEach((r) => candidateIds.add(String(r.road_id)));
       });
-      const filter = buildSelectionFilter([...candidateIds]);
-      lastFilterSourceRef.current = "table";
-      setBaseFilter(filter);
+      // "table-candidates" (not "table") so the roadFilter/zoomFilter
+      // combinator effect below skips its own auto-zoom sync — the table's
+      // filter includes every adjacent candidate so they're pickable, but
+      // the map should only ever fit the roads actually selected so far,
+      // not the whole candidate pool (that was the map "zooming out" bug).
+      lastFilterSourceRef.current = "table-candidates";
+      setBaseFilter(buildSelectionFilter([...candidateIds]));
+      setZoomFilter(buildSelectionFilter(selectedIds));
+      const selectedIdSet = new Set(selectedIds.map(String));
+      setMultiSelectCandidateRoadIds(
+        [...candidateIds].filter((id) => !selectedIdSet.has(id))
+      );
       setQueryVersion((v) => v + 1);
     } catch {
       // Leave the table on whatever filter it already had — worst case the
@@ -1440,7 +1494,21 @@ const DashboardPage = () => {
       if (!rowId) return;
       setSelectedRoadIds((prev) => {
         const idStr = String(rowId);
-        const next = prev.includes(idStr)
+        const alreadySelected = prev.includes(idStr);
+        // Capped at 2 roads (a patch spanning more than one intersection
+        // isn't supported yet) — block a 3rd pick with an explanation
+        // rather than silently accepting it or letting the selection grow
+        // unbounded. Deselecting either road frees the slot back up.
+        if (!alreadySelected && isFieldTaskMode && prev.length >= 2) {
+          mapRef.current?.showFeatureNotice?.({
+            feature: "Chainage",
+            message: "You can select at most 2 connected roads for a patch. Deselect one first to pick a different road.",
+            dedupeKey: `multi-road-cap|${Date.now()}`,
+            autoDismissMs: 4000,
+          });
+          return prev;
+        }
+        const next = alreadySelected
           ? prev.filter((id) => id !== idStr)
           : [...prev, idStr];
         if (isFieldTaskMode && next.length) {
@@ -1523,8 +1591,10 @@ const DashboardPage = () => {
   // above, just triggered from the patch table's own open/close instead. //chainage
   const handlePatchTableOpen = () => {
     prevTableStateRef.current = capturePrevState();
+    setPatchTableActive(true);
   }; //chainage
   const handlePatchTableClose = () => {
+    setPatchTableActive(false);
     restorePrevTableState();
   }; //chainage
 
@@ -1584,13 +1654,14 @@ const DashboardPage = () => {
       // Drop back to the normal ward-scoped view (target ward + neighbors)
       // instead of the generic "no filter"/"INCLUDE" reset, which would
       // otherwise lose the field-task scope entirely.
+      mapRef.current?.closeChainagePanel?.();
       setSelectedRoadIds([]);
+      setMultiSelectCandidateRoadIds([]);
       setBaseFilter(fieldTaskDefaultFilter || "");
+      setColumnFilters({});
       setQueryVersion((v) => v + 1);
-      if (isMultiSelectMode) {
-        setSelectedRoadId(null);
-        setSelectedRoad("");
-      }
+      setSelectedRoadId(null);
+      setSelectedRoad("");
       return;
     }
     if (
@@ -1934,6 +2005,19 @@ const DashboardPage = () => {
     });
 
     if (baseGroup?.setVisible) baseGroup.setVisible(true);
+
+    // Esri reference labels are a standalone top-level layer now (not
+    // nested inside the "Satellite + Labels" base group above) — see
+    // MapContainer.jsx's map-init effect — specifically so it can sit at
+    // its own zIndex above the LCLU overlay instead of being buried
+    // underneath it. Its visibility has to be driven from here too since
+    // it's no longer inherited from a parent group's visibility.
+    const labelsLayer = map
+      .getLayers()
+      .getArray()
+      .find((layer) => layer?.get?.("title") === "Labels (Esri Reference)");
+    labelsLayer?.setVisible?.(selectedBaseMap === "satellite");
+
     map.renderSync?.();
     setBaseMap(selectedBaseMap);
   };
@@ -2069,10 +2153,24 @@ const DashboardPage = () => {
   };
 
   // ─── Helper: fetch full road data from backend ───────────────────────────
-  const fetchExportData = async (includeGeom = false) => {
+  // filterOverride lets a caller bypass the currently-active roadFilter
+  // entirely (empty string = every road in the city) — used by the Excel
+  // "complete city data" scope choice below, which is deliberately NOT
+  // what the map/table are currently filtered to. bboxOverride mirrors the
+  // same mapExtent-based viewport scoping the live table itself already
+  // uses (see the bboxParam usage above) — "current view" should mean
+  // what's actually on screen right now (filter AND extent), not just the
+  // attribute filter with whatever's panned off-screen still included.
+  const fetchExportData = async (includeGeom = false, filterOverride = undefined, bboxOverride = undefined) => {
+    const effectiveFilter =
+      filterOverride !== undefined
+        ? filterOverride
+        : roadFilter && roadFilter !== "INCLUDE" ? roadFilter : "";
+    const effectiveBbox = bboxOverride !== undefined ? bboxOverride : mapExtent;
+    const bboxParam = effectiveBbox ? `&bbox=${encodeURIComponent(effectiveBbox.join(","))}` : "";
     const url = `/api/road-networks/${city}/details?filter=${encodeURIComponent(
-      roadFilter && roadFilter !== "INCLUDE" ? roadFilter : ""
-    )}${includeGeom ? "&include_geom=true" : ""}&limit=0`;
+      effectiveFilter
+    )}${includeGeom ? "&include_geom=true" : ""}${bboxParam}&limit=0`;
     const res = await fetch(url);
     if (!res.ok) {
       const errText = await res.text();
@@ -2081,9 +2179,92 @@ const DashboardPage = () => {
     return await res.json(); // { data: [...], total, page, limit }
   };
 
+  // Cheap row-count probe (limit=1 — the endpoint always computes `total`
+  // via its own COUNT(*) regardless of limit, so this returns the real
+  // total without transferring the full dataset) used to show the Excel
+  // scope-choice dialog's row counts and time estimate before committing
+  // to the actual export fetch.
+  const fetchExportCount = async (filterOverride, bboxOverride) => {
+    const bboxParam = bboxOverride ? `&bbox=${encodeURIComponent(bboxOverride.join(","))}` : "";
+    const url = `/api/road-networks/${city}/details?filter=${encodeURIComponent(
+      filterOverride
+    )}${bboxParam}&limit=1`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    return Number.isFinite(data?.total) ? data.total : null;
+  };
+
+  // Rough, deliberately conservative heuristic — not a measured rate —
+  // just enough to give the user a realistic "this will take a moment"
+  // expectation instead of an unlabeled spinner for a 50k-row city-wide
+  // export. Rounded up to whole seconds, floor of 2s so it never claims
+  // something misleadingly instantaneous.
+  const estimateExportSeconds = (count) =>
+    Number.isFinite(count) ? Math.max(2, Math.ceil(count / 1500)) : null;
+  const formatExportCount = (count) => (Number.isFinite(count) ? count.toLocaleString() : "an unknown number of");
+
+  const openExcelScopeModal = async () => {
+    const currentFilter = roadFilter && roadFilter !== "INCLUDE" ? roadFilter : "";
+    setExcelScopeModal({ loadingCounts: true, currentCount: null, completeCount: null });
+    // "Current View" mirrors exactly what the live table is showing right
+    // now — filter AND the map's current pan/zoom extent — not just the
+    // attribute filter with off-screen roads still silently included.
+    const [currentCount, completeCount] = await Promise.all([
+      fetchExportCount(currentFilter, mapExtent),
+      fetchExportCount(""),
+    ]);
+    setExcelScopeModal((prev) =>
+      prev ? { ...prev, loadingCounts: false, currentCount, completeCount } : prev
+    );
+  };
+
+  const runExcelExport = async (scope) => {
+    setExcelScopeModal(null);
+    setIsDownloading(true);
+    const downloadStartedAt = performance.now();
+    logEvent("download_start", { action: "excel", scope });
+    try {
+      const currentFilter = roadFilter && roadFilter !== "INCLUDE" ? roadFilter : "";
+      const result = await fetchExportData(
+        false,
+        scope === "complete" ? "" : currentFilter,
+        scope === "complete" ? null : mapExtent
+      );
+      const rows = result?.data || [];
+      if (!rows.length) {
+        alert("No data to export. Please adjust your filter and try again.");
+        return;
+      }
+      await exportToExcel(rows, city, {
+        title: scope === "complete" ? `${city}_complete_road_data` : (tableDataset.title || "table_data"),
+      });
+    } catch (err) {
+      console.error("Download error:", err);
+      alert(`Export failed: ${err.message}`);
+      logEvent("download_error", { action: "excel", scope, message: err.message });
+    } finally {
+      logEvent("download_end", { action: "excel", scope, durationMs: Math.round(performance.now() - downloadStartedAt) });
+      setIsDownloading(false);
+    }
+  };
+
   // ⭐ Handle Download Actions — delegates to gisExport utility
   const handleDownloadAction = async (action) => {
     console.log("Download action triggered:", action);
+
+    // Excel export against the live road-network table asks the user to
+    // pick a scope first (current filtered view vs. the whole city) with a
+    // time estimate for each — runExcelExport (below) owns the rest of
+    // this action's lifecycle (isDownloading, logEvent, the actual fetch),
+    // so this returns immediately rather than falling into the generic
+    // handling below. Specialized/table datasets (drainage etc.) have no
+    // "whole city" equivalent, so they keep the old immediate-export path.
+    if (action === "excel" && tableDataset.kind === "roads") {
+      await openExcelScopeModal();
+      return;
+    }
+
     const downloadStartedAt = performance.now();
     logEvent("download_start", { action });
 
@@ -2139,13 +2320,10 @@ const DashboardPage = () => {
         }
 
       } else if (action === "excel") {
-        let rows = [];
-        if (tableDataset.kind === "roads") {
-          const result = await fetchExportData(false);
-          rows = result?.data || [];
-        } else {
-          rows = Array.isArray(tableRows) ? tableRows : [];
-        }
+        // Only reachable for non-"roads" (specialized) datasets — the
+        // roads case is short-circuited to openExcelScopeModal() above,
+        // before isDownloading/logEvent for this generic path even starts.
+        const rows = Array.isArray(tableRows) ? tableRows : [];
         if (!rows || rows.length === 0) {
           alert("No data to export. Please adjust your filter and try again.");
           return;
@@ -2200,6 +2378,27 @@ const DashboardPage = () => {
 
 
 
+  // Extracted so the reopen affordance below can use the exact inverse of
+  // the table's own render condition, instead of a second, driftable copy.
+  const showRoadTable =
+    !patchTableActive &&
+    shouldFetchTable &&
+    (tableDataset.kind === "specialized" ||
+      baseFilter ||
+      Object.keys(columnFilters || {}).length > 0 ||
+      tableRows.length > 0);
+
+  // Field-task/redirected sessions have no toolbar/menu route back to the
+  // road table once its own close button is used — on a phone that left
+  // the user stuck looking at a bare map with no way back. Restores the
+  // same ward-scoped default view clearMultiSelection already uses for
+  // "back to normal" in this mode.
+  const reopenRoadTable = () => {
+    setBaseFilter(fieldTaskDefaultFilter || "");
+    setShouldFetchTable(true);
+    setQueryVersion((v) => v + 1);
+  };
+
   return (
     <div
       className="dashboard-page"
@@ -2237,6 +2436,8 @@ const DashboardPage = () => {
           city={city}
           onLayerToggle={handleLayerToggle}
           layerVisibility={layerVisibility}
+          lcluOpacity={lcluOpacity}
+          onLcluOpacityChange={setLcluOpacity}
           tableVisible={tableRows.length > 0 && !isTableMinimized}
           tableMinimized={isTableMinimized}
           tableHasRows={tableRows.length > 0}
@@ -2279,6 +2480,7 @@ const DashboardPage = () => {
           mode={mode} //chainage
           baseMap={baseMap} // ⭐ Passed for adaptive colors
           layerVisibility={layerVisibility}
+          lcluOpacity={lcluOpacity}
           streetViewVisible={streetViewVisible}
           selectedRoadName={selectedRoad}
           roadFilter={roadFilter}
@@ -2286,6 +2488,7 @@ const DashboardPage = () => {
           selectedRoadId={selectedRoadId} // Add this
           selectedRoadIds={selectedRoadIds} // ⭐ ADDED for multi-select highlights
           isMultiSelectMode={isMultiSelectMode} // ⭐ ADDED for multi-select highlights
+          multiSelectCandidateRoadIds={multiSelectCandidateRoadIds} //chainage
           tableFilterActive={Object.keys(columnFilters || {}).length > 0}
           isSidebarOpen={isSidebarOpen}
           tableHasRows={tableRows.length > 0}
@@ -2354,6 +2557,17 @@ const DashboardPage = () => {
           onClear={() => {
             console.log("Clearing road selection");
             setSelectedRoad("");
+            // If chainage is open because a road was selected, Clear must
+            // drop that selection too — otherwise the panel stays stranded
+            // open pointing at a road no longer reflected by the (now
+            // reset) filters/table. closeChainagePanel also nulls out
+            // selectedRoadId (via onFieldTaskRoadHighlight), so the
+            // explicit resets just below are belt-and-suspenders for the
+            // non-chainage-panel case (e.g. table row selection only).
+            mapRef.current?.closeChainagePanel?.();
+            setSelectedRoadId(null);
+            setSelectedRoadIds([]);
+            setMultiSelectCandidateRoadIds([]);
             // Field-task mode: "Clear" undoes a category/condition/etc.
             // drill-down, not the whole redirect scope — resetting to ""
             // dropped the ward filter entirely, which hid the road layer
@@ -2435,12 +2649,7 @@ const DashboardPage = () => {
       </div>
 
       {/* ⭐ NEW BOTTOM TABLE */}
-      {(shouldFetchTable && (
-        tableDataset.kind === "specialized" ||
-        baseFilter ||
-        Object.keys(columnFilters || {}).length > 0 ||
-        tableRows.length > 0
-      )) && (
+      {showRoadTable && (
         <div
           className={`bottom-table ${isTableMinimized ? "minimized" : ""} ${isFieldTaskMode ? "field-task-table" : ""}`}
         >
@@ -2455,12 +2664,15 @@ const DashboardPage = () => {
             }}
           >
             <div className="pagination-info" style={{ display: "flex", alignItems: "center", gap: "15px" }}>
-              <span>
+              {/* Hidden on narrow screens (see the 720px rule) — redundant
+                  with the "N Roads" badge right next to it, and the two
+                  together were wrapping onto two lines on a phone. */}
+              <span className="pagination-entries-text">
                 Showing {indexOfFirstRecord + 1} to{" "}
                 {Math.min(indexOfLastRecord, tableRows.length)} of{" "}
                 {tableRows.length} entries
               </span>
-              <div style={{
+              <div className="road-count-badge" style={{
                 background: "rgba(74, 144, 226, 0.1)",
                 padding: "4px 12px",
                 borderRadius: "12px",
@@ -2472,12 +2684,12 @@ const DashboardPage = () => {
                 gap: "10px"
               }}>
                 <span title="Total number of currently filtered roads">
-                  <i className="fas fa-road" style={{ marginRight: "4px", color: "#4a90e2" }}></i>
+                  <i className="fas fa-road road-count-badge__icon" style={{ marginRight: "4px", color: "#4a90e2" }}></i>
                   {(liveTableMetrics?.total_roads ?? globalTableMetrics.total_roads) || tableRows.length} Roads
                 </span>
                 <span style={{ color: "rgba(0,0,0,0.2)" }}>|</span>
                 <span title="Total length of currently filtered roads">
-                  <i className="fas fa-ruler-horizontal" style={{ marginRight: "4px", color: "#4a90e2" }}></i>
+                  <i className="fas fa-ruler-horizontal road-count-badge__icon" style={{ marginRight: "4px", color: "#4a90e2" }}></i>
                   {((liveTableMetrics?.total_length_km ?? globalTableMetrics.total_length_km) > 0
                     ? Number(liveTableMetrics?.total_length_km ?? globalTableMetrics.total_length_km).toFixed(2)
                     : tableRows.reduce((sum, r) => sum + (Number(r.length_km) || 0), 0).toFixed(2))} km
@@ -2506,63 +2718,30 @@ const DashboardPage = () => {
                   <span style={{ marginLeft: 2, fontSize: 14 }}>×</span>
                 </div>
               )}
-              {/* Inline Export Buttons — hidden entirely for field-task
-                  redirects (KMC/iGile), not just disabled, per that mode's
-                  restricted toolbar. */}
-              {!isFieldTaskMode && (
-              <div style={{ display: "flex", gap: "4px", marginLeft: "auto" }}>
-                <button
-                  title="Export Excel"
-                  disabled={isDownloading}
-                  onClick={() => {
-                    handleDownloadAction("excel");
-                  }}
-                  style={{ background: "#16a34a", color: "#fff", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}
-                >
-                  {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-file-excel" style={{ fontSize: 11 }} />} Excel
-                </button>
-                <button
-                  title="Export PDF with Map"
-                  disabled={isDownloading}
-                  onClick={() => {
-                    handleDownloadAction("pdf");
-                  }}
-                  style={{ background: "#dc2626", color: "#fff", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}
-                >
-                  {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-file-pdf" style={{ fontSize: 11 }} />} PDF
-                </button>
-                <button
-                  title="Export Map Image"
-                  disabled={isDownloading}
-                  onClick={() => {
-                    handleDownloadAction("print");
-                  }}
-                  style={{ background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}
-                >
-                  {isDownloading ? <i className="fas fa-spinner fa-spin" style={{ fontSize: 11 }} /> : <i className="fas fa-image" style={{ fontSize: 11 }} />} Print
-                </button>
-              </div>
-              )}
             </div>
             <div className="pagination-buttons">
               <button
                 onClick={goToPreviousPage}
                 disabled={currentPage === 1}
-                className="pagination-btn"
+                className="pagination-btn pagination-btn--arrow"
+                title="Previous page"
+                aria-label="Previous page"
               >
-                Previous
+                <i className="fas fa-chevron-left" />
               </button>
 
-              <span className="page-numbers">
-                Page {currentPage} of {totalPages}
+              <span className="page-numbers" title={`Page ${currentPage} of ${totalPages}`}>
+                {currentPage}/{totalPages}
               </span>
 
               <button
                 onClick={goToNextPage}
                 disabled={currentPage === totalPages}
-                className="pagination-btn"
+                className="pagination-btn pagination-btn--arrow"
+                title="Next page"
+                aria-label="Next page"
               >
-                Next
+                <i className="fas fa-chevron-right" />
               </button>
             </div>
             {/* Close Button */}
@@ -2612,7 +2791,11 @@ const DashboardPage = () => {
               <button
                 className="table-close-btn"
                 onClick={() => {
-                  if (mode === "CHAINAGE") {
+                  // Field-task/redirected chainage sessions have no obvious
+                  // way to "switch off Chainage mode" — their whole session
+                  // is scoped to it — so only block the close here for the
+                  // general, manually-toggled-in-app chainage flow. //chainage
+                  if (mode === "CHAINAGE" && !isFieldTaskMode) {
                     mapRef.current?.showFeatureNotice?.({
                       feature: "Chainage",
                       message: "Please switch off Chainage mode before closing this table.",
@@ -2770,6 +2953,110 @@ const DashboardPage = () => {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Field-task sessions have no other route back to the road table
+          once it's closed — without this, a phone user is stuck looking at
+          a bare map with no way to get the road list back. */}
+      {isFieldTaskMode && !showRoadTable && !patchTableActive && (
+        <button
+          type="button"
+          className="reopen-road-table-btn"
+          onClick={reopenRoadTable}
+        >
+          <i className="fas fa-list" /> Show Roads
+        </button>
+      )}
+
+      {/* Excel export scope choice — current filtered view vs. the whole
+          city, each with a time estimate, before committing to the fetch.
+          See openExcelScopeModal/runExcelExport above. */}
+      {excelScopeModal && (
+        <div className="submit-confirm-overlay" onClick={() => setExcelScopeModal(null)}>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff",
+              borderRadius: 12,
+              padding: "24px 28px",
+              width: "min(420px, 92vw)",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.35)",
+            }}
+          >
+            <h3 style={{ margin: "0 0 6px", fontSize: 17, color: "#0f172a" }}>
+              Export Excel
+            </h3>
+            <p style={{ margin: "0 0 18px", fontSize: 13, color: "#475569" }}>
+              Choose what to include in the download.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => runExcelExport("current")}
+              disabled={excelScopeModal.loadingCounts}
+              style={{
+                width: "100%",
+                textAlign: "left",
+                background: "#eff6ff",
+                border: "1px solid #bfdbfe",
+                borderRadius: 8,
+                padding: "12px 14px",
+                marginBottom: 10,
+                cursor: excelScopeModal.loadingCounts ? "wait" : "pointer",
+              }}
+            >
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#1d4ed8" }}>
+                Current View
+              </div>
+              <div style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>
+                {excelScopeModal.loadingCounts
+                  ? "Checking row count..."
+                  : `${formatExportCount(excelScopeModal.currentCount)} roads in your current filtered view (map extent + filters) — ~${estimateExportSeconds(excelScopeModal.currentCount) ?? "a few"}s to prepare`}
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => runExcelExport("complete")}
+              disabled={excelScopeModal.loadingCounts}
+              style={{
+                width: "100%",
+                textAlign: "left",
+                background: "#f0fdf4",
+                border: "1px solid #bbf7d0",
+                borderRadius: 8,
+                padding: "12px 14px",
+                marginBottom: 16,
+                cursor: excelScopeModal.loadingCounts ? "wait" : "pointer",
+              }}
+            >
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#15803d" }}>
+                Complete City Data
+              </div>
+              <div style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>
+                {excelScopeModal.loadingCounts
+                  ? "Checking row count..."
+                  : `${formatExportCount(excelScopeModal.completeCount)} roads total for ${city} — ~${estimateExportSeconds(excelScopeModal.completeCount) ?? "a few"}s to prepare`}
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setExcelScopeModal(null)}
+              style={{
+                width: "100%",
+                background: "transparent",
+                border: "none",
+                color: "#64748b",
+                fontSize: 13,
+                cursor: "pointer",
+                padding: "4px 0",
+              }}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}

@@ -1,6 +1,6 @@
 const normalize = (value) => String(value || "").toLowerCase().trim();
 
-const fieldTaskUsernames = () =>
+export const fieldTaskUsernames = () =>
   new Set(
     String(process.env.FIELD_TASK_ONLY_USERNAMES || "chainage")
       .split(",")

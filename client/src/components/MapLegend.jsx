@@ -818,7 +818,11 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
         borderRadius: "8px",
         boxShadow: "0 6px 18px rgba(0,0,0,0.28)",
         zIndex: 4000, // Higher than summary table (3000)
-        minWidth: isMobileView ? "170px" : "200px",
+        // Collapsed state only needs to fit the title + one icon button —
+        // no reason for it to claim the same width the expanded content
+        // view needs, and on a phone that width reads as chunky/oversized
+        // for what's just a toggle.
+        minWidth: isMobileView ? (minimized ? "110px" : "170px") : "200px",
         maxWidth: isMobileView ? "220px" : "250px",
         display: "flex",
         flexDirection: "column",
@@ -830,9 +834,9 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
       <div
         onPointerDown={handlePointerDown}
         style={{
-          padding: "9px 12px",
+          padding: isMobileView ? "6px 9px" : "9px 12px",
           background: "rgba(255, 255, 255, 0.18)",
-          borderBottom: "1px solid rgba(255, 255, 255, 0.4)",
+          borderBottom: minimized ? "none" : "1px solid rgba(255, 255, 255, 0.4)",
           borderRadius: "8px 8px 0 0",
           cursor: isDragging ? "grabbing" : "grab",
           display: "flex",
@@ -842,8 +846,8 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
           touchAction: "none",
         }}
       >
-        <h4 style={{ margin: 0, display: "flex", alignItems: "center", gap: "7px", fontSize: "13px", fontWeight: 700, color: "#203148", letterSpacing: "0.2px" }}>
-          <i className="fas fa-layer-group" style={{ fontSize: "12px", opacity: 0.75 }} />
+        <h4 style={{ margin: 0, display: "flex", alignItems: "center", gap: "6px", fontSize: isMobileView ? "12px" : "13px", fontWeight: 700, color: "#203148", letterSpacing: "0.2px" }}>
+          <i className="fas fa-layer-group" style={{ fontSize: isMobileView ? "11px" : "12px", opacity: 0.75 }} />
           {headerTitle}
         </h4>
         <div style={{ display: "flex", gap: "6px" }}>
@@ -862,15 +866,15 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
               cursor: "pointer",
               color: "#1f2a3a",
               padding: 0,
-              width: "20px",
-              height: "20px",
+              width: isMobileView ? "17px" : "20px",
+              height: isMobileView ? "17px" : "20px",
               transition: "background 0.15s ease",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
             }}
           >
-            <i className={`fas fa-${minimized ? "plus" : "minus"}`} style={{ fontSize: "12px" }} />
+            <i className={`fas fa-${minimized ? "plus" : "minus"}`} style={{ fontSize: isMobileView ? "11px" : "12px" }} />
           </button>
         </div>
       </div>

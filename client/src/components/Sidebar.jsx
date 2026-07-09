@@ -60,6 +60,8 @@ const Sidebar = ({
     city,
     onLayerToggle,
     layerVisibility = {},
+    lcluOpacity = 1,
+    onLcluOpacityChange = null,
     tableVisible = false,
     tableMinimized = false,
     tableHasRows = false,
@@ -103,6 +105,11 @@ const Sidebar = ({
         const active = entries.find(([, enabled]) => enabled);
         return active ? active[0] : "none";
     }, [layerVisibility]);
+
+    const isLcluActive = useMemo(
+        () => Object.values(layerVisibility?.lclu || {}).some(Boolean),
+        [layerVisibility]
+    );
 
     const sidebarClassName = [
         "lucknow-sidebar",
@@ -374,6 +381,41 @@ const Sidebar = ({
                             <div className="text">No LCLU layers available</div>
                         )}
                     </form>
+                    {/* Only shown while an LCLU layer is actually on screen —
+                        transparency has nothing to control otherwise, and
+                        showing it unconditionally would just be a dead
+                        control sitting in the panel. Lives in the normal
+                        document flow of this section (not a fixed/absolute
+                        overlay), so nothing else in the page can stack on
+                        top of it or hide it. */}
+                    {isLcluActive && (
+                        <div className="lclu-opacity-control">
+                            <div className="lclu-opacity-control__label">
+                                <i className="fa-solid fa-droplet-slash"></i>
+                                <span>Layer Transparency</span>
+                                <span className="lclu-opacity-control__value">{Math.round(lcluOpacity * 100)}%</span>
+                            </div>
+                            <div className="lclu-opacity-control__track-wrap">
+                                <i className="fa-solid fa-circle-notch lclu-opacity-control__end-icon lclu-opacity-control__end-icon--min"></i>
+                                <input
+                                    type="range"
+                                    min="0.1"
+                                    max="1"
+                                    step="0.05"
+                                    value={lcluOpacity}
+                                    onChange={(e) => onLcluOpacityChange?.(Number(e.target.value))}
+                                    className="lclu-opacity-control__slider"
+                                    // Drives the CSS fill (see .lclu-opacity-control__slider's
+                                    // background-image in Dashboard.css) — a flat gradient
+                                    // that never changes with the value doesn't actually read
+                                    // as a slider in use, just decoration.
+                                    style={{ "--fill": `${((lcluOpacity - 0.1) / 0.9) * 100}%` }}
+                                    aria-label="LCLU layer transparency"
+                                />
+                                <i className="fa-solid fa-circle lclu-opacity-control__end-icon lclu-opacity-control__end-icon--max"></i>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
 

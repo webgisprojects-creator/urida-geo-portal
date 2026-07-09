@@ -13,6 +13,9 @@ export default function AdminPanel() {
     inactive_sessions: 0,
   });
   const [recentSessions, setRecentSessions] = useState([]);
+  const [sessionsPage, setSessionsPage] = useState(1);
+  const [sessionsTotalPages, setSessionsTotalPages] = useState(1);
+  const [sessionActionLoading, setSessionActionLoading] = useState({});
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState({});
   const [error, setError] = useState("");
@@ -32,6 +35,11 @@ export default function AdminPanel() {
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [resetFormError, setResetFormError] = useState("");
   const [resetForm, setResetForm] = useState({ userKey: "", username: "", password: "" });
+  // Set once reset-password succeeds so the modal can explain what happens
+  // next (must_change_password is always set by this endpoint — see
+  // adminRoutes.js) instead of just silently closing with no indication
+  // of what the affected user will now experience at their next login.
+  const [resetSuccessUsername, setResetSuccessUsername] = useState("");
   const [tempPasswordModalOpen, setTempPasswordModalOpen] = useState(false);
   const [tempPasswordError, setTempPasswordError] = useState("");
   const [tempPasswordData, setTempPasswordData] = useState({
@@ -58,13 +66,14 @@ export default function AdminPanel() {
   };
 
   const loadData = async (opts = {}) => {
-    const { silent = false } = opts;
+    const { silent = false, sessionsPage: pageArg } = opts;
+    const page = pageArg || sessionsPage;
     if (!silent) setLoading(true);
     setError("");
     try {
       const [usersRes, sessionRes, profileRes] = await Promise.all([
         authFetch("/api/admin/users"),
-        authFetch("/api/admin/active-tokens/summary"),
+        authFetch(`/api/admin/active-tokens/summary?page=${page}&limit=15`),
         authFetch("/api/auth/profile"),
       ]);
       if (!usersRes.ok) {
@@ -85,6 +94,7 @@ export default function AdminPanel() {
       setUsers(Array.isArray(usersData?.users) ? usersData.users : []);
       setSessionSummary(sessionData?.summary || {});
       setRecentSessions(Array.isArray(sessionData?.recent_sessions) ? sessionData.recent_sessions : []);
+      setSessionsTotalPages(Number(sessionData?.total_pages) || 1);
       setCurrentUser({
         user_id: String(profileData?.user?.id ?? profileData?.user?.user_id ?? ""),
         username: String(profileData?.user?.username || "").toLowerCase(),
@@ -102,7 +112,55 @@ export default function AdminPanel() {
 
   useEffect(() => {
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionsPage]);
+
+  // This page imports the shared <Footer/>, which pulls in Dashboard.css —
+  // whose global `html, body, #root { overflow: hidden }` reset is meant
+  // for the OpenLayers map pages (Dashboard/HomePage), which manage their
+  // own internal scrolling. Admin is an ordinary scrolling page, not a
+  // map, so that reset left anything below the fold (pagination, session
+  // list, etc.) completely unreachable — no scrollbar existed anywhere on
+  // the page to get to it. Same class-toggle pattern LoginPage.jsx already
+  // uses for its own page-level override.
+  useEffect(() => {
+    const rootEl = document.getElementById("root");
+    document.body.classList.add("admin-page-active");
+    document.documentElement.classList.add("admin-page-active");
+    if (rootEl) rootEl.classList.add("admin-page-active");
+    return () => {
+      document.body.classList.remove("admin-page-active");
+      document.documentElement.classList.remove("admin-page-active");
+      if (rootEl) rootEl.classList.remove("admin-page-active");
+    };
   }, []);
+
+  const handleRevokeSession = async (tokenHash) => {
+    setSessionActionLoading((prev) => ({ ...prev, [tokenHash]: true }));
+    try {
+      const res = await authFetch(`/api/admin/active-tokens/${tokenHash}/revoke`, { method: "PATCH" });
+      if (res.status === 401 || res.status === 403) return handleUnauthorized();
+      await loadData({ silent: true });
+    } catch {
+      setError("Failed to revoke session");
+    } finally {
+      setSessionActionLoading((prev) => ({ ...prev, [tokenHash]: false }));
+    }
+  };
+
+  const handleClearInactiveSessions = async () => {
+    setSessionActionLoading((prev) => ({ ...prev, __clearAll: true }));
+    try {
+      const res = await authFetch("/api/admin/active-tokens/inactive", { method: "DELETE" });
+      if (res.status === 401 || res.status === 403) return handleUnauthorized();
+      setSessionsPage(1);
+      await loadData({ silent: true, sessionsPage: 1 });
+    } catch {
+      setError("Failed to clear inactive sessions");
+    } finally {
+      setSessionActionLoading((prev) => ({ ...prev, __clearAll: false }));
+    }
+  };
 
   useEffect(() => {
     const push = () => {
@@ -166,6 +224,26 @@ export default function AdminPanel() {
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return "-";
     return d.toLocaleString();
+  };
+
+  // Reduces a raw User-Agent string to a short, human-scannable device
+  // label instead of dumping the entire UA string into the session list —
+  // "which machine is this" only needs OS + browser, not every token.
+  const formatDeviceLabel = (userAgent) => {
+    const ua = String(userAgent || "");
+    if (!ua) return "Unknown device";
+    let os = "Unknown OS";
+    if (/windows/i.test(ua)) os = "Windows";
+    else if (/android/i.test(ua)) os = "Android";
+    else if (/iphone|ipad|ios/i.test(ua)) os = "iOS";
+    else if (/mac os/i.test(ua)) os = "macOS";
+    else if (/linux/i.test(ua)) os = "Linux";
+    let browser = "Unknown browser";
+    if (/edg\//i.test(ua)) browser = "Edge";
+    else if (/chrome\//i.test(ua)) browser = "Chrome";
+    else if (/firefox\//i.test(ua)) browser = "Firefox";
+    else if (/safari\//i.test(ua) && !/chrome/i.test(ua)) browser = "Safari";
+    return `${os} · ${browser}`;
   };
 
   const getUserKey = (u) => String(u?.user_id ?? u?.id ?? "");
@@ -369,6 +447,7 @@ export default function AdminPanel() {
       password: "",
     });
     setResetFormError("");
+    setResetSuccessUsername("");
     setResetModalOpen(true);
   };
 
@@ -397,7 +476,12 @@ export default function AdminPanel() {
       }
     });
     if (reset) {
-      setResetModalOpen(false);
+      // Stay open long enough to show what happens next — this endpoint
+      // always sets must_change_password (see adminRoutes.js), so the
+      // affected user is forced through the "set a new password" screen
+      // at their very next login, they don't land in the dashboard with
+      // this password permanently.
+      setResetSuccessUsername(resetForm.username);
     }
   };
 
@@ -690,16 +774,91 @@ export default function AdminPanel() {
       {error && <div className="admin-error">{error}</div>}
 
       <section className="panel recent-session-panel">
-        <h3>Recent Session Activity</h3>
-        <ul className="timeline">
-          {recentSessions.map((row, i) => (
-            <li key={`${row.username || "user"}-${i}`}>
-              {row.username || "Unknown user"} | {row.status || "-"} | last active:{" "}
-              {formatDate(row.last_activity_time)}
-            </li>
-          ))}
-          {!loading && recentSessions.length === 0 && <li>No recent sessions found</li>}
-        </ul>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+          <h3 style={{ margin: 0 }}>Recent Session Activity</h3>
+          <button
+            type="button"
+            className="danger"
+            disabled={!!sessionActionLoading.__clearAll}
+            onClick={handleClearInactiveSessions}
+            title="Permanently deletes every non-active session record (logged out, expired, revoked). Active sessions are never touched."
+          >
+            {sessionActionLoading.__clearAll ? "Clearing..." : "Clear Inactive History"}
+          </button>
+        </div>
+        {/* Same scroll container the users table uses (min(320px, 40vh) —
+            see AdminPanel.css) so this scrolls internally instead of
+            pushing the rest of the panel/page past the viewport, paired
+            with server-side pagination (15/page) rather than loading
+            everything at once. */}
+        <div className="user-table-scroll" style={{ height: "min(320px, 40vh)", maxHeight: "min(320px, 40vh)" }}>
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Status</th>
+                <th>Last Active</th>
+                <th>Device</th>
+                <th>IP</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentSessions.map((row) => (
+                <tr key={row.token_hash}>
+                  <td>{row.username || "Unknown user"}</td>
+                  <td>
+                    <span className={`badge ${row.status === "active" ? "active" : "inactive"}`}>
+                      {row.status || "-"}
+                    </span>
+                  </td>
+                  <td>{formatDate(row.last_activity_time)}</td>
+                  <td className="muted">{formatDeviceLabel(row.user_agent)}</td>
+                  <td className="muted">{row.ip_address || "-"}</td>
+                  <td className="actions">
+                    {row.status === "active" && (
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={!!sessionActionLoading[row.token_hash]}
+                        onClick={() => handleRevokeSession(row.token_hash)}
+                        title="Sign this specific session out"
+                      >
+                        {sessionActionLoading[row.token_hash] ? "..." : "Sign Out"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {!loading && recentSessions.length === 0 && (
+                <tr>
+                  <td colSpan="6" className="muted">No recent sessions found</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {sessionsTotalPages > 1 && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 8 }}>
+            <button
+              type="button"
+              disabled={sessionsPage <= 1}
+              onClick={() => setSessionsPage((p) => Math.max(1, p - 1))}
+            >
+              Prev
+            </button>
+            <span style={{ fontSize: 13, color: "#475569" }}>
+              Page {sessionsPage} of {sessionsTotalPages}
+            </span>
+            <button
+              type="button"
+              disabled={sessionsPage >= sessionsTotalPages}
+              onClick={() => setSessionsPage((p) => Math.min(sessionsTotalPages, p + 1))}
+            >
+              Next
+            </button>
+          </div>
+        )}
       </section>
       {createModalOpen && (
         <div className="admin-modal-overlay" onClick={() => setCreateModalOpen(false)}>
@@ -834,6 +993,24 @@ export default function AdminPanel() {
                 ×
               </button>
             </div>
+            {resetSuccessUsername ? (
+              <div className="admin-form admin-form-single">
+                <div className="admin-form-success">
+                  Password reset for <strong>{resetSuccessUsername}</strong>.
+                  <br />
+                  They must sign in with this new password — the portal will
+                  immediately require them to set a password of their own
+                  choosing before they can reach their dashboard. Share the
+                  new password with them through a secure channel; it isn't
+                  saved anywhere for you to look up again.
+                </div>
+                <div className="admin-form-actions">
+                  <button type="button" className="primary-btn" onClick={() => setResetModalOpen(false)}>
+                    Done
+                  </button>
+                </div>
+              </div>
+            ) : (
             <form className="admin-form admin-form-single" onSubmit={submitResetPassword}>
               <label>
                 User
@@ -860,6 +1037,7 @@ export default function AdminPanel() {
                 </button>
               </div>
             </form>
+            )}
           </div>
         </div>
       )}
@@ -883,9 +1061,21 @@ export default function AdminPanel() {
               </label>
               <label>
                 One-Time Temporary Password
-                <input value={tempPasswordData.password} readOnly />
+                {/* Auto-generated server-side, deliberately read-only — this
+                    is a value to copy and hand to the user, not a password
+                    you choose yourself. Use "Reset Password" instead if you
+                    want to set a specific password. */}
+                <input value={tempPasswordData.password || (tempPasswordError ? "" : "Generating...")} readOnly />
               </label>
               {tempPasswordError && <div className="admin-form-error">{tempPasswordError}</div>}
+              {tempPasswordData.password && (
+                <div className="admin-form-success">
+                  Copy this password and share it with <strong>{tempPasswordData.username}</strong> through
+                  a secure channel — it won't be shown again. They must sign in with it, and the portal will
+                  immediately require them to set a password of their own choosing before they can reach
+                  their dashboard.
+                </div>
+              )}
               <div className="admin-form-actions">
                 <button type="button" className="secondary-btn" onClick={() => setTempPasswordModalOpen(false)}>
                   Close

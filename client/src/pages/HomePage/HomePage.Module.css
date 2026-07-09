@@ -1576,20 +1576,6 @@ body {
   font-size: 16px;
 }
 
-/* ===== Footer ===== */
-.footer {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  background-color: #fcfafa;
-  color: #0f0e0e;
-  text-align: center;
-  padding: 2px 0;
-  z-index: 1000;
-  font-size: 12px;
-}
-
 /* ===== Responsive ===== */
 @media (min-width: 768px) {
   .sidebar {
@@ -1683,14 +1669,19 @@ body {
   .sidebar {
     width: 100%;
     position: fixed;
-    bottom: 0;
+    /* Was a flat 0 — the footer below can now wrap to 3 rows on a phone
+       (~76px, see --dashboard-footer-mobile-h in Dashboard.css) instead of
+       its old fixed 20px, so docking this bottom-sheet flush to the
+       viewport bottom let the taller footer paint over its lowest content
+       instead of sitting below it. */
+    bottom: var(--dashboard-footer-mobile-h, 76px);
     top: auto;
     left: 0;
     height: auto;
     max-height: 42vh;
     overflow: hidden;
     padding-top: 4px;
-    padding-bottom: 26px;
+    padding-bottom: 8px;
     background: rgba(252, 250, 250, 0.98);
     border-top: 2px solid #9e9b9b;
   }
@@ -1709,7 +1700,21 @@ body {
     top: 0;
     left: 0;
     width: 100%;
+    /* Was height:100vh with zero room reserved for the fixed-bottom
+       footer. Two separate real problems this fixes: (1) mobile browsers'
+       100vh includes the area behind the collapsible address bar, which is
+       taller than what's actually visible on screen — a position:fixed
+       bottom-0 element sized against that inflated 100vh can end up below
+       the true visible viewport, and with `overflow:hidden` on html/body
+       (see top of Dashboard.css) there's no scroll fallback to reach it.
+       100dvh (dynamic viewport height) tracks the real visible area;
+       plain 100vh above it is the fallback for browsers that don't
+       support dvh, which then simply ignore this second declaration.
+       (2) Even with the correct viewport unit, 100% left nothing for the
+       footer to occupy without visually competing with the map for the
+       same pixels. */
     height: 100vh;
+    height: calc(100dvh - var(--dashboard-footer-mobile-h, 76px));
   }
 
   .cards-container {
@@ -1820,17 +1825,6 @@ body {
     transform: none;
   }
 
-  .footer {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    padding: 1px 6px;
-    font-size: 9px;
-    z-index: 10025;
-    background-color: rgba(252, 250, 250, 0.95);
-  }
-
   .map-overlay-hidden .city-overlay {
     display: none !important;
   }
@@ -1863,7 +1857,7 @@ body {
   }
 
   .sidebar {
-    bottom: 0;
+    bottom: var(--dashboard-footer-mobile-h, 76px);
     top: auto;
     height: auto;
     max-height: 42vh;
@@ -1871,6 +1865,7 @@ body {
 
   #map {
     height: 100vh;
+    height: calc(100dvh - var(--dashboard-footer-mobile-h, 76px));
   }
 
   .logo-text {

@@ -77,3 +77,6 @@ graphify-out/
 # ─── Internal infra docs (kept local, not in git history) ─────
 URIDA_Production_Server_Baseline_Report.xlsx
 
+# ─── Ad-hoc local testing (Playwright E2E, perf logging scripts) ──
+testing/
+

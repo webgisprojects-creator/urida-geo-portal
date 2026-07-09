@@ -62,7 +62,7 @@ import { cityConfig } from "../assets/configs/cityConfig";
 import MapLegend from "./MapLegend";
 import Overlay from "ol/Overlay";
 import { drawWatermark } from "../utils/gisExport"; //chainage
-import rsacBanner from "../assets/Login/rsac_banner.png"; //chainage
+import rsacBanner from "../assets/Login/rsac_banner2.png"; //chainage
 import { getGeoserverBase } from "../utils/geoserverBase";
 
 const EMPTY_ARRAY = [];
@@ -941,6 +941,7 @@ const MapContainer = forwardRef(({
   showChainage,//chainage
   mode = "DASHBOARD",//chainage
   layerVisibility = {},
+  lcluOpacity = 1,
   streetViewVisible,
   streetLightVisible = false,
   streetLightGeojson = null,
@@ -962,6 +963,7 @@ const MapContainer = forwardRef(({
   zoomFilter, // ⭐ ADDED: Filter for auto-zoom functionality
   selectedRoadIds = EMPTY_ARRAY, // ⭐ NEW: Array of currently selected road IDs
   isMultiSelectMode = false, // ⭐ NEW: Multi-select active flag
+  multiSelectCandidateRoadIds = EMPTY_ARRAY, //chainage
   tableFilterActive = false,
   layerFilters = {}, // ⭐ NEW
   drawMode = null, // ⭐ NEW
@@ -1058,6 +1060,7 @@ const MapContainer = forwardRef(({
   // props from Dashboard.
   const openChainageForRoadIdRef = useRef(null); //chainage
   const handleCreateMultiRoadPatchRequestRef = useRef(null); //chainage
+  const closeChainagePanelRef = useRef(null); //chainage
   // Kept current every render (not just at mount) so the map-click handler,
   // which reads these refs from a stable closure registered once, always
   // calls the latest callback from Dashboard instead of whatever closure
@@ -1101,6 +1104,7 @@ const MapContainer = forwardRef(({
   const analysisLayersRef = useRef({});
   const dssLayersRef = useRef({});
   const selectedRoadLayerRef = useRef(null);
+  const candidateRoadLayerRef = useRef(null); //chainage
   const filteredRoadLayerRef = useRef(null);
   const filteredRoadColorRef = useRef(null);
   const roadWfsLayerRef = useRef(null);
@@ -1195,6 +1199,26 @@ const patchPreviewLayerRef = useRef(null);//chainage
 `)}`;
 const urlLocationMarkerSourceRef = useRef(new VectorSource());//chainage
 const urlLocationMarkerLayerRef = useRef(null);//chainage
+// Full-size pin while the worker hasn't picked a road yet ("you were
+// dropped here"); once a road is selected, the pin has done its job and
+// only needs to stay as a low-key reference point, not compete visually
+// with the chainage layer that's now the priority.
+const URL_LOCATION_PIN_STYLE = new Style({
+  image: new Icon({
+    src: URL_LOCATION_PIN_SVG,
+    anchor: [0.5, 1],
+    anchorXUnits: "fraction",
+    anchorYUnits: "fraction",
+    scale: 1,
+  }),
+});
+const URL_LOCATION_DOT_STYLE = new Style({
+  image: new CircleStyle({
+    radius: 6,
+    fill: new Fill({ color: "#E74C3C" }),
+    stroke: new Stroke({ color: "#B91C1C", width: 1.5 }),
+  }),
+});
 const location = useLocation();//chainage
 // Lets the map-click handler (registered once inside the [city]-only map
 // effect) read the *current* mode without a stale closure and without
@@ -2402,10 +2426,20 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       }),
     });
 
-    // ✅ Labels overlay - hidden by default (Managed by Satellite toggle)
+    // Esri reference labels — deliberately NOT nested inside
+    // satelliteWithLabels below (it used to be, combined via combine:true
+    // into a single composited render). LCLU classification layers sit at
+    // zIndex 55, and a combined base-map render always draws beneath every
+    // regular overlay regardless of what's inside it, so place names were
+    // getting buried under an opaque LCLU layer with no way to read them.
+    // A standalone layer with its own zIndex above 55 renders labels back
+    // on top while the satellite imagery itself stays underneath LCLU,
+    // same as every other base map. Own visibility (not inherited from a
+    // parent group) is toggled by handleBaseMapChange in Dashboard.jsx —
+    // see the "Labels (Esri Reference)" title match there.
     const labelsLayer = new TileLayer({
       title: "Labels (Esri Reference)",
-      visible: true,
+      visible: activeBaseMap === "satellite",
       preload: 1,
       maxZoom: SATELLITE_MAX_ZOOM,
       source: makeCachedXyzSource({
@@ -2416,13 +2450,18 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
         maxZoom: SATELLITE_MAX_ZOOM,
       }),
     });
+    // Above LCLU (55) so satellite-mode place names stay legible over a
+    // land-cover overlay; zone/ward boundaries are unaffected by any of
+    // this — they're outline+label vector layers with no fill, so they
+    // never visually cover labels regardless of z-order.
+    labelsLayer.setZIndex(60);
 
     const satelliteWithLabels = new LayerGroup({
       title: "Satellite + Labels",
       type: "base",
       combine: true,
       visible: activeBaseMap === "satellite",
-      layers: [satelliteLayer, labelsLayer],
+      layers: [satelliteLayer],
     });
 
     const baseMaps = new LayerGroup({
@@ -2630,7 +2669,13 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
     let initialRoadCql = null;
     {
       const initParams = new URLSearchParams(location.search);
-      if (initParams.get("mode") === "CHAINAGE") {
+      // Locking the initial road layer to a zone/ward is a redirect-only
+      // behavior — gate on the same project_id+user_id presence as
+      // isFieldTaskMode, not mode=CHAINAGE alone, so a bookmarked/typed
+      // ?mode=CHAINAGE&zone=..&ward=.. URL with no real field-task
+      // redirect params doesn't silently scope a manual chainage session.
+      const hasFieldTaskParams = !!(initParams.get("project_id") && initParams.get("user_id"));
+      if (initParams.get("mode") === "CHAINAGE" && hasFieldTaskParams) {
         const initZone = Number(initParams.get("zone"));
         const initWard = Number(initParams.get("ward"));
         const parts = [];
@@ -2817,6 +2862,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       lcluLayers[id] = new TileLayer({
         title: `LCLU: ${id}`,
         visible: !!layerVisibility?.lclu?.[id],
+        opacity: Number.isFinite(lcluOpacity) ? lcluOpacity : 1,
         // Routed through GWC + the local tile cache like every other
         // static/non-CQL-filtered overlay (see makeTileWmsSource) instead
         // of a raw direct-to-GeoServer TileWMS with a permanent cache-buster
@@ -2988,6 +3034,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
         ...Object.values(specializedLayers),
         ...Object.values(roadClassLayers),
         ...Object.values(lcluLayers),
+        labelsLayer,
         searchAreaLayer,
         amenitiesGroup,
         othersGroup,
@@ -4248,8 +4295,13 @@ if (cfg1) {
     if (!mapReady || !mapRef.current) return;
     if (zoomFilter) return;
     const urlParams = new URLSearchParams(location.search);
+    // Same isFieldTaskMode-equivalent gate as the marker-placement effect —
+    // a lat/lon pair alone (no project_id/user_id) isn't a real field-task
+    // redirect, so it shouldn't suppress the normal boundary-fit either.
     const hasUrlTarget =
-      urlParams.has("latitude") && urlParams.has("longitude");
+      urlParams.has("latitude") &&
+      urlParams.has("longitude") &&
+      !!(urlParams.get("project_id") && urlParams.get("user_id"));
     if (hasUrlTarget) return; // redirected chainage marker owns the initial view
     const cityKey = city.toLowerCase();
     const cfg = cityConfig[cityKey] || {};
@@ -4368,18 +4420,10 @@ if (cfg1) {
     });
 
     const urlLocationLayer = new VectorLayer({
- source: urlLocationMarkerSourceRef.current,
- style: new Style({
- image: new Icon({
- src: URL_LOCATION_PIN_SVG,
- anchor: [0.5, 1],
- anchorXUnits: "fraction",
- anchorYUnits: "fraction",
- scale: 1,
- }),
- }),
- zIndex: 1300,
-});
+      source: urlLocationMarkerSourceRef.current,
+      style: URL_LOCATION_PIN_STYLE,
+      zIndex: 1300,
+    });
 
     const map = mapRef.current;
     map.addLayer(startLayer);
@@ -4521,6 +4565,10 @@ if (cfg1) {
       openChainageForRoadIdRef.current?.(roadId, roadProps, signal),
     createMultiRoadPatch: (roadInfos) =>
       handleCreateMultiRoadPatchRequestRef.current?.(roadInfos),
+    // Lets Dashboard's own "Clear" button fully close an open chainage
+    // panel/road selection instead of leaving it stranded — see
+    // closeChainagePanel below (same routine as the panel's own ✕ button).
+    closeChainagePanel: () => closeChainagePanelRef.current?.(),
   }));
 
   useEffect(() => {
@@ -5528,6 +5576,11 @@ if (cfg1) {
         }
       }
       layer.setVisible(visible);
+      // Opacity is handled by its own dedicated effect below — it must
+      // never share a dependency array with this one, which force-
+      // refreshes WMS tiles (updateParams({_t: Date.now()})) whenever it
+      // reruns. Opacity is a pure client-side canvas property; it doesn't
+      // need new tile data, so it must never trigger a network refetch.
       if (visible) {
         const source = layer.getSource?.();
         if (source?.updateParams) {
@@ -5707,6 +5760,22 @@ if (cfg1) {
       });
     }
   }, [layerVisibility, city, selectedRoadToken]);
+
+  // Deliberately its own tiny effect, isolated from the big visibility-sync
+  // effect above (which force-refreshes WMS tiles via updateParams whenever
+  // it reruns). setOpacity() is a pure client-side canvas-compositing
+  // property — OpenLayers just re-draws the already-downloaded tile bitmaps
+  // at a different alpha, no network request involved — so this must never
+  // fire a tile refetch. Previously it did (a shared dependency array), which
+  // meant every single drag-tick of the transparency slider re-triggered a
+  // full tile reload storm for whichever LCLU layer was active, on top of
+  // needlessly rerunning ~200 lines of unrelated amenity/road-classification
+  // sync logic per tick.
+  useEffect(() => {
+    Object.values(lcluLayersRef.current || {}).forEach((layer) => {
+      layer.setOpacity(Number.isFinite(lcluOpacity) ? lcluOpacity : 1);
+    });
+  }, [lcluOpacity]);
 
   // REMOVED REDUNDANT EFFECT (911-934) THAT CONFLICTED WITH VISIBILITY LOGIC
 
@@ -6023,6 +6092,25 @@ if (cfg1) {
       selectedRoadLayerRef.current = null;
     }
 
+    // Chainage's own visualization (chainageLayerRef/segmentedRoadsLayerRef)
+    // is the priority over this generic orange/yellow highlight for a
+    // single selected road — this only matters when selectedRoadId was
+    // already populated before Chainage armed (openChainageForRoadId
+    // itself never sets it). Multi-select is exempt: that's the field-task
+    // multi-road *patch* selection, whose own visual feedback this same
+    // layer provides and which chainage mode is expected to be active for.
+    if (mode === "CHAINAGE" && !isMultiSelectMode && activeRoadIds.length > 0) {
+      // Chainage's own layer (chainageLayerRef) isn't in setRoadDimming's
+      // list, so dimming here only affects the generic road network/class
+      // layers underneath it — chainage stays full-opacity and visually
+      // wins, and the front-end also renders fewer full-opacity WMS tiles.
+      setSelectedRoadGeometry(null);
+      setRoadDimming(true);
+      refreshRoadWmsLayers();
+      if (!drawInteractionRef.current) ensureMapInteractions(map);
+      return;
+    }
+
     // 2. Clear out completely if no selections
     if (activeRoadIds.length === 0) {
       setSelectedRoadGeometry(null);
@@ -6087,7 +6175,74 @@ if (cfg1) {
       refreshRoadWmsLayers();
       if (!drawInteractionRef.current) ensureMapInteractions(map);
     }
-  }, [activeRoadIds, selectedRoadId, baseMap]);
+  }, [activeRoadIds, selectedRoadId, baseMap, mode, isMultiSelectMode]);
+
+  // =====================================================
+  // CANDIDATE ROADS (adjacent-but-not-yet-selected) — middle dimming tier
+  // =====================================================
+  // Field-task multi-road patch selection: selected roads render bright via
+  // the highlight layer above, everything else is dimmed to ROAD_DIM_OPACITY
+  // via setRoadDimming — this fills the gap between those two, rendering
+  // the adjacent candidate roads (same list already driving the table's
+  // pickable pool, see Dashboard.jsx's fetchAndApplyMultiRoadCandidates) at
+  // a visibly distinct-but-muted style, so a worker can see what's pickable
+  // next without it competing with the actual selection.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return undefined;
+
+    if (candidateRoadLayerRef.current) {
+      map.removeLayer(candidateRoadLayerRef.current);
+      candidateRoadLayerRef.current = null;
+    }
+
+    const ids = (multiSelectCandidateRoadIds || []).filter(Boolean);
+    if (!isMultiSelectMode || !cfg1 || ids.length === 0) return undefined;
+
+    let cancelled = false;
+    const idList = ids
+      .map((id) => (/^-?\d+$/.test(String(id)) ? String(id) : `'${String(id).replace(/'/g, "''")}'`))
+      .join(",");
+    const cqlFilter = `${cfg1.roadIdField} IN (${idList})`;
+    const wfsUrl =
+      `${GEOSERVER_BASE}/${cfg1.workspace}/ows?service=WFS&version=1.0.0&request=GetFeature` +
+      `&typeName=${encodeURIComponent(cfg1.roadLayer)}` +
+      `&outputFormat=application/json` +
+      `&CQL_FILTER=${encodeURIComponent(cqlFilter)}`;
+
+    fetch(wfsUrl)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((geojson) => {
+        if (cancelled || !geojson?.features?.length) return;
+        const projection = map.getView()?.getProjection();
+        const format = new GeoJSON();
+        const features = format.readFeatures(geojson, {
+          dataProjection: "EPSG:4326",
+          featureProjection: projection,
+        });
+        const candidateLayer = new VectorLayer({
+          source: new VectorSource({ features }),
+          style: new Style({
+            stroke: new Stroke({ color: "#4A90D9", width: 3, lineDash: [4, 3] }),
+          }),
+        });
+        // Below the road network layer (zIndex 30) — a subtle backdrop wash
+        // under the actual road linework, not a highlight competing on top
+        // of it. The bright selected-road highlight (zIndex 40000) still
+        // renders well above both.
+        candidateLayer.setZIndex(20);
+        map.addLayer(candidateLayer);
+        candidateRoadLayerRef.current = candidateLayer;
+      })
+      .catch(() => {
+        // Non-critical visual aid — leave candidates undimmed-but-unhighlighted
+        // rather than surfacing an error for a purely cosmetic fetch.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [multiSelectCandidateRoadIds, isMultiSelectMode, cfg1]);
 
   // =====================================================
   // AUTO-ZOOM TO FEATURE BASED ON zoomFilter
@@ -6121,9 +6276,14 @@ if (cfg1) {
 
       // Redirected chainage links target a specific lat/lon marker —
       // don't snap the view back to the generic city default over it.
+      // Same isFieldTaskMode-equivalent gate as the other two spots: a
+      // lat/lon pair alone isn't a real field-task redirect without
+      // project_id/user_id too.
       const urlParams = new URLSearchParams(location.search);
       const hasUrlTarget =
-        urlParams.has("latitude") && urlParams.has("longitude");
+        urlParams.has("latitude") &&
+        urlParams.has("longitude") &&
+        !!(urlParams.get("project_id") && urlParams.get("user_id"));
       if (hasUrlTarget && mode === "CHAINAGE") return;
 
       // Toggling Chainage mode on/off (via Dashboard's in-place mode
@@ -6254,7 +6414,12 @@ if (cfg1) {
           }
         });
 
-        if (isIdentifierFilter && features.length > 0 && showPopupRef.current) {
+        // Chainage takes priority over the regular identify popup — the
+        // live click handler already skips showPopup for roads in this
+        // mode (modeRef checks a few hundred lines up); this is the same
+        // rule applied to the separate zoomFilter-triggered auto-popup,
+        // which had no mode check at all.
+        if (isIdentifierFilter && features.length > 0 && showPopupRef.current && modeRef.current !== "CHAINAGE") {
           const targetFeature = features[0];
           const geom = targetFeature?.getGeometry?.();
           const popupCoordinate = geom ? getCenter(geom.getExtent()) : view.getCenter();
@@ -6488,6 +6653,7 @@ if (cfg1) {
       const res = await fetch("/api/create-patch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(payload),
       });
 
@@ -6665,6 +6831,7 @@ if (cfg1) {
         const res = await fetch("/api/create-patch", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "include",
           body: JSON.stringify({
             city: cityParam,
             road_id: road.road_id,
@@ -6949,6 +7116,7 @@ if (cfg1) {
         headers: {
           "Content-Type": "application/json",
         },
+        credentials: "include",
         body: JSON.stringify({
           city: city.toLowerCase(),
           patchIds,
@@ -7008,6 +7176,12 @@ if (cfg1) {
       }
     }
 
+    // Redirect marker has done its job of getting the view to the right
+    // spot — once the worker has actually picked a road to work on, shrink
+    // it to a low-key dot so it stops competing visually with the chainage
+    // layer, which is now the priority.
+    urlLocationMarkerLayerRef.current?.setStyle(URL_LOCATION_DOT_STYLE);
+
     const cityParam = city.toLowerCase();
     const roadIdText = String(roadId);
     const cacheKey = `${cityParam}|${roadIdText}`;
@@ -7051,7 +7225,7 @@ if (cfg1) {
       });
     };
     const loadJson = async (requestUrl, featureName) => {
-      const response = await fetch(requestUrl, { signal });
+      const response = await fetch(requestUrl, { signal, credentials: "include" });
       const payload = await response.json();
       if (!response.ok) {
         if (showApiUnavailableNotice(payload, featureName)) {
@@ -7110,6 +7284,14 @@ if (cfg1) {
         zoomFeaturesPromise = fetch(wfsUrl, { signal })
           .then((zoomRes) => zoomRes.ok ? zoomRes.json() : null)
           .then((zoomGeojson) => readRoadFeatures(zoomGeojson, projection))
+          .then((features) => {
+            // Looked up by key (not the outer `roadData` closure var, which
+            // races against the Promise.all below) so a later cache-hit for
+            // this road can re-fit the view without re-fetching WFS geometry.
+            const cached = chainageRoadDataCacheRef.current.get(cacheKey);
+            if (cached) cached.zoomFeatures = features;
+            return features;
+          })
           .catch((err) => {
             if (err?.name === "AbortError") throw err;
             return [];
@@ -7178,20 +7360,28 @@ if (cfg1) {
       setChainageList([...new Set(distances)].sort((a, b) => a - b));
 
       // Zoom-to-road camera animation happens whenever the WFS geometry
-      // resolves, without blocking the panel/patch UI above on it.
+      // resolves, without blocking the panel/patch UI above on it. On a
+      // cache hit there's no fresh WFS fetch (zoomFeaturesPromise stays
+      // null), so re-fit from the geometry cached alongside roadData on the
+      // original fetch — otherwise re-clicking an already-viewed road never
+      // moves the camera to it.
       if (zoomFeaturesPromise) {
         zoomFeaturesPromise.then((features) => {
           if (!signal?.aborted) fitRoadFeatures(features || []);
         }).catch(() => {});
+      } else if (roadData.zoomFeatures) {
+        fitRoadFeatures(roadData.zoomFeatures);
       }
 
       const chainageSource = chainageLayerRef.current?.getSource?.();
       if (chainageSource) {
+        // updateParams() alone already triggers a WMS reload — the extra
+        // .refresh() that used to follow it forced a second, cache-busted
+        // round trip per click.
         chainageSource.updateParams({
           CQL_FILTER: roadFilter,
           STYLES: "chainage_distance_label",
         });
-        chainageSource.refresh();
         chainageLayerRef.current.setVisible(true);
       }
     } catch (err) {
@@ -7265,6 +7455,13 @@ if (cfg1) {
     if (!mapReady || mode !== "CHAINAGE") return;
 
     const params = new URLSearchParams(location.search);
+
+    // Placing the redirect marker is a field-task-only behavior — require
+    // the same project_id+user_id presence as isFieldTaskMode, not just
+    // mode=CHAINAGE, so a manually-toggled chainage session (or a
+    // bookmarked URL with stray lat/lon params) never gets an unexpected
+    // marker/view-jump that a real redirect link is meant to own.
+    if (!params.get("project_id") || !params.get("user_id")) return;
 
     const zone = params.get("zone");
     const ward = params.get("ward");
@@ -7383,6 +7580,7 @@ if (cfg1) {
       headers: {
         "Content-Type": "application/json",
       },
+      credentials: "include",
       body: JSON.stringify({
         city,
         project_id: Number(projectId),
@@ -7407,6 +7605,7 @@ if (cfg1) {
       headers: {
         "Content-Type": "application/json",
       },
+      credentials: "include",
       body: JSON.stringify({
         city,
         project_id: Number(projectId),
@@ -7459,6 +7658,7 @@ if (cfg1) {
       headers: {
         "Content-Type": "application/json",
       },
+      credentials: "include",
       body: JSON.stringify({
         city,
         ...finalPayload,
@@ -7652,6 +7852,7 @@ if (cfg1) {
         headers: {
           "Content-Type": "application/json",
         },
+        credentials: "include",
         body: JSON.stringify({
           city: city.toLowerCase(),
           patchIds,
@@ -7724,7 +7925,16 @@ const getSelectedRoadIdsOnly = () => {
     // basemap/road tiles to be useful, so cap the wait and snapshot
     // whatever's already rendered rather than blocking indefinitely.
     const fallbackTimer = setTimeout(() => {
-      map.renderSync();
+      // If the user navigated away / closed chainage mode during this 4s
+      // wait, the map may already be disposed (setTarget(null)) — calling
+      // renderSync() on it throws inside OL's own internals ("Cannot read
+      // properties of null (reading 'renderFrame')", the same crash fixed
+      // in HomePage.js's addBoundaryLayer). getTargetElement() is null
+      // once disposed, so this is skipped rather than crashing; runCapture
+      // itself still proceeds to snapshot whatever's already there.
+      if (typeof map.getTargetElement === "function" && map.getTargetElement()) {
+        map.renderSync();
+      }
       runCapture();
     }, 4000);
 
@@ -7815,6 +8025,73 @@ const getSelectedRoadIdsOnly = () => {
     map.renderSync();
   });
 };
+
+  // Closes the chainage road panel and undoes everything opening it did —
+  // shared by the panel's own ✕ button and Dashboard's toolbar "Clear"
+  // button (via closeChainagePanelRef/useImperativeHandle above), so
+  // clicking Clear while a road is selected in chainage mode actually
+  // drops that selection instead of leaving the panel stranded open.
+  const closeChainagePanel = useCallback(() => {
+    const closingRoadId = String(selectedRoad?.road_id || "");
+
+    // remove only current road patches from selected patches
+    const currentRoadKeys = currentRoadPatchList.map((patch) => patch.key);
+
+    const updatedSelection = selectedPatches.filter((key) => {
+      const [roadId] = String(key).split("__");
+
+      return (
+        !currentRoadKeys.includes(key) &&
+        String(roadId) !== closingRoadId
+      );
+    });
+
+    setSelectedPatches(updatedSelection);
+
+    // clear current road panel data
+    setSelectedRoad(null);
+    // Also clear Dashboard's own selectedRoadId (field-task mode) -
+    // otherwise the "armed mode" effect below sees selectedRoadId still
+    // set with no matching selectedRoad and immediately reopens this same
+    // panel via openChainageForRoadId, making the close button a no-op.
+    onFieldTaskRoadHighlightRef.current?.(null);
+    setPanelMinimized(false);
+    setShowCreateChainageForm(false);
+    setPatchChoice(null);
+    setPatchInfo(null);
+    setShowPatchPanel(false);
+    setCurrentRoadPatchList([]);
+
+    setStartChainage("");
+    setEndChainage("");
+    setChainageList([]);
+
+    // hide chainage points
+    if (chainageLayerRef.current) {
+      // updateParams() alone already triggers a reload; the extra .refresh()
+      // that used to follow it forced a second, redundant request even
+      // though the layer is set invisible right after anyway.
+      chainageLayerRef.current.getSource().updateParams({
+        CQL_FILTER: null,
+        STYLES: null,
+        _t: Date.now(),
+      });
+      chainageLayerRef.current.setVisible(false);
+    }
+
+    // update/hide patch layer and table
+    if (updatedSelection.length > 0) {
+      handleShowPatches(updatedSelection, allPatchRows);
+      updatePatchTableFromSelection(updatedSelection, allPatchRows);
+    } else {
+      handleHidePatches();
+      setPatchTableData([]);
+      setShowPatchTable(false);
+      setIsTableMinimized(false);
+      onPatchTableCloseRef.current?.();
+    }
+  }, [selectedRoad, currentRoadPatchList, selectedPatches, allPatchRows]);
+  closeChainagePanelRef.current = closeChainagePanel;
 
   return (
     <div id="map-root" className="map-container-wrapper" style={{ position: "relative", width: "100%", height: "100%" }}>
@@ -7931,65 +8208,7 @@ const getSelectedRoadIdsOnly = () => {
               </button> */}
               <button
   className="road-panel-close"
-  onClick={() => {
-    const closingRoadId = String(selectedRoad?.road_id || "");
-
-    // remove only current road patches from selected patches
-    const currentRoadKeys = currentRoadPatchList.map((patch) => patch.key);
-
-    const updatedSelection = selectedPatches.filter((key) => {
-      const [roadId] = String(key).split("__");
-
-      return (
-        !currentRoadKeys.includes(key) &&
-        String(roadId) !== closingRoadId
-      );
-    });
-
-    setSelectedPatches(updatedSelection);
-
-    // clear current road panel data
-    setSelectedRoad(null);
-    // Also clear Dashboard's own selectedRoadId (field-task mode) -
-    // otherwise the "armed mode" effect below sees selectedRoadId still
-    // set with no matching selectedRoad and immediately reopens this same
-    // panel via openChainageForRoadId, making the close button a no-op.
-    onFieldTaskRoadHighlightRef.current?.(null);
-    setPanelMinimized(false);
-    setShowCreateChainageForm(false);
-    setPatchChoice(null);
-    setPatchInfo(null);
-    setShowPatchPanel(false);
-    setCurrentRoadPatchList([]);
-
-    setStartChainage("");
-    setEndChainage("");
-    setChainageList([]);
-
-    // hide chainage points
-    if (chainageLayerRef.current) {
-      chainageLayerRef.current.getSource().updateParams({
-        CQL_FILTER: null,
-        STYLES: null,
-        _t: Date.now(),
-      });
-
-      chainageLayerRef.current.getSource().refresh();
-      chainageLayerRef.current.setVisible(false);
-    }
-
-    // update/hide patch layer and table
-    if (updatedSelection.length > 0) {
-      handleShowPatches(updatedSelection, allPatchRows);
-      updatePatchTableFromSelection(updatedSelection, allPatchRows);
-    } else {
-      handleHidePatches();
-      setPatchTableData([]);
-      setShowPatchTable(false);
-      setIsTableMinimized(false);
-      onPatchTableCloseRef.current?.();
-    }
-  }}
+  onClick={closeChainagePanel}
 >
   ✕
 </button>
@@ -8054,6 +8273,12 @@ const getSelectedRoadIdsOnly = () => {
                     }
                     setShowPatchPanel(true);
                     setPatchChoice("yes");
+                    // Mirrors handlePatchToggle's own closed→open snapshot gate
+                    // below — only fire once, on the transition into showing
+                    // the patch table, not on every click of this button.
+                    if (selectedPatches.length > 0 && !showPatchTable) {
+                      onPatchTableOpenRef.current?.();
+                    }
                     handleShowPatches(selectedPatches, allPatchRows);
                     updatePatchTableFromSelection(selectedPatches, allPatchRows);
                   }}

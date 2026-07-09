@@ -163,15 +163,133 @@ body.login-page,
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
 }
 
-.road-image {
-  display: block;
+/* Auto-advancing 3-image crossfade carousel (CM Grid banners) in the
+   road-image slot. JS-driven (LoginPage.jsx's carouselSlide state), not a
+   blind CSS keyframe loop, so the active dot stays in sync and hover-pause
+   is a plain event handler instead of an animation-play-state hack. */
+.road-carousel-box {
+  position: relative !important;
+  width: 100% !important;
+  height: 646px !important;
+
+  border-radius: 24px !important;
+  overflow: hidden !important;
+
+  border: none !important;
+  padding: 0 !important;
+  background: #0b1220 !important;
+
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.22), 0 2px 8px rgba(15, 23, 42, 0.12) !important;
+}
+
+.road-carousel-fade {
+  position: relative;
   width: 100%;
-  height: auto;
-  max-height: 646px;
-  /* Lock height on ultra-wide monitors */
-  aspect-ratio: 600 / 646;
-  /* Syncs natively with the scale of Yogi to preserve exact symmetry at all widths */
-  object-fit: cover;
+  height: 100%;
+}
+
+.road-carousel-fade-slide {
+  position: absolute !important;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+
+  display: block !important;
+  object-fit: cover !important;
+  object-position: center !important;
+
+  border: none !important;
+  outline: none !important;
+  border-radius: 0 !important;
+
+  opacity: 0;
+  transform: scale(1.02);
+  transition: opacity 1.1s ease, transform 6s ease-out;
+  will-change: opacity, transform;
+}
+
+.road-carousel-fade-slide.is-active {
+  opacity: 1;
+  /* Subtle Ken Burns drift while a slide is on screen — long enough that
+     it reads as "alive" rather than as a distracting zoom. */
+  transform: scale(1.08);
+  z-index: 1;
+}
+
+/* Bottom gradient scrim — modern touch that keeps the dots/button legible
+   over any bright patch of photo, regardless of which slide is active. */
+.road-carousel-scrim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 40%;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0));
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Dots */
+.road-carousel-dots {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 8;
+}
+
+.road-carousel-dots span {
+  width: 9px;
+  height: 9px;
+
+  display: block;
+  border-radius: 50%;
+  cursor: pointer;
+
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transition: width 0.3s ease, background 0.3s ease, border-color 0.3s ease;
+}
+
+.road-carousel-dots span.is-active {
+  width: 22px;
+  border-radius: 5px;
+  background: #ffffff;
+  border-color: #ffffff;
+}
+
+/* Login button must stay above carousel */
+.road-carousel-box .login-button {
+  z-index: 10 !important;
+}
+
+@media (max-width: 1200px) {
+  .road-carousel-box {
+    height: 520px !important;
+  }
+}
+
+@media (max-width: 800px) {
+  .road-carousel-box {
+    height: 360px !important;
+    border-radius: 18px !important;
+  }
+
+  .road-carousel-dots {
+    bottom: 12px;
+  }
+}
+
+@media (max-width: 520px) {
+  .road-carousel-box {
+    height: 260px !important;
+    border-radius: 16px !important;
+  }
 }
 
 .login-button {
@@ -292,26 +410,34 @@ body.login-page,
   line-height: 1.3;
 }
 
-/* Footer Native */
+/* Footer Native — the RSAC banner. Mirrors .header-native / .header-native
+   picture img above exactly (full-width, height capped via max-height +
+   object-fit:contain, zero padding) instead of the image being boxed in
+   at max-width:900px — that mismatch is why the header read as properly
+   sized while the footer looked cramped/undersized next to it. */
 .footer-native {
   background-color: #f8f9fa;
   text-align: center;
-  padding: 2px 0;
+  padding: 0;
   box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
   margin-top: auto;
+  width: 100%;
+  height: auto;
+  box-sizing: border-box;
 }
 
 .footer-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
+  width: 100%;
 }
 
 .footer-content img {
-  max-width: 500px;
-  width: 80%;
+  width: 100%;
+  max-width: 1907px;
   height: auto;
+  max-height: 10vh;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
 }
 
 /* ============================= */
@@ -533,6 +659,11 @@ body.login-page,
   background: var(--color-primary-700);
 }
 
+/* Danger/error is the default (most callers of setMessage are error paths).
+   `:contains()` is a jQuery-only pseudo-selector — invalid CSS, silently
+   ignored by every real browser — so the intended green "success" variant
+   below it never actually applied; every message, success included,
+   rendered red. Replaced with a real modifier class the JSX opts into. */
 .form__message {
   background: #fef2f2;
   color: #b91c1c;
@@ -543,7 +674,7 @@ body.login-page,
   font-size: 14px;
 }
 
-.form__message:contains("successful") {
+.form__message--success {
   background: #f0fdf4;
   color: #15803d;
   border-color: #bbf7d0;
@@ -575,12 +706,6 @@ body.login-page,
     order: 1;
     flex: 0 0 100%;
     max-width: 800px;
-  }
-
-  .road-image {
-    height: auto;
-    aspect-ratio: 16/9;
-    /* Switch to cinematic ratio for top banner slot */
   }
 
   /* Place Yogi beautifully on the left under the image */
@@ -650,9 +775,18 @@ body.login-page,
   }
 
   /* 3. Road Image */
+  /* `flex: 0 0 100%` (set above, at 1200px) means "100% of the main axis"
+     — which is HEIGHT once .main-content switches to flex-direction:
+     column here, not width. Without an explicit width, the cross-axis
+     (width) has nothing to resolve against and collapses to 0, taking the
+     carousel (and the login button positioned inside it) down with it. An
+     <img> used to mask this by having its own intrinsic width from the
+     image file; the carousel's position:absolute slides have no intrinsic
+     size at all, so they were the first thing to actually expose the bug. */
   .center-form {
     order: 3;
     margin-bottom: 5px;
+    width: 100%;
   }
 
   /* 4. IAS Officers */

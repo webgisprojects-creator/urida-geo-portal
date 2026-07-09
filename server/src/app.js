@@ -12,7 +12,7 @@ import authRoutes from './routes/authRoutes.js';
 // import chainageRoutes from './routes/chainage.js';
 import adminRoutes from './routes/adminRoutes.js';
 import roadNetworkRoutes from './roadNetwork.js';
-import { auditLogger, tryVerifyToken, verifyToken, verifyRole } from './middleware/authMiddleware.js';
+import { auditLogger, tryVerifyToken, verifyToken, verifyRole, startActiveTokensRetentionSchedule } from './middleware/authMiddleware.js';
 import { pool } from './config/db.js';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import chainageRoutes from "./routes/chainage.js";//chainage
@@ -208,6 +208,7 @@ const isSingletonWorker = !process.env.NODE_APP_INSTANCE || process.env.NODE_APP
 if (isSingletonWorker) {
   startTileCacheEvictionSchedule();
   startWfsCacheEvictionSchedule();
+  startActiveTokensRetentionSchedule();
   startCacheWarmer();
 }
 startMetricsSampler();

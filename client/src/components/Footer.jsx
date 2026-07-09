@@ -8,15 +8,20 @@ const Footer = () => {
 
   return (
     <footer className="dashboard-footer">
-      
+
       <div className="footer-left">
         <span>All rights reserved</span>
       </div>
-      <div className="footer-right">
+      <div className="footer-middle">
         <span>
           © {currentYear} Remote Sensing and Applications Centre. RSAC-UP{" "}
         </span>
         <img src={rightLogo} alt="RSAC Logo" className="footer-logo" />
+      </div>
+      <div className="footer-right">
+        <span>
+          Data displayed is for departmental reference only and has no legal validity.
+        </span>
       </div>
     </footer>
   );
