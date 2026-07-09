@@ -941,6 +941,7 @@ const MapContainer = forwardRef(({
   showChainage,//chainage
   mode = "DASHBOARD",//chainage
   layerVisibility = {},
+  lcluOpacity = 1,
   streetViewVisible,
   streetLightVisible = false,
   streetLightGeojson = null,
@@ -2425,10 +2426,20 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       }),
     });
 
-    // ✅ Labels overlay - hidden by default (Managed by Satellite toggle)
+    // Esri reference labels — deliberately NOT nested inside
+    // satelliteWithLabels below (it used to be, combined via combine:true
+    // into a single composited render). LCLU classification layers sit at
+    // zIndex 55, and a combined base-map render always draws beneath every
+    // regular overlay regardless of what's inside it, so place names were
+    // getting buried under an opaque LCLU layer with no way to read them.
+    // A standalone layer with its own zIndex above 55 renders labels back
+    // on top while the satellite imagery itself stays underneath LCLU,
+    // same as every other base map. Own visibility (not inherited from a
+    // parent group) is toggled by handleBaseMapChange in Dashboard.jsx —
+    // see the "Labels (Esri Reference)" title match there.
     const labelsLayer = new TileLayer({
       title: "Labels (Esri Reference)",
-      visible: true,
+      visible: activeBaseMap === "satellite",
       preload: 1,
       maxZoom: SATELLITE_MAX_ZOOM,
       source: makeCachedXyzSource({
@@ -2439,13 +2450,18 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
         maxZoom: SATELLITE_MAX_ZOOM,
       }),
     });
+    // Above LCLU (55) so satellite-mode place names stay legible over a
+    // land-cover overlay; zone/ward boundaries are unaffected by any of
+    // this — they're outline+label vector layers with no fill, so they
+    // never visually cover labels regardless of z-order.
+    labelsLayer.setZIndex(60);
 
     const satelliteWithLabels = new LayerGroup({
       title: "Satellite + Labels",
       type: "base",
       combine: true,
       visible: activeBaseMap === "satellite",
-      layers: [satelliteLayer, labelsLayer],
+      layers: [satelliteLayer],
     });
 
     const baseMaps = new LayerGroup({
@@ -2846,6 +2862,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       lcluLayers[id] = new TileLayer({
         title: `LCLU: ${id}`,
         visible: !!layerVisibility?.lclu?.[id],
+        opacity: Number.isFinite(lcluOpacity) ? lcluOpacity : 1,
         // Routed through GWC + the local tile cache like every other
         // static/non-CQL-filtered overlay (see makeTileWmsSource) instead
         // of a raw direct-to-GeoServer TileWMS with a permanent cache-buster
@@ -3017,6 +3034,7 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
         ...Object.values(specializedLayers),
         ...Object.values(roadClassLayers),
         ...Object.values(lcluLayers),
+        labelsLayer,
         searchAreaLayer,
         amenitiesGroup,
         othersGroup,
@@ -5558,6 +5576,11 @@ if (cfg1) {
         }
       }
       layer.setVisible(visible);
+      // Opacity is handled by its own dedicated effect below — it must
+      // never share a dependency array with this one, which force-
+      // refreshes WMS tiles (updateParams({_t: Date.now()})) whenever it
+      // reruns. Opacity is a pure client-side canvas property; it doesn't
+      // need new tile data, so it must never trigger a network refetch.
       if (visible) {
         const source = layer.getSource?.();
         if (source?.updateParams) {
@@ -5737,6 +5760,22 @@ if (cfg1) {
       });
     }
   }, [layerVisibility, city, selectedRoadToken]);
+
+  // Deliberately its own tiny effect, isolated from the big visibility-sync
+  // effect above (which force-refreshes WMS tiles via updateParams whenever
+  // it reruns). setOpacity() is a pure client-side canvas-compositing
+  // property — OpenLayers just re-draws the already-downloaded tile bitmaps
+  // at a different alpha, no network request involved — so this must never
+  // fire a tile refetch. Previously it did (a shared dependency array), which
+  // meant every single drag-tick of the transparency slider re-triggered a
+  // full tile reload storm for whichever LCLU layer was active, on top of
+  // needlessly rerunning ~200 lines of unrelated amenity/road-classification
+  // sync logic per tick.
+  useEffect(() => {
+    Object.values(lcluLayersRef.current || {}).forEach((layer) => {
+      layer.setOpacity(Number.isFinite(lcluOpacity) ? lcluOpacity : 1);
+    });
+  }, [lcluOpacity]);
 
   // REMOVED REDUNDANT EFFECT (911-934) THAT CONFLICTED WITH VISIBILITY LOGIC
 

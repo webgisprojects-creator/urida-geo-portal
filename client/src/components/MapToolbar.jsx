@@ -999,7 +999,12 @@ const MapToolbar = ({
               </h4>
               <div className="layer-controls">
                 {[
-                  { key: "zoneBoundary", label: "Zone Boundary", checked: !!overlayVisibility?.zoneBoundary, onToggle: () => onOverlayToggle?.("zoneBoundary") },
+                  // Zone-less cities (e.g. Firozabad — see cityConfig.js)
+                  // have nothing for this to toggle; hasZones already
+                  // gates every other zone-only control in this file
+                  // (the Wards/roads cascade below), this one was just
+                  // missed.
+                  ...(hasZones ? [{ key: "zoneBoundary", label: "Zone Boundary", checked: !!overlayVisibility?.zoneBoundary, onToggle: () => onOverlayToggle?.("zoneBoundary") }] : []),
                   { key: "wardBoundary", label: "Ward Boundary", checked: !!overlayVisibility?.wardBoundary, onToggle: () => onOverlayToggle?.("wardBoundary") },
                   { key: "roadNetwork", label: "Road Network", checked: !!roadNetworkVisible, onToggle: () => onRoadNetworkToggle?.(!roadNetworkVisible) },
                 ].map(({ key, label, checked, onToggle }) => (

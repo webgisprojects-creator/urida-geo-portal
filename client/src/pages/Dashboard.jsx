@@ -533,6 +533,12 @@ const DashboardPage = () => {
     roadClassifications: {},
     specializedOptions: {}, // e.g. { sewage: 'diameter' }
   });
+  // LCLU-only transparency control — a single slider covers whichever LCLU
+  // sub-layer(s) are currently toggled on, rather than one per layer
+  // (there's normally only one active at a time anyway, and the sidebar
+  // only shows this control while at least one is). 1 = fully opaque,
+  // matching every other layer's default rendering.
+  const [lcluOpacity, setLcluOpacity] = useState(1);
   // Chainage/patch creation only makes sense once some road layer is on the
   // map — it needs a road to click. Covers the main Road Network toggle, any
   // road-classification (category) layer, and the "INCLUDE" sentinel
@@ -1999,6 +2005,19 @@ const DashboardPage = () => {
     });
 
     if (baseGroup?.setVisible) baseGroup.setVisible(true);
+
+    // Esri reference labels are a standalone top-level layer now (not
+    // nested inside the "Satellite + Labels" base group above) — see
+    // MapContainer.jsx's map-init effect — specifically so it can sit at
+    // its own zIndex above the LCLU overlay instead of being buried
+    // underneath it. Its visibility has to be driven from here too since
+    // it's no longer inherited from a parent group's visibility.
+    const labelsLayer = map
+      .getLayers()
+      .getArray()
+      .find((layer) => layer?.get?.("title") === "Labels (Esri Reference)");
+    labelsLayer?.setVisible?.(selectedBaseMap === "satellite");
+
     map.renderSync?.();
     setBaseMap(selectedBaseMap);
   };
@@ -2417,6 +2436,8 @@ const DashboardPage = () => {
           city={city}
           onLayerToggle={handleLayerToggle}
           layerVisibility={layerVisibility}
+          lcluOpacity={lcluOpacity}
+          onLcluOpacityChange={setLcluOpacity}
           tableVisible={tableRows.length > 0 && !isTableMinimized}
           tableMinimized={isTableMinimized}
           tableHasRows={tableRows.length > 0}
@@ -2459,6 +2480,7 @@ const DashboardPage = () => {
           mode={mode} //chainage
           baseMap={baseMap} // ⭐ Passed for adaptive colors
           layerVisibility={layerVisibility}
+          lcluOpacity={lcluOpacity}
           streetViewVisible={streetViewVisible}
           selectedRoadName={selectedRoad}
           roadFilter={roadFilter}
