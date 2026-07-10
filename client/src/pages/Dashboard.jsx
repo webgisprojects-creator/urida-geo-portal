@@ -1,7 +1,7 @@
 // src/pages/Dashboard.jsx
 /* Dashboard feature hub: header/menu, sidebar layer toggles, map/toolbar, table, exports, summaries. */
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { exportToPDF, exportToExcel, exportToKML, captureMapCanvas, drawWatermark } from "../utils/gisExport";
 import { getIsLowBandwidth } from "../utils/networkStatus";
 import { logEvent } from "../utils/telemetry";
@@ -20,6 +20,17 @@ import ChartPanel from "../components/ChartPanel";
 import { cityConfig } from "../assets/configs/cityConfig.js";
 import { getGeoserverBase } from "../utils/geoserverBase";
 import { isChainageAvailable } from "../utils/chainageAvailability"; //chainage
+import {
+  resolveDssModule,
+  dssPendingToastMessage,
+  DSS_STATUS,
+  DSS_MODULE_ORDER,
+  checkDssLayerAvailability,
+  buildDssWfsTableUrl,
+  flattenDssFeatures,
+  buildDssLegendCounts,
+  buildDssColumns,
+} from "../assets/configs/dssLayerConfig.js";
 const GEOSERVER_BASE = getGeoserverBase();
 
 // ⭐ Internal Component for Filter Dropdown
@@ -385,7 +396,6 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
 };
 
 const DashboardPage = () => {
-  const navigate = useNavigate();
   const location = useLocation();
   const queryParams = new URLSearchParams(location.search);
   const city = (queryParams.get("city") || "Lucknow").toLowerCase();
@@ -403,6 +413,11 @@ const DashboardPage = () => {
   const urlTaskTitle = queryParams.get("title");
   const isFieldTaskMode =
     queryParams.get("mode") === "CHAINAGE" && !!(urlProjectId && urlUserId);
+
+  // DSS (Decision Support System) is a normal Dashboard mode available to
+  // every dashboard user in every city — it is not admin-only and must not
+  // be confused with the field-task Chainage redirect above, which stays
+  // driven by isFieldTaskMode/restrictedMode alone.
 
   useEffect(() => {
     logEvent("dashboard_opened", { city });
@@ -498,7 +513,14 @@ const DashboardPage = () => {
   ); //chainage
   const handleChainageToggle = () => {
     setMode((m) => {
-      if (m === "CHAINAGE") return "DASHBOARD";
+      if (m === "CHAINAGE") {
+        // Turning Chainage off must take its whole panel/patch-selection
+        // state with it — otherwise a road clicked while Chainage was on
+        // leaves its panel stranded open after exit. Same cleanup routine
+        // the panel's own ✕ button and "Clear" already use.
+        mapRef.current?.closeChainagePanel?.();
+        return "DASHBOARD";
+      }
       if (!hasVisibleRoadLayer) {
         mapRef.current?.showFeatureNotice?.({
           feature: "Chainage",
@@ -511,6 +533,154 @@ const DashboardPage = () => {
       return "CHAINAGE";
     });
   }; //chainage
+
+  // DSS mode: a plain in-place Dashboard toggle, same shape as Chainage's
+  // above but with no restrictedMode/role gating and no road-layer guard —
+  // every dashboard user can turn it on. isDssMode intentionally does NOT
+  // reuse restrictedMode; that flag must stay scoped to isFieldTaskMode only.
+  const isDssMode = mode === "DSS";
+  // Which DSS module (streetLight/underdeveloped/roadMaintenance/
+  // encroachment) is currently rendered as a GeoServer WMS layer on the map.
+  // Only ever set to a module that has already been confirmed READY by a
+  // live WFS probe (see handleDssModuleSelect) — never set optimistically.
+  const [activeDssModule, setActiveDssModule] = useState(null);
+  const activeDssModuleConfig = isDssMode && activeDssModule
+    ? resolveDssModule(activeDssModule, city)
+    : null;
+
+  // DSS table (GeoServer WFS, current map BBOX only — never a whole-city
+  // fetch and never the DB-rendered /api/road-networks path). rows are
+  // flattened WFS features (see flattenDssFeatures) so they can reuse the
+  // exact same `row[col.key]` rendering the rest of this file uses.
+  const [dssAllRows, setDssAllRows] = useState([]);
+  const [dssColumnFilters, setDssColumnFilters] = useState({});
+  const [dssTableStatus, setDssTableStatus] = useState(null); // null | "loading" | "ready" | "empty" | "error"
+  const [dssTableMessage, setDssTableMessage] = useState("");
+  const [dssTableMinimized, setDssTableMinimized] = useState(false);
+  const [dssSearchQuery, setDssSearchQuery] = useState("");
+  const dssTableAbortRef = useRef(null);
+  const dssAvailabilityAbortRef = useRef(null);
+
+  // Per city+module availability, cached across clicks (never assumed —
+  // populated only by a real WFS probe, except Encroachment's confirmed
+  // whitelist, which needs no round trip to know it's missing).
+  const dssStatusCacheRef = useRef({});
+  const [dssStatusVersion, setDssStatusVersion] = useState(0);
+  const [dssCheckingModule, setDssCheckingModule] = useState(null);
+  const getDssModuleStatus = useCallback(
+    (moduleKey) => dssStatusCacheRef.current[`${city}|${moduleKey}`] || DSS_STATUS.UNKNOWN,
+    [city]
+  );
+  const setDssModuleStatus = useCallback((moduleKey, status) => {
+    dssStatusCacheRef.current[`${city}|${moduleKey}`] = status;
+    setDssStatusVersion((v) => v + 1);
+  }, [city]);
+  const dssModuleStatusMap = useMemo(
+    () => Object.fromEntries(DSS_MODULE_ORDER.map((k) => [k, getDssModuleStatus(k)])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [city, dssStatusVersion, getDssModuleStatus]
+  );
+  // Encroachment's availability is knowable from the confirmed-layer
+  // whitelist alone — seed it per city without waiting for a click.
+  useEffect(() => {
+    const resolved = resolveDssModule("encroachment", city);
+    if (resolved?.knownUnavailable) setDssModuleStatus("encroachment", DSS_STATUS.LAYER_MISSING);
+  }, [city, setDssModuleStatus]);
+
+  // Wipes the active DSS WMS layer (via activeDssModule -> null, consumed
+  // by MapContainer), table rows, legend/counts, and any in-flight table
+  // fetch — used both mid module-switch (before resolving the new module)
+  // and on Exit DSS. Never touches roadFilter/baseFilter/columnFilters or
+  // any Chainage state.
+  const clearDssDisplayState = useCallback(() => {
+    dssTableAbortRef.current?.abort();
+    setDssAllRows([]);
+    setDssColumnFilters({});
+    setDssTableStatus(null);
+    setDssTableMessage("");
+    setDssSearchQuery("");
+    setDssTableMinimized(false);
+    // Drop a lingering DSS column-filter dropdown so a stale "dss:<col>"
+    // pointer isn't left open against rows that just got cleared out. This
+    // only ever runs from DSS-mode call sites, so it's safe to unconditionally
+    // clear — a normal-table dropdown can't be open at the same time DSS
+    // state is being cleared (the two tables are mutually exclusive).
+    setActiveFilterColumn(null);
+    setFilterPosition(null);
+  }, []);
+
+  const handleDssToggle = () => {
+    setMode((m) => {
+      if (m === "DSS") {
+        setActiveDssModule(null);
+        clearDssDisplayState();
+        dssAvailabilityAbortRef.current?.abort();
+        setDssCheckingModule(null);
+        return "DASHBOARD";
+      }
+      return "DSS";
+    });
+  };
+
+  // Layer-switching rule: clear the previously active DSS WMS layer/table/
+  // legend/info immediately, THEN resolve the clicked module's GeoServer
+  // availability with a live WFS probe, THEN either activate it (WMS +
+  // table) or leave the map with no DSS layer and show the pending toast.
+  // Never leaves a stale module's layer/table/legend on screen while a new
+  // one is being checked.
+  const handleDssModuleSelect = async (moduleKey) => {
+    setActiveDssModule(null);
+    clearDssDisplayState();
+
+    const resolved = resolveDssModule(moduleKey, city);
+    if (!resolved || !resolved.layer || resolved.knownUnavailable) {
+      setDssModuleStatus(moduleKey, DSS_STATUS.LAYER_MISSING);
+      mapRef.current?.showFeatureNotice?.({
+        feature: "DSS",
+        message: dssPendingToastMessage(resolved?.label || moduleKey, city),
+        dedupeKey: `dss-pending|${city}|${moduleKey}`,
+        autoDismissMs: 4000,
+      });
+      return;
+    }
+
+    // Already confirmed READY earlier this city session — activate
+    // immediately instead of depending on a second live WFS round trip
+    // succeeding. This is what makes clicking back to an already-working
+    // module (e.g. Street Light, after trying an unavailable one) instant
+    // and reliable rather than re-probing GeoServer every single click.
+    if (getDssModuleStatus(moduleKey) === DSS_STATUS.READY) {
+      setActiveDssModule(moduleKey);
+      return;
+    }
+
+    dssAvailabilityAbortRef.current?.abort();
+    const controller = new AbortController();
+    dssAvailabilityAbortRef.current = controller;
+    setDssCheckingModule(moduleKey);
+    let status;
+    try {
+      status = await checkDssLayerAvailability(GEOSERVER_BASE, resolved.layer, { signal: controller.signal });
+    } catch (err) {
+      if (err?.name === "AbortError") return; // superseded by a newer click
+      status = DSS_STATUS.WFS_ERROR;
+    }
+    if (controller.signal.aborted) return;
+    setDssCheckingModule(null);
+    setDssModuleStatus(moduleKey, status);
+
+    if (status !== DSS_STATUS.READY) {
+      mapRef.current?.showFeatureNotice?.({
+        feature: "DSS",
+        message: dssPendingToastMessage(resolved.label, city),
+        dedupeKey: `dss-pending|${city}|${moduleKey}`,
+        autoDismissMs: 4000,
+      });
+      return;
+    }
+
+    setActiveDssModule(moduleKey);
+  };
 
   // ⭐ NEW: Generic Layer Filters (for Attribute Query)
   const [layerFilters, setLayerFilters] = useState({});
@@ -880,6 +1050,95 @@ const DashboardPage = () => {
       return true;
     });
   }, []);
+
+  // BBOX-aware DSS table fetch — reruns whenever the active module or the
+  // current map viewport (mapExtent, already debounced upstream by
+  // MapContainer's own moveend handler) changes. Aborts any in-flight
+  // request from a previous module/extent. Deliberately hits GeoServer WFS
+  // directly (never the DB-rendered /api/road-networks endpoints).
+  useEffect(() => {
+    if (!isDssMode || !activeDssModule) return undefined;
+    const resolved = resolveDssModule(activeDssModule, city);
+    if (!resolved?.layer) return undefined;
+
+    dssTableAbortRef.current?.abort();
+    const controller = new AbortController();
+    dssTableAbortRef.current = controller;
+    setDssTableStatus("loading");
+    setDssTableMessage("");
+
+    const url = buildDssWfsTableUrl(GEOSERVER_BASE, resolved.layer, mapExtent, 500);
+    fetch(url, { signal: controller.signal })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        const rows = flattenDssFeatures(data?.features);
+        setDssAllRows(rows);
+        setDssColumnFilters({});
+        setDssTableStatus(rows.length ? "ready" : "empty");
+        setDssTableMessage(rows.length ? "" : "No DSS records in current map area.");
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setDssTableStatus("error");
+        setDssTableMessage("DSS table data could not be loaded right now.");
+        console.error("DSS WFS table fetch error:", err);
+      });
+
+    return () => controller.abort();
+  }, [isDssMode, activeDssModule, city, mapExtent]);
+
+  const dssFilteredRows = useMemo(() => {
+    const filtered = Object.entries(dssColumnFilters).some(([, v]) => Array.isArray(v) && v.length > 0)
+      ? applySpecializedFilters(dssAllRows, dssColumnFilters)
+      : dssAllRows;
+    const q = dssSearchQuery.trim().toLowerCase();
+    if (!q) return filtered;
+    return filtered.filter((row) =>
+      Object.values(row || {}).some((v) => v !== null && v !== undefined && String(v).toLowerCase().includes(q))
+    );
+  }, [dssAllRows, dssColumnFilters, dssSearchQuery, applySpecializedFilters]);
+
+  const dssColumns = useMemo(
+    () => (activeDssModule ? buildDssColumns(activeDssModule, dssFilteredRows) : []),
+    [activeDssModule, dssFilteredRows]
+  );
+  const dssLegendItems = useMemo(
+    () => (activeDssModule ? buildDssLegendCounts(activeDssModule, dssFilteredRows) : []),
+    [activeDssModule, dssFilteredRows]
+  );
+  const dssLegendGroups = useMemo(() => {
+    if (!activeDssModule || !dssLegendItems.length) return [];
+    return [{
+      id: activeDssModule,
+      title: activeDssModuleConfig?.label || activeDssModule,
+      rows: dssLegendItems.map(({ label, color, count }) => ({ label, color, count })),
+    }];
+  }, [activeDssModule, activeDssModuleConfig, dssLegendItems]);
+
+  const handleDssColumnFilterChange = (key, selectedValues) => {
+    setDssColumnFilters((prev) => {
+      const next = { ...prev };
+      if (Array.isArray(selectedValues) && selectedValues.length > 0) {
+        next[key] = selectedValues.map(String);
+      } else {
+        delete next[key];
+      }
+      return next;
+    });
+    setDssCurrentPage(1);
+  };
+
+  const dssPageSize = 100;
+  const [dssCurrentPage, setDssCurrentPage] = useState(1);
+  useEffect(() => { setDssCurrentPage(1); }, [activeDssModule, dssSearchQuery]);
+  const dssTotalPages = Math.max(1, Math.ceil(dssFilteredRows.length / dssPageSize));
+  const dssIndexOfLast = Math.min(dssCurrentPage, dssTotalPages) * dssPageSize;
+  const dssIndexOfFirst = dssIndexOfLast - dssPageSize;
+  const dssCurrentRecords = dssFilteredRows.slice(dssIndexOfFirst, dssIndexOfLast);
 
   const specializedLayerNameRef = useRef(null);
   const buildSpecializedCqlFilter = useCallback((filters) => {
@@ -1324,6 +1583,23 @@ const DashboardPage = () => {
       .catch((err) => console.error("Error loading road names:", err));
   }, [showRoadSearch, city]);
 
+  // Stage 1 chainage candidate guidance context — MapContainer's own local
+  // state (Road 1/Road 2/candidate ids), mirrored here purely for table
+  // tinting/ordering. Deliberately separate from selectedRoadIds/
+  // isMultiSelectMode (the table's own Multi/Apply flow) — never read or
+  // written by that flow, and it never reads or writes this one. Declared
+  // ahead of the road-table fetch effect below since that effect's own
+  // bbox-skip logic needs it.
+  const [chainageCandidateContext, setChainageCandidateContext] = useState({
+    active: false,
+    road1Id: null,
+    road2Id: null,
+    candidateRoadIds: [],
+  });
+  const handleChainageCandidateContextChange = useCallback((ctx) => {
+    setChainageCandidateContext(ctx || { active: false, road1Id: null, road2Id: null, candidateRoadIds: [] });
+  }, []);
+
   useEffect(() => {
     if (tableDataset.kind !== "roads") return;
 
@@ -1368,7 +1644,18 @@ const DashboardPage = () => {
     // actually within the current map viewport instead of the whole
     // filtered set - MapContainer reports this (debounced) via
     // onMapExtentChange, so this effect re-fetches as the user pans/zooms.
-    const bboxParam = mapExtent ? `&bbox=${encodeURIComponent(mapExtent.join(","))}` : "";
+    // Skipped while Chainage candidate guidance is active: opening Road 1
+    // auto-zooms the map in tight around just that road, so a bbox-scoped
+    // fetch here would return almost nothing beyond Road 1 itself — the
+    // candidate/Road 2 rows only reappear because they're separately
+    // merged in further down (chainageCandidateTableRows), which made the
+    // table look like it had shrunk to "just the candidates" rather than
+    // its normal filtered set. includeRoadId below only guarantees one id
+    // (the backend param doesn't support a list), so bbox has to be the
+    // one that backs off here instead.
+    const bboxParam = (mapExtent && !chainageCandidateContext.active)
+      ? `&bbox=${encodeURIComponent(mapExtent.join(","))}`
+      : "";
     // A road click typically also pans/zooms the map, which changes
     // mapExtent and re-triggers this same fetch - guarantee the just-
     // clicked/selected road is always in the result (even if its exact
@@ -1401,13 +1688,18 @@ const DashboardPage = () => {
         endLoading("roadTable");
       });
     return () => controller.abort();
-  }, [roadFilter, city, shouldFetchTable, analysisResults, mapExtent, selectedRoadId, isMultiSelectMode]);
+  }, [roadFilter, city, shouldFetchTable, analysisResults, mapExtent, selectedRoadId, isMultiSelectMode, chainageCandidateContext.active]);
 
-  // Pagination calculations
-  const indexOfLastRecord = currentPage * recordsPerPage;
-  const indexOfFirstRecord = indexOfLastRecord - recordsPerPage;
-  const currentRecords = tableRows.slice(indexOfFirstRecord, indexOfLastRecord);
-  const totalPages = Math.ceil(tableRows.length / recordsPerPage);
+  const buildSelectionFilter = useCallback((ids) => {
+    if (!ids || ids.length === 0) return "";
+    const column = "road_id";
+    const values = ids.map((id) => String(id).trim()).filter(Boolean);
+    const isNumeric = values.length > 0 && values.every((v) => /^-?\d+(?:\.\d+)?$/.test(v));
+    const list = isNumeric
+      ? values.join(",")
+      : values.map((v) => `'${v.replace(/'/g, "''")}'`).join(",");
+    return `${column} IN (${list})`;
+  }, []);
 
   // Pagination controls
   // const paginate = (pageNumber) => setCurrentPage(pageNumber);
@@ -1426,6 +1718,74 @@ const DashboardPage = () => {
     row?.roadid ??
     row?.ROAD_ID ??
     null;
+
+  // Stage 1 chainage candidate guidance — Road 2/candidate ids may not be
+  // present in the currently loaded/filtered tableRows at all (different
+  // filter, different BBOX, different page). Fetch just those missing rows
+  // via the existing /details endpoint + buildSelectionFilter, purely for
+  // display — never touches tableRows/baseFilter/roadFilter themselves.
+  const [chainageCandidateTableRows, setChainageCandidateTableRows] = useState([]);
+  useEffect(() => {
+    if (!chainageCandidateContext.active) {
+      if (chainageCandidateTableRows.length) setChainageCandidateTableRows([]);
+      return undefined;
+    }
+    const wantedIds = [
+      chainageCandidateContext.road1Id,
+      chainageCandidateContext.road2Id,
+      ...(chainageCandidateContext.candidateRoadIds || []),
+    ].filter(Boolean).map(String);
+    const presentIds = new Set(tableRows.map((r) => String(getRowSelectionId(r))));
+    const missingIds = wantedIds.filter((id) => !presentIds.has(id));
+    if (!missingIds.length) {
+      if (chainageCandidateTableRows.length) setChainageCandidateTableRows([]);
+      return undefined;
+    }
+    const controller = new AbortController();
+    fetch(`/api/road-networks/${city}/details?filter=${encodeURIComponent(buildSelectionFilter(missingIds))}`, {
+      signal: controller.signal,
+    })
+      .then((res) => (res.ok ? res.json() : { data: [] }))
+      .then((data) => setChainageCandidateTableRows(Array.isArray(data?.data) ? data.data : []))
+      .catch(() => {
+        // Purely a display-completeness aid — leave the merge as-is on error.
+      });
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chainageCandidateContext, city, tableRows, buildSelectionFilter]);
+
+  // Display-only reordering: Road 2 first (Road 1 already gets the
+  // existing selected-row highlight via selectedRoadId, set by
+  // openChainageForRoadId itself — no separate tint/reorder needed for
+  // it), then candidates, then everything else in its existing order.
+  // Never mutates tableRows/baseFilter/roadFilter/zoomFilter/columnFilters.
+  const orderedTableRows = useMemo(() => {
+    if (!chainageCandidateContext.active) return tableRows;
+    const { road2Id, candidateRoadIds } = chainageCandidateContext;
+    const candidateSet = new Set((candidateRoadIds || []).map(String));
+    const byId = new Map();
+    tableRows.forEach((r) => byId.set(String(getRowSelectionId(r)), r));
+    chainageCandidateTableRows.forEach((r) => {
+      const id = String(getRowSelectionId(r));
+      if (!byId.has(id)) byId.set(id, r);
+    });
+    const priority = (id) => {
+      if (road2Id && id === String(road2Id)) return 0;
+      if (candidateSet.has(id)) return 1;
+      return 2;
+    };
+    return Array.from(byId.values()).sort(
+      (a, b) => priority(String(getRowSelectionId(a))) - priority(String(getRowSelectionId(b)))
+    );
+  }, [tableRows, chainageCandidateTableRows, chainageCandidateContext]);
+
+  // Pagination calculations — sourced from orderedTableRows so candidate
+  // rows merged/reordered above actually surface on page 1 instead of
+  // wherever they'd fall in the untouched tableRows order.
+  const indexOfLastRecord = currentPage * recordsPerPage;
+  const indexOfFirstRecord = indexOfLastRecord - recordsPerPage;
+  const currentRecords = orderedTableRows.slice(indexOfFirstRecord, indexOfLastRecord);
+  const totalPages = Math.ceil(orderedTableRows.length / recordsPerPage);
 
   // Field-task mode's multi-road patch selection: fetches roads adjacent to
   // every currently-selected road and narrows the table's own filter down
@@ -1487,6 +1847,22 @@ const DashboardPage = () => {
   const handleRowClick = (row) => {
     const rowId = getRowSelectionId(row);
 
+    // Chainage mode: route table clicks through the exact same Road1/Road2
+    // pairing + 2-road cap + "not connected" toast gatekeeper a map click
+    // goes through (handleChainageRoadClick in MapContainer), instead of
+    // falling through to the plain single/multi-select logic below. That
+    // logic used to run unopposed on table clicks, which both broke the
+    // Road2/candidate table highlight (it overwrote selectedRoadId without
+    // updating chainageCandidateContext) and let more than 2 roads get
+    // selected from the table. Skipped while the older table Multi/Apply
+    // flow (isMultiSelectMode) is active — that flow has its own, separate
+    // 2-road cap below and is deliberately uncoupled from this one (see the
+    // chainageRoad1Id/chainageRoad2Id comment in MapContainer.jsx). //chainage
+    if (mode === "CHAINAGE" && !isMultiSelectMode && rowId != null && rowId !== "") {
+      mapRef.current?.handleChainageRoadClick?.(rowId, row);
+      return;
+    }
+
     // No-op if clicking the already-selected road in single-select mode
     if (!isMultiSelectMode && rowId != null && String(rowId) === String(selectedRoadId)) return;
 
@@ -1528,13 +1904,6 @@ const DashboardPage = () => {
       const idStr = String(rowId);
       const isNumeric = /^-?\d+(?:\.\d+)?$/.test(idStr);
       setZoomFilter(isNumeric ? `road_id=${idStr}` : `road_id='${idStr.replace(/'/g, "''")}'`);
-    }
-
-    // Field-task mode: table selection opens the same chainage panel a map
-    // click would — someone working through the table shouldn't also have
-    // to go find and click the road on the map.
-    if (isFieldTaskMode && rowId != null && rowId !== "") {
-      mapRef.current?.openChainageForRoadId?.(rowId, row);
     }
 
     // The selected row is highlighted via CSS.
@@ -1597,18 +1966,6 @@ const DashboardPage = () => {
     setPatchTableActive(false);
     restorePrevTableState();
   }; //chainage
-
-
-  const buildSelectionFilter = useCallback((ids) => {
-    if (!ids || ids.length === 0) return "";
-    const column = "road_id";
-    const values = ids.map((id) => String(id).trim()).filter(Boolean);
-    const isNumeric = values.length > 0 && values.every((v) => /^-?\d+(?:\.\d+)?$/.test(v));
-    const list = isNumeric
-      ? values.join(",")
-      : values.map((v) => `'${v.replace(/'/g, "''")}'`).join(",");
-    return `${column} IN (${list})`;
-  }, []);
 
   const applyMultiSelection = () => {
     if (!selectedRoadIds.length) return;
@@ -2380,7 +2737,10 @@ const DashboardPage = () => {
 
   // Extracted so the reopen affordance below can use the exact inverse of
   // the table's own render condition, instead of a second, driftable copy.
+  // DSS mode has its own separate table (below) and must never show the
+  // normal road table underneath/behind it.
   const showRoadTable =
+    !isDssMode &&
     !patchTableActive &&
     shouldFetchTable &&
     (tableDataset.kind === "specialized" ||
@@ -2505,9 +2865,14 @@ const DashboardPage = () => {
           onPatchTableOpen={handlePatchTableOpen} //chainage
           onPatchTableClose={handlePatchTableClose} //chainage
           onFieldTaskRoadHighlight={handleFieldTaskRoadHighlight} //chainage
+          onChainageCandidateContextChange={handleChainageCandidateContextChange} //chainage
           onMapExtentChange={handleMapExtentChange}
           fieldTaskWardList={isFieldTaskMode ? fieldTaskWardList : null} //chainage
           isMultiSelectModeProp={isMultiSelectMode} //chainage
+          activeDssModule={isDssMode ? activeDssModule : null}
+          activeDssLayer={activeDssModuleConfig?.layer || null}
+          activeDssStyle={activeDssModuleConfig?.styleName || null}
+          dssLegendGroups={isDssMode ? dssLegendGroups : null}
         />
 
         {/* ⭐ TOOLBAR — updated */}
@@ -2531,7 +2896,12 @@ const DashboardPage = () => {
           onRoadNetworkToggle={(checked) => handleLayerToggle("network", "roads", checked)}
           streetViewVisible={streetViewVisible}
           onStreetViewToggle={setStreetViewVisible}
-          onDssRoad={() => navigate(`/dss?city=${encodeURIComponent(city)}`)}
+          onDssRoad={handleDssToggle}
+          isDssMode={isDssMode}
+          activeDssModule={isDssMode ? activeDssModule : null}
+          onDssModuleSelect={handleDssModuleSelect}
+          dssModuleStatus={dssModuleStatusMap}
+          dssCheckingModule={dssCheckingModule}
           onRoadSelected={(road) => {
             console.log("Road selected:", road);
             setSelectedRoad(road);
@@ -2919,14 +3289,27 @@ const DashboardPage = () => {
                     <tr
                       key={indexOfFirstRecord + i}
                       onClick={() => handleRowClick(row)}
-                      className={
+                      className={[
                         (isMultiSelectMode
                           ? selectedRoadIds.includes(String(getRowSelectionId(row)))
                           : (selectedRoadId != null &&
                             String(selectedRoadId) === String(row.road_id)))
                           ? "selected-row"
-                          : ""
-                      }
+                          : "",
+                        // Stage 1 chainage candidate guidance — Road 1 already
+                        // gets "selected-row" above (selectedRoadId is set to
+                        // it by openChainageForRoadId itself), so it doesn't
+                        // need its own tint. Road 2 and connected candidates
+                        // aren't covered by that existing highlight, so they
+                        // get their own classes here.
+                        chainageCandidateContext.active &&
+                        String(getRowSelectionId(row)) === String(chainageCandidateContext.road2Id)
+                          ? "chainage-road2-row"
+                          : chainageCandidateContext.active &&
+                            chainageCandidateContext.candidateRoadIds.includes(String(getRowSelectionId(row)))
+                            ? "chainage-candidate-row"
+                            : "",
+                      ].filter(Boolean).join(" ")}
                       style={{ cursor: "pointer" }}
                     >
                       {isMultiSelectMode && (
@@ -2954,6 +3337,195 @@ const DashboardPage = () => {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* DSS table — GeoServer WFS rows for the active module, scoped to the
+          current map BBOX. Deliberately separate state from the road table
+          above (dssAllRows/dssColumnFilters/etc.) so DSS never touches
+          roadFilter/baseFilter/columnFilters or any Chainage table state. */}
+      {isDssMode && activeDssModule && (
+        <div className={`bottom-table ${dssTableMinimized ? "minimized" : ""}`}>
+          <div
+            className="pagination-controls"
+            style={{
+              order: 0,
+              borderTop: dssTableMinimized ? "none" : "1px solid rgba(0,0,0,0.1)",
+              borderBottom: "1px solid rgba(0,0,0,0.1)",
+            }}
+          >
+            <div className="pagination-info" style={{ display: "flex", alignItems: "center", gap: "15px", flexWrap: "wrap" }}>
+              <span className="pagination-entries-text">
+                {activeDssModuleConfig?.label || "DSS"} — Showing {dssFilteredRows.length === 0 ? 0 : dssIndexOfFirst + 1} to{" "}
+                {Math.min(dssIndexOfLast, dssFilteredRows.length)} of {dssFilteredRows.length} entries
+              </span>
+              {!dssTableMinimized && (
+                <input
+                  type="text"
+                  value={dssSearchQuery}
+                  onChange={(e) => setDssSearchQuery(e.target.value)}
+                  placeholder="Search loaded DSS rows…"
+                  style={{
+                    fontSize: 12,
+                    padding: "4px 8px",
+                    borderRadius: 8,
+                    border: "1px solid rgba(0,0,0,0.15)",
+                    minWidth: 160,
+                  }}
+                />
+              )}
+              {Object.keys(dssColumnFilters).length > 0 && (
+                <div
+                  style={{
+                    background: "rgba(239, 68, 68, 0.1)",
+                    padding: "4px 10px",
+                    borderRadius: "12px",
+                    border: "1px solid rgba(239, 68, 68, 0.3)",
+                    color: "#dc2626",
+                    fontWeight: "bold",
+                    fontSize: "12px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    cursor: "pointer",
+                  }}
+                  onClick={() => setDssColumnFilters({})}
+                  title="Click to clear all column filters"
+                >
+                  <i className="fas fa-filter" style={{ fontSize: 11 }}></i>
+                  {Object.keys(dssColumnFilters).length} filter{Object.keys(dssColumnFilters).length > 1 ? "s" : ""} active
+                  <span style={{ marginLeft: 2, fontSize: 14 }}>×</span>
+                </div>
+              )}
+            </div>
+            <div className="pagination-buttons">
+              <button
+                onClick={() => setDssCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={dssCurrentPage === 1}
+                className="pagination-btn pagination-btn--arrow"
+                title="Previous page"
+                aria-label="Previous page"
+              >
+                <i className="fas fa-chevron-left" />
+              </button>
+              <span className="page-numbers" title={`Page ${dssCurrentPage} of ${dssTotalPages}`}>
+                {dssCurrentPage}/{dssTotalPages}
+              </span>
+              <button
+                onClick={() => setDssCurrentPage((p) => Math.min(dssTotalPages, p + 1))}
+                disabled={dssCurrentPage === dssTotalPages}
+                className="pagination-btn pagination-btn--arrow"
+                title="Next page"
+                aria-label="Next page"
+              >
+                <i className="fas fa-chevron-right" />
+              </button>
+              <button
+                className="pagination-btn"
+                onClick={() => setDssTableMinimized((v) => !v)}
+                title={dssTableMinimized ? "Expand table" : "Minimize table"}
+              >
+                <i className={`fas fa-chevron-${dssTableMinimized ? "up" : "down"}`} />
+              </button>
+              <button
+                className="pagination-btn"
+                onClick={() => {
+                  // Closing the table also deactivates the module (not just
+                  // hides the table) — otherwise the next BBOX refetch on
+                  // pan/zoom would silently repopulate it while the WMS
+                  // layer stayed on with no visible table for it.
+                  setActiveDssModule(null);
+                  clearDssDisplayState();
+                }}
+                title="Close DSS layer"
+              >
+                <i className="fas fa-times" />
+              </button>
+            </div>
+          </div>
+
+          <div
+            className="table-wrapper"
+            style={{ order: 1, maxHeight: dssTableMinimized ? "35px" : "none", overflow: dssTableMinimized ? "hidden" : "auto" }}
+          >
+            {dssTableStatus === "loading" ? (
+              <div style={{ padding: 16, fontSize: 13, color: "#475569" }}>Loading DSS data…</div>
+            ) : dssTableStatus === "error" ? (
+              <div style={{ padding: 16, fontSize: 13, color: "#dc2626" }}>{dssTableMessage}</div>
+            ) : dssFilteredRows.length === 0 ? (
+              <div style={{ padding: 16, fontSize: 13, color: "#475569" }}>
+                {dssTableMessage || "No results found"}
+              </div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    {dssColumns.map((key) => (
+                      <th key={key}>
+                        <div
+                          className="column-header filterable"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (activeFilterColumn === `dss:${key}`) {
+                              setActiveFilterColumn(null);
+                              setFilterPosition(null);
+                              return;
+                            }
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const viewportHeight = window.innerHeight;
+                            const spaceBelow = viewportHeight - rect.bottom;
+                            const spaceAbove = rect.top;
+                            const dropdownHeight = 300;
+                            const dropdownWidth = 220;
+                            const spaceRight = window.innerWidth - rect.left;
+                            const left = spaceRight < dropdownWidth ? rect.right - dropdownWidth : rect.left;
+                            let pos = { left: Math.max(0, left) };
+                            if (spaceBelow < dropdownHeight && spaceAbove > spaceBelow) {
+                              pos.bottom = viewportHeight - rect.top;
+                              pos.maxHeight = Math.min(250, spaceAbove - 20);
+                            } else {
+                              pos.top = rect.bottom;
+                              pos.maxHeight = Math.min(250, spaceBelow - 20);
+                            }
+                            setFilterPosition(pos);
+                            setActiveFilterColumn(`dss:${key}`);
+                          }}
+                        >
+                          {formatGenericColumnLabel(key)}
+                          <span className={`filter-icon ${dssColumnFilters[key] ? "active" : ""}`}>▼</span>
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {dssCurrentRecords.map((row, i) => (
+                    <tr key={dssIndexOfFirst + i}>
+                      {dssColumns.map((key) => (
+                        <td key={key}>{row[key] === null || row[key] === undefined ? "" : String(row[key])}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {activeFilterColumn && String(activeFilterColumn).startsWith("dss:") && (
+            <FilterDropdown
+              column={{ key: activeFilterColumn.slice(4), label: formatGenericColumnLabel(activeFilterColumn.slice(4)) }}
+              currentFilters={dssColumnFilters[activeFilterColumn.slice(4)]}
+              onApply={(vals) => handleDssColumnFilterChange(activeFilterColumn.slice(4), vals)}
+              onClose={() => { setActiveFilterColumn(null); setFilterPosition(null); }}
+              position={filterPosition}
+              city={city}
+              baseFilter=""
+              columnFilters={{}}
+              onRangePreview={null}
+              datasetKind="specialized"
+              localRows={dssAllRows}
+            />
+          )}
         </div>
       )}
 
@@ -3062,7 +3634,7 @@ const DashboardPage = () => {
       )}
 
       {/* ⭐ FILTER DROPDOWN PORTAL (Fixed Position) */}
-      {activeFilterColumn && filterPosition && (
+      {activeFilterColumn && filterPosition && !String(activeFilterColumn).startsWith("dss:") && (
         <FilterDropdown
           column={tableColumns.find(c => c.key === activeFilterColumn)}
           currentFilters={(tableDataset.kind === "specialized" ? specializedColumnFilters : columnFilters)[activeFilterColumn]}

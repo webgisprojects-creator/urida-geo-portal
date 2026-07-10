@@ -238,8 +238,16 @@ router.get("/api/patch-preview/:city/:roadId", verifyToken, async (req, res) => 
     }
 
     try {
+        // Every caller of this endpoint (single-road preview, multi-road
+        // preview, the client's chainage-points/junction loader) only ever
+        // reads segment_id and the geometry off each row — SELECT * was
+        // pulling every other column in the segment table across
+        // potentially hundreds of rows for a single "open this road's
+        // chainage panel" click, which is the main reason those points/
+        // labels were slow to appear. road_id is kept too (cheap, and
+        // occasionally useful for callers that want to sanity-check it).
         const segQuery = `
-            SELECT *, ST_AsGeoJSON(geom) AS geojson
+            SELECT ${cfg.segmentIdColumn} AS segment_id, ${cfg.roadIdColumn} AS road_id, ST_AsGeoJSON(geom) AS geojson
             FROM ${cfg.segmentTable}
             WHERE ${cfg.roadIdColumn} = $1
             AND CAST(split_part(${cfg.segmentIdColumn}, 'S', 2) AS NUMERIC) > $2

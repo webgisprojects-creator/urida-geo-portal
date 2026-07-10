@@ -6,6 +6,7 @@ import VectorSource from "ol/source/Vector";
 import Feature from "ol/Feature";
 import Point from "ol/geom/Point";
 import { Style, Circle, Fill, Stroke } from "ol/style";
+import { isCoordinateWithinCityBounds } from "../utils/mapClip";
 
 // ─── Layer ID for cleanup ─────────────────────────────────────────────────────
 const LOCATE_LAYER_ID = "__nav_locate_me_layer__";
@@ -21,7 +22,7 @@ const LOCATE_LAYER_ID = "__nav_locate_me_layer__";
  *     - Places a blue dot + accuracy circle on the map (OL VectorLayer)
  *     - Dot pulses with a CSS animation overlay handled via OL postrender
  */
-const MapNavigation = ({ map, restrictedMode = false }) => {
+const MapNavigation = ({ map, restrictedMode = false, cityBoundaryRingsRef = null, cityName = "this city" }) => {
     const [coordinates, setCoordinates] = useState({ lat: "0.0000", lng: "0.0000" });
     const [scaleProps, setScaleProps] = useState({ width: 100, text: "" });
     const [locating, setLocating] = useState(false);
@@ -105,6 +106,17 @@ const MapNavigation = ({ map, restrictedMode = false }) => {
                 const view = map.getView();
                 const projection = view.getProjection();
                 const projectedCenter = fromLonLat([longitude, latitude], projection);
+
+                // A GPS fix outside the current city's own coverage (e.g.
+                // physically in Lucknow while the dashboard is showing
+                // Kanpur) must not pan the map away to it — that would lose
+                // the city extent the user actually opened. A small buffer
+                // still allows genuinely boundary-adjacent locations.
+                const rings = cityBoundaryRingsRef?.current;
+                if (!isCoordinateWithinCityBounds(projectedCenter, rings)) {
+                    alert(`Your current location appears to be outside ${cityName}. Location is only shown when you're within the selected city.`);
+                    return;
+                }
 
                 // Pan + zoom the map
                 view.animate({ center: projectedCenter, zoom: 16, duration: 1000 });

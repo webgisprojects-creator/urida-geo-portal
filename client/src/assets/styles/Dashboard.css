@@ -1315,12 +1315,12 @@ right-btn {
    .submit-confirm-overlay 100010). */
 :root {
   --dashboard-footer-z: 42000;
-  /* Conservative reserved height for the mobile (<=720px) footer, which can
-     now wrap to 3 stacked rows (see the mobile .dashboard-footer rules
-     below) instead of a fixed 20px — HomePage.Module.css's mobile
-     #map/.sidebar rules reference this so they leave genuine room instead
-     of a hardcoded guess that predates the wrap. */
-  --dashboard-footer-mobile-h: 76px;
+  /* Reserved height for the mobile (<=720px) footer — now a single compact
+     brand-only row (see the mobile .dashboard-footer rules below), not the
+     old 3-stacked-rows layout this used to size for. HomePage.Module.css's
+     mobile #map/.sidebar rules reference this so they leave genuine room
+     instead of a hardcoded guess. */
+  --dashboard-footer-mobile-h: 28px;
 }
 
 .dashboard-footer {
@@ -2025,6 +2025,29 @@ right-btn {
   background-color: rgba(255, 224, 102, 1) !important;
 }
 
+/* Stage 1 chainage candidate guidance — Road 1 reuses .selected-row above
+   (it's already the selectedRoadId'd road), these are for the two states
+   that aren't covered by that: a picked "Road 2" and roads connected to
+   Road 1 that are pickable next. */
+.chainage-road2-row {
+  background-color: rgba(74, 144, 217, 0.22) !important;
+  box-shadow: inset 0 0 0 2px #4A90D9;
+  font-weight: 600;
+}
+
+.chainage-road2-row:hover {
+  background-color: rgba(74, 144, 217, 0.32) !important;
+}
+
+.chainage-candidate-row {
+  background-color: rgba(74, 144, 217, 0.08) !important;
+  box-shadow: inset 0 0 0 1px rgba(74, 144, 217, 0.5);
+}
+
+.chainage-candidate-row:hover {
+  background-color: rgba(74, 144, 217, 0.16) !important;
+}
+
 /* ================= OL POPUP ================= */
 .ol-popup {
   position: absolute;
@@ -2629,6 +2652,39 @@ right-btn {
     margin: 0 6px;
   }
 
+  /* .lucknow-header's grid gives left/right an equal 1fr share of whatever
+     the center column (title + 2 logos) doesn't take, with no fallback if
+     that leaves less room than the back-arrow + hamburger actually need at
+     their own gap — desktop's 15px gap alone (before either icon's own
+     width) already exceeded that share on a phone, which is what was
+     pushing the hamburger visibly into the city logo next to it. */
+  .lucknow-header__side {
+    gap: 6px;
+  }
+
+  /* Hamburger (3 bars) / its own open-state "X" — sized for a 48px+ desktop
+     header, visibly oversized once the header itself shrinks to 48px on a
+     phone. Bar spacing (the +/-9px offsets) scales down with it so the X it
+     turns into stays symmetric, not just the plain 3-bar state. */
+  .menu-toggle {
+    width: 22px;
+    height: 16px;
+  }
+
+  .menu-toggle .bar,
+  .menu-toggle .bar::before,
+  .menu-toggle .bar::after {
+    height: 2px;
+  }
+
+  .menu-toggle .bar::before {
+    top: -6px;
+  }
+
+  .menu-toggle .bar::after {
+    top: 6px;
+  }
+
   .lucknow-header__title {
     font-size: 0.9em;
     max-width: 50vw;
@@ -2678,6 +2734,25 @@ right-btn {
   .controls-panel {
     right: 46px;
     min-width: 170px;
+    /* Was unbounded — 5 basemap cards drop to a 2-column grid at 1024px
+       (3 rows instead of 2) plus the 3 overlay-layer toggles below, tall
+       enough on a phone to run past the bottom of the screen. Caps it and
+       scrolls internally instead. */
+    max-height: min(70vh, 420px);
+    overflow-y: auto;
+  }
+
+  .basemap-card {
+    padding: 7px 5px 6px;
+    gap: 3px;
+  }
+
+  .basemap-card__icon {
+    font-size: 15px;
+  }
+
+  .basemap-card__label {
+    font-size: 10px;
   }
 
   .floating-panel {
@@ -2718,6 +2793,13 @@ right-btn {
     right: 8px;
     bottom: 36px;
     max-height: 35vh;
+    /* 100vh on mobile Safari/Chrome includes the address bar's own height
+       even while it's on screen, so a plain vh max-height can genuinely
+       extend past what's actually visible — reading as "the table gets cut
+       off at the bottom." dvh (dynamic viewport height) accounts for the
+       toolbar; declared second so it only overrides the vh fallback in
+       browsers that actually support it. */
+    max-height: 35dvh;
   }
 
   .bottom-table.minimized {
@@ -2767,41 +2849,42 @@ right-btn {
 }
 
 @media (max-width: 720px) {
-  /* Was one forced row with each section ellipsis-truncated to
-     max-width:30vw — at 9px font that clipped the legal disclaimer
-     ("Data displayed is for departmental reference only and has no legal
-     validity.") down to a handful of characters, i.e. the actual
-     disclaimer was never readable on a phone. Each section now gets its
-     own full-width row instead, so nothing gets cut off. */
+  /* Was 3 stacked full-width rows (left/middle/right each on its own
+     line) — on a short phone screen that grew tall enough to cover the
+     bottom table underneath it. Mobile only needs the compact brand
+     mark: "All rights reserved" and the legal disclaimer are dropped
+     here (still shown on desktop/tablet above), leaving one short,
+     single-line, non-overlapping bar. */
   .dashboard-footer {
     height: auto;
-    min-height: 20px;
-    padding: 4px 10px;
-    padding-bottom: max(4px, env(safe-area-inset-bottom));
+    min-height: 18px;
+    padding: 3px 10px;
+    padding-bottom: max(3px, env(safe-area-inset-bottom));
     font-size: 10px;
-    gap: 2px;
+    gap: 4px;
+    justify-content: center;
   }
 
   .dashboard-footer .footer-left,
-  .dashboard-footer .footer-middle,
   .dashboard-footer .footer-right {
-    flex: 1 1 100%;
-    justify-content: center;
-    text-align: center;
+    display: none;
   }
 
-  .dashboard-footer .footer-left span,
-  .dashboard-footer .footer-middle span,
-  .dashboard-footer .footer-right span {
+  .dashboard-footer .footer-middle {
+    flex: 0 1 auto;
+    justify-content: center;
+  }
+
+  .dashboard-footer .footer-middle span {
     max-width: none;
-    white-space: normal;
+    white-space: nowrap;
     overflow: visible;
     text-overflow: clip;
   }
 
   .dashboard-footer .footer-logo {
-    height: 14px;
-    width: 14px;
+    height: 13px;
+    width: 13px;
   }
 
   .summary-panel {
@@ -2825,27 +2908,30 @@ right-btn {
     gap: 4px;
   }
 
-  /* Row 1: page-traversal arrows (left) + the Roads/km badge (right), both
-     compact enough to actually share one row on a phone. Row 2 (forced by
-     .table-controls's flex-basis:100% below): Back/Multi/Apply/Clear/▼/✕.
-     flex-wrap (not flex-direction:column) is what makes "two specific
-     children share a row, third forced to its own" possible without a
-     JSX restructure — .table-controls's 100% basis is what forces the wrap. */
+  /* Row 1: page-traversal arrows (left) + the Roads/km badge (right).
+     Row 2: Back/Multi/Apply/Clear/▲/✕, spanning full width. Explicit grid
+     (not flex-wrap relying on content width to decide the wrap point) so
+     row 1's two halves can never both grow past a phone's width and force
+     an unwanted 3rd row, and row 2's 6 buttons can never overflow past the
+     panel's right edge (which is what was clipping ▲/✕ before) — every
+     column gets a fixed, predictable share regardless of button text
+     length or exact viewport width. */
   .pagination-controls {
-    display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     align-items: center;
-    justify-content: space-between;
-    gap: 4px;
+    gap: 3px 6px;
     /* Was 8px all round — the header was eating a disproportionate slice
        of a phone's vertical space before any actual table data showed. */
-    padding: 5px 8px;
+    padding: 4px 6px;
   }
 
   .pagination-info {
+    grid-column: 2;
+    grid-row: 1;
     margin-left: 0;
-    order: 2;
+    justify-content: flex-end;
+    overflow: hidden;
   }
 
   /* Redundant with the "N Roads | X.XX km" badge right next to it — on a
@@ -2862,9 +2948,13 @@ right-btn {
      Icons dropped entirely on mobile (they alone cost ~40px for two, more
      than the compact text itself). */
   .road-count-badge {
-    padding: 3px 7px !important;
-    font-size: 10px !important;
-    gap: 5px !important;
+    padding: 3px 6px !important;
+    font-size: 9.5px !important;
+    gap: 4px !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
   }
 
   .road-count-badge__icon {
@@ -2872,7 +2962,8 @@ right-btn {
   }
 
   .pagination-buttons {
-    order: 1;
+    grid-column: 1;
+    grid-row: 1;
     width: auto;
     justify-content: flex-start;
     flex-wrap: nowrap;
@@ -2887,20 +2978,24 @@ right-btn {
     padding: 0 2px;
   }
 
-  /* .table-controls (Back/Multi/Apply/Clear) is absolutely positioned at
-     top-right for desktop, which overlaps the "Showing X to Y of Z" info
-     row once .pagination-controls switches to a wrapping row above — there
-     just isn't enough horizontal room on a phone for both to coexist at
-     fixed corners. flex-basis:100% forces it onto its own second row of
-     the wrapping flex container instead of a JSX restructure. */
+  /* .table-controls (Back/Multi/Apply/Clear/▲/✕) is absolutely positioned
+     at top-right for desktop, which overlaps row 1 once .pagination-controls
+     becomes a grid above — spans both of its columns as its own full-width
+     row 2 instead. A 3-column grid (not flex-wrap) for the 6 buttons
+     themselves: flex-wrap's wrap point depends on each button's own text
+     width, which was letting the row run just past the panel's right edge
+     before the last button (▲ or ✕) wrapped — clipped there rather than
+     dropped to a new line. Every button now gets a fixed 1/3-width cell, so
+     none of the 6 can ever extend past the container regardless of label
+     length or exact screen width. */
   .table-controls {
-    order: 3;
-    flex-basis: 100%;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
     position: static;
     width: 100%;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 5px;
+    gap: 4px;
   }
 
   .table-back-btn,
@@ -2909,9 +3004,10 @@ right-btn {
   .table-clear-btn,
   .table-maximize-btn,
   .table-close-btn {
-    padding: 4px 8px;
+    padding: 4px 4px;
     font-size: 11px;
     min-height: 28px;
+    width: 100%;
   }
 
   .pagination-btn--arrow {
@@ -3288,7 +3384,7 @@ right-btn {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 9px 9px;
+  padding: 6px 9px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.35);
   color: #1e2b3a;
   font-family: system-ui, sans-serif;
@@ -3369,6 +3465,26 @@ right-btn {
   max-height: 0;
   opacity: 0;
 }
+/* The bottom road table (.bottom-table, z-index 100001) intentionally sits
+   above everything, same as .summary-panel above — rather than fighting
+   that stacking order, cap this panel's own height and let its body scroll
+   internally once the table is open, so it never visually extends behind
+   the table in the first place. */
+.road-panel.table-open {
+  max-height: calc(100vh - 190px - 320px);
+  display: flex;
+  flex-direction: column;
+}
+.road-panel.table-open .road-panel-body {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+@media (max-width: 768px) {
+  .road-panel.table-open {
+    max-height: calc(100vh - 190px - 260px);
+  }
+}
 .road-panel.minimized {
   transform: scale(0.98);
 }
@@ -3427,36 +3543,44 @@ right-btn {
 
 
 .chainage-selection {
-  margin-top: 15px;
-  padding-top: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid rgba(255,255,255,0.35);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  /* Start/End (or Junc/End) side by side instead of one full-width row
+     each — a two-road panel used to stack 4+ selects vertically, which is
+     what was pushing the whole panel down behind the bottom table. */
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
 }
 
 .chainage-group {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 3px;
+  min-width: 0;
 }
 
 .chainage-group label {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: rgba(30, 43, 58, 0.75);
   letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chainage-group select {
   width: 100%;
-  padding: 8px 10px;
+  padding: 6px 6px;
   border-radius: 8px;
   border: 1px solid #334155;
   background: linear-gradient(to bottom, #0f172a, #020617);
   color: #fff;
-  font-size: 13px;
+  font-size: 12px;
   cursor: pointer;
+  min-width: 0;
 }
 
 .chainage-group select:hover {
@@ -3488,8 +3612,8 @@ right-btn {
   /* width: 70px; */
   width: 100%;
   margin-left: 0;
-  margin-top: 10px;
-  padding: 10px 0;
+  margin-top: 6px;
+  padding: 7px 0;
   /* margin-left: 40%; */
   font-size: 9px;
   font-weight: 600;
@@ -4430,8 +4554,14 @@ opacity: 0.96;
   }
 }
 
-/* Mobile */
-@media (max-width: 600px) {
+/* Mobile — was capped at 600px, leaving a 601-1024px gap (a large phone or
+   phablet in portrait, e.g. ~630-768px wide) stuck with only the weaker
+   Tablet-breakpoint sizing (300px/42vw) above, which is why the panel could
+   still look oversized on a phone that happened to fall in that gap.
+   Widened to match .left-toolbar's own mobile position, which is already
+   set at 768px and doesn't change again between 600 and 768 — so the
+   left:52px clearance below stays correct across the whole widened range. */
+@media (max-width: 768px) {
   .road-panel {
     display: flex;
     flex-direction: column;
@@ -4456,6 +4586,30 @@ opacity: 0.96;
   .road-panel-header {
     flex: 0 0 auto;
     padding: 7px 8px;
+  }
+
+  /* Title/subtitle and the minimize/close buttons were all still full
+     desktop size here even once the panel itself shrank to 230px wide —
+     the header row ended up disproportionately tall relative to the rest
+     of the (now much smaller) panel. */
+  .road-panel-header h3 {
+    font-size: 12px;
+  }
+
+  .road-panel-subtitle {
+    font-size: 9px;
+  }
+
+  .road-panel-close {
+    width: 19px;
+    height: 19px;
+    font-size: 11px;
+    line-height: 19px;
+  }
+
+  .road-panel-actions button:not(.road-panel-close) {
+    font-size: 11px;
+    padding: 1px 4px;
   }
 
   .road-panel-body {

@@ -19,13 +19,17 @@ html.login-page,
 body.login-page,
 #root.login-page {
   height: 100%;
-  overflow-y: auto;
+  /* No scroll on the login page, ever — content below keeps its original
+     fixed design sizing (not viewport-scaled), so on an unusually short
+     viewport this clips rather than showing a scrollbar. */
+  overflow: hidden;
 }
 
 .login-container {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background: linear-gradient(white, #e9d7a4);
 }
 
@@ -416,6 +420,7 @@ body.login-page,
    at max-width:900px — that mismatch is why the header read as properly
    sized while the footer looked cramped/undersized next to it. */
 .footer-native {
+  position: relative;
   background-color: #f8f9fa;
   text-align: center;
   padding: 0;
@@ -424,6 +429,18 @@ body.login-page,
   width: 100%;
   height: auto;
   box-sizing: border-box;
+}
+
+/* Small, readable build/version marker, bottom-right corner of the footer. */
+.footer-version {
+  position: absolute;
+  right: 8px;
+  bottom: 4px;
+  font-size: 10px;
+  color: #64748b;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: 0.2px;
+  user-select: text;
 }
 
 .footer-content {

@@ -10,6 +10,15 @@ import { fileURLToPath } from "url";
 import { geoserverLimiter, basemapLimiter } from "../utils/concurrencyLimiter.js";
 import { verifyToken } from "../middleware/authMiddleware.js";
 import { isKnownGeoserverLayer } from "../utils/knownGeoserverLayers.js";
+import * as cacheKeyBuilder from "../cache/cacheKey.js";
+import * as cacheIndex from "../cache/cacheIndex.js";
+import { getShareScope } from "../cache/cachePolicy.js";
+import { checkAccess, computeAccessPolicyHash } from "../cache/tileAccessPolicy.js";
+import { applyCacheHeaders, nodeCacheStateFromMeta } from "../cache/cacheHeaders.js";
+import * as cacheMetrics from "../cache/cacheMetrics.js";
+import { sharedTilePromiseManager } from "../cache/promiseManager.js";
+import { tryStoreEmptyTile } from "../cache/emptyTile.js";
+import { HotTileLRU } from "../cache/hotTileLRU.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,21 +44,11 @@ const router = express.Router();
 // z/x/y tile pyramid. Gitignored; grows/shrinks at runtime.
 const CACHE_ROOT = path.join(__dirname, "..", "..", "tile-cache");
 
-// Cap + safety margin for the automatic eviction sweep. Kept well under a
-// typical small VPS's free disk, and "smart managed" per the requirement
-// that this must never slow the app down — the sweep runs on a timer, off
-// the request path, so serving tiles is never blocked by it.
-// TILE_CACHE_CAP_GB overrides the default 5GB — needed when the warmer's
-// zoom ranges are raised (TILE_WARM_CITY_MAX_ZOOM etc., see cacheWarmer.js)
-// for a full staging warm-up, where a deeper pass can legitimately exceed
-// 5GB; without raising this in step, the hourly eviction sweep would evict
-// tiles the warmer just fetched.
-const CACHE_CAP_GB = Number(process.env.TILE_CACHE_CAP_GB) > 0
-  ? Number(process.env.TILE_CACHE_CAP_GB)
-  : 5;
-const CACHE_CAP_BYTES = CACHE_CAP_GB * 1024 * 1024 * 1024;
-const CACHE_PRUNE_TARGET_BYTES = Math.floor(CACHE_CAP_BYTES * 0.8); // prune back to 80% of cap
-const EVICTION_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // hourly
+// Eviction caps/intervals now live in server/src/cache/cachePolicy.js
+// (per-family, env-configurable via CACHE_CAP_GB_<FAMILY> /
+// CACHE_CAP_GB_TOTAL) — see runCacheEvictionSweep/
+// startTileCacheEvictionSchedule below. TILE_CACHE_CAP_GB is no longer
+// read; it's superseded by the per-family env vars.
 
 // Each style's upstream mirrors — the proxy rotates across these the same
 // way the client used to rotate across a tile provider's own {a,b,c} /
@@ -414,6 +413,21 @@ async function fetchAndCacheTile(style, z, x, y, priority = "normal", signal) {
       await ensureDir(path.dirname(filePath));
       await fs.promises.writeFile(filePath, buffer);
 
+      const { key, hash } = cacheKeyBuilder.buildBasemapKey({ style, z, x, y });
+      cacheIndex.recordWrite({
+        cacheKey: key,
+        cacheKeyHash: hash,
+        family: "basemap",
+        shareScope: getShareScope("basemap"),
+        styleName: style,
+        z,
+        x,
+        y,
+        filePath,
+        sizeBytes: buffer.length,
+        accessPolicyHash: computeAccessPolicyHash({ shareScope: getShareScope("basemap") }),
+      });
+
       return buffer;
     } catch (err) {
       lastError = err;
@@ -446,6 +460,14 @@ async function fetchAndCacheTile(style, z, x, y, priority = "normal", signal) {
 // actual upstream request once every waiting caller has left instead of
 // letting it run to completion for nobody. Omitted by cacheWarmer.js and
 // the neighbor-tile prefetch below, which have no real client to track.
+//
+// Complexity — HIT: O(1) (tileCachePath() is a pure string-join off the
+// request params, then exactly one fs.stat + one fs.readFile; no directory
+// scan, no SQLite round-trip on this path — see recordWrite/touchAccess's
+// own complexity notes in cache/cacheIndex.js for why the index doesn't
+// need to be consulted here). MISS: O(1) + upstream fetch time; the
+// `inFlight` Map lookup/insert is itself O(1) and is what collapses N
+// concurrent requests for the same tile into exactly one upstream fetch.
 async function getRawTileBuffer(style, z, x, y, priority = "normal", meta = null, req = null) {
   const filePath = tileCachePath(style, z, x, y);
   const cacheKey = `${style}/${z}/${x}/${y}`;
@@ -455,6 +477,7 @@ async function getRawTileBuffer(style, z, x, y, priority = "normal", meta = null
     if (meta) meta.cacheHit = true;
     const now = new Date();
     fs.promises.utimes(filePath, now, now).catch(() => {});
+    cacheIndex.touchAccess(filePath);
     return fs.promises.readFile(filePath);
   }
   if (meta) meta.cacheHit = false;
@@ -622,6 +645,12 @@ function bboxIntersects(a, b) {
   return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 }
 
+// Bounded compute-avoidance cache for rendered mask PNGs — see getMaskedTile
+// below and hotTileLRU.js. 500 entries / 32MB / 60s TTL comfortably covers
+// "the last minute or so of distinct boundary/z/x/y tiles being requested
+// across every basemap style", without ever growing unbounded.
+const maskLRU = new HotTileLRU({ maxEntries: 500, maxBytes: 32 * 1024 * 1024, ttlMs: 60000 });
+
 // Builds a 256x256 SVG mask: solid shape on a transparent background — only
 // the alpha channel matters, consumed via sharp's `dest-in` blend below.
 // `evenodd` unions disjoint boundary pieces (e.g. every zone in a city) and
@@ -674,6 +703,7 @@ async function getMaskedTile(style, boundaryRaw, z, x, y, priority = "normal", m
     if (meta) meta.cacheHit = true;
     const now = new Date();
     fs.promises.utimes(filePath, now, now).catch(() => {});
+    cacheIndex.touchAccess(filePath);
     return fs.promises.readFile(filePath);
   }
   if (meta) meta.cacheHit = false;
@@ -697,8 +727,18 @@ async function getMaskedTile(style, boundaryRaw, z, x, y, priority = "normal", m
 
   const rawMeta = {};
   const rawBuffer = await getRawTileBuffer(style, z, x, y, priority, rawMeta, req);
-  const maskSvg = buildMaskSvg(rings, tileBBox);
-  const maskBuffer = await sharp(Buffer.from(maskSvg)).png().toBuffer();
+  // The rasterized mask PNG depends only on boundary+z/x/y, not on style —
+  // every style compositing the same boundary tile would otherwise redo
+  // the identical buildMaskSvg()+sharp render. Small bounded LRU (see
+  // hotTileLRU.js) trades a little memory for skipping that recompute;
+  // this never touches disk or changes anything persisted to tile-cache.
+  const maskCacheKey = `${safeKey}/${z}/${x}/${y}`;
+  let maskBuffer = maskLRU.get(maskCacheKey);
+  if (!maskBuffer) {
+    const maskSvg = buildMaskSvg(rings, tileBBox);
+    maskBuffer = await sharp(Buffer.from(maskSvg)).png().toBuffer();
+    maskLRU.set(maskCacheKey, maskBuffer);
+  }
   const masked = await sharp(rawBuffer)
     .ensureAlpha()
     .composite([{ input: maskBuffer, blend: "dest-in" }])
@@ -716,6 +756,24 @@ async function getMaskedTile(style, boundaryRaw, z, x, y, priority = "normal", m
 
   await ensureDir(path.dirname(filePath));
   await fs.promises.writeFile(filePath, masked);
+
+  const { key, hash } = cacheKeyBuilder.buildClippedBasemapKey({ style, boundaryLayer: boundaryRaw, z, x, y });
+  cacheIndex.recordWrite({
+    cacheKey: key,
+    cacheKeyHash: hash,
+    family: "clipped-basemap",
+    shareScope: getShareScope("clipped-basemap"),
+    styleName: style,
+    boundaryLayer: String(boundaryRaw),
+    boundaryHash: hash,
+    z,
+    x,
+    y,
+    filePath,
+    sizeBytes: masked.length,
+    accessPolicyHash: computeAccessPolicyHash({ shareScope: getShareScope("clipped-basemap"), city: boundaryRaw }),
+  });
+
   return masked;
 }
 
@@ -761,7 +819,32 @@ async function fetchAndCacheGwcTile(layerRaw, z, x, y, priority = "normal", sign
   );
   const filePath = gwcTileCachePath(layerRaw, z, x, y);
   await ensureDir(path.dirname(filePath));
-  await fs.promises.writeFile(filePath, buffer);
+  // Empty/transparent-tile dedup: sparse layers legitimately return a fully
+  // transparent "no features here" PNG for large parts of their extent —
+  // hardlink those to one shared file per family instead of writing a full
+  // duplicate copy each time (see cache/emptyTile.js for why a hardlink,
+  // not an index-redirect, keeps the read path unchanged).
+  const storedAsEmpty = await tryStoreEmptyTile({ buffer, filePath, familyRoot: path.join(CACHE_ROOT, "gwc") });
+  if (!storedAsEmpty) {
+    await fs.promises.writeFile(filePath, buffer);
+  }
+
+  const { key, hash } = cacheKeyBuilder.buildGwcKey({ layerName: layerRaw, z, x, y });
+  cacheIndex.recordWrite({
+    cacheKey: key,
+    cacheKeyHash: hash,
+    family: "gwc",
+    shareScope: getShareScope("gwc"),
+    layerName: String(layerRaw),
+    z,
+    x,
+    y,
+    filePath,
+    sizeBytes: storedAsEmpty ? 0 : buffer.length,
+    status: storedAsEmpty ? "empty" : "active",
+    accessPolicyHash: computeAccessPolicyHash({ shareScope: getShareScope("gwc"), layerName: layerRaw }),
+  });
+
   return buffer;
 }
 
@@ -819,10 +902,41 @@ async function fetchAndCacheFilteredWmsTile(layerRaw, cqlFilter, styles, z, x, y
   );
   const filePath = filteredWmsCachePath(layerRaw, cqlFilter, styles, z, x, y);
   await ensureDir(path.dirname(filePath));
-  await fs.promises.writeFile(filePath, buffer);
+  const storedAsEmpty = await tryStoreEmptyTile({
+    buffer,
+    filePath,
+    familyRoot: path.join(CACHE_ROOT, "wms-filtered"),
+  });
+  if (!storedAsEmpty) {
+    await fs.promises.writeFile(filePath, buffer);
+  }
+
+  const { key, hash, dims } = cacheKeyBuilder.buildWmsFilteredKey({ layerName: layerRaw, cqlFilter, styles, z, x, y });
+  cacheIndex.recordWrite({
+    cacheKey: key,
+    cacheKeyHash: hash,
+    family: "wms-filtered",
+    shareScope: getShareScope("wms-filtered"),
+    layerName: String(layerRaw),
+    cqlNormalized: dims.cqlNormalized,
+    cqlHash: dims.cqlHash,
+    styleHash: dims.styleHash,
+    status: storedAsEmpty ? "empty" : "active",
+    accessPolicyHash: computeAccessPolicyHash({ shareScope: getShareScope("wms-filtered"), layerName: layerRaw }),
+    z,
+    x,
+    y,
+    filePath,
+    sizeBytes: storedAsEmpty ? 0 : buffer.length,
+  });
+
   return buffer;
 }
 
+// Complexity — HIT: O(1) (filteredWmsCachePath() derives the path from the
+// normalized cqlFilter/styles hash + z/x/y, one fs.stat + one fs.readFile).
+// MISS: O(1) + upstream WMS render time, deduped per canonical key via the
+// O(1) `inFlight` Map exactly like getRawTileBuffer above.
 async function getFilteredWmsTileBuffer(layerRaw, cqlFilter, styles, z, x, y, priority = "normal", meta = null, req = null) {
   const filePath = filteredWmsCachePath(layerRaw, cqlFilter, styles, z, x, y);
   const cacheKey = `wms-filtered/${safeGwcLayerKey(layerRaw)}/${filteredWmsVariantHash(cqlFilter, styles)}/${z}/${x}/${y}`;
@@ -830,6 +944,7 @@ async function getFilteredWmsTileBuffer(layerRaw, cqlFilter, styles, z, x, y, pr
   const stat = await fs.promises.stat(filePath).catch(() => null);
   if (stat && Date.now() - stat.mtimeMs < FILTERED_WMS_TTL_MS) {
     if (meta) meta.cacheHit = true;
+    cacheIndex.touchAccess(filePath);
     return fs.promises.readFile(filePath);
   }
   if (meta) meta.cacheHit = false;
@@ -849,12 +964,16 @@ async function getFilteredWmsTileBuffer(layerRaw, cqlFilter, styles, z, x, y, pr
   } catch (err) {
     if (stat) {
       if (meta) meta.cacheHit = "stale";
+      cacheIndex.touchAccess(filePath);
       return fs.promises.readFile(filePath);
     }
     throw err;
   }
 }
 
+// Complexity — HIT: O(1) (gwcTileCachePath() derives the path from
+// layer/z/x/y, one fs.stat + one fs.readFile). MISS: O(1) + upstream GWC
+// fetch time, deduped per canonical key via the O(1) `inFlight` Map.
 async function getGwcTileBuffer(layerRaw, z, x, y, priority = "normal", meta = null, req = null) {
   const filePath = gwcTileCachePath(layerRaw, z, x, y);
   const cacheKey = `gwc/${safeGwcLayerKey(layerRaw)}/${z}/${x}/${y}`;
@@ -862,6 +981,7 @@ async function getGwcTileBuffer(layerRaw, z, x, y, priority = "normal", meta = n
   const stat = await fs.promises.stat(filePath).catch(() => null);
   if (stat && Date.now() - stat.mtimeMs < GWC_TILE_TTL_MS) {
     if (meta) meta.cacheHit = true;
+    cacheIndex.touchAccess(filePath);
     return fs.promises.readFile(filePath);
   }
   if (meta) meta.cacheHit = false;
@@ -881,6 +1001,7 @@ async function getGwcTileBuffer(layerRaw, z, x, y, priority = "normal", meta = n
   } catch (err) {
     if (stat) {
       if (meta) meta.cacheHit = "stale"; // upstream failed, served a TTL-expired cached copy
+      cacheIndex.touchAccess(filePath);
       return fs.promises.readFile(filePath); // serve stale over nothing
     }
     throw err;
@@ -935,13 +1056,34 @@ router.get("/api/gwc-tiles/:layerPath/:z/:x/:y.png", verifyToken, async (req, re
     return res.status(400).json({ error: "Invalid tile coordinates" });
   }
   const { z, x, y } = coords;
+  const startedAt = Date.now();
+  const family = "gwc";
+  const access = checkAccess(req, { family });
+  if (!access.allowed) {
+    cacheMetrics.recordDenied(family);
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const { hash: keyHash } = cacheKeyBuilder.buildGwcKey({ layerName: layerPath, z, x, y });
+  const accessPolicyHash = computeAccessPolicyHash({ shareScope: getShareScope(family), layerName: layerPath });
   const meta = {};
   try {
     const buffer = await getGwcTileBuffer(layerPath, z, x, y, "normal", meta, req);
     // Much shorter than basemap tiles — this is real, editable GIS data,
     // not eternal imagery.
     res.set("Cache-Control", "public, max-age=300");
+    const nodeCache = nodeCacheStateFromMeta(meta);
     res.set("X-Cache", meta.cacheHit === true ? "HIT" : meta.cacheHit === "stale" ? "STALE" : "MISS");
+    applyCacheHeaders(res, {
+      nodeCache,
+      family,
+      shareScope: getShareScope(family),
+      keyHash,
+      accessPolicyHash,
+      loadMs: Date.now() - startedAt,
+    });
+    if (nodeCache === "HIT") cacheMetrics.recordHit(family);
+    else if (nodeCache === "STALE") cacheMetrics.recordStale(family);
+    else cacheMetrics.recordMiss(family);
     res.type("png");
     res.send(buffer);
     if (meta.cacheHit === false) {
@@ -974,11 +1116,32 @@ router.get("/api/wms-tile-cache/:layerPath/:z/:x/:y.png", verifyToken, async (re
     return res.status(400).json({ error: "Invalid tile coordinates" });
   }
   const { z, x, y } = coords;
+  const startedAt = Date.now();
+  const family = "wms-filtered";
+  const access = checkAccess(req, { family });
+  if (!access.allowed) {
+    cacheMetrics.recordDenied(family);
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const { hash: keyHash } = cacheKeyBuilder.buildWmsFilteredKey({ layerName: layerPath, cqlFilter, styles, z, x, y });
+  const accessPolicyHash = computeAccessPolicyHash({ shareScope: getShareScope(family), layerName: layerPath });
   const meta = {};
   try {
     const buffer = await getFilteredWmsTileBuffer(layerPath, cqlFilter, styles, z, x, y, "normal", meta, req);
     res.set("Cache-Control", "public, max-age=300");
+    const nodeCache = nodeCacheStateFromMeta(meta);
     res.set("X-Cache", meta.cacheHit === true ? "HIT" : meta.cacheHit === "stale" ? "STALE" : "MISS");
+    applyCacheHeaders(res, {
+      nodeCache,
+      family,
+      shareScope: getShareScope(family),
+      keyHash,
+      accessPolicyHash,
+      loadMs: Date.now() - startedAt,
+    });
+    if (nodeCache === "HIT") cacheMetrics.recordHit(family);
+    else if (nodeCache === "STALE") cacheMetrics.recordStale(family);
+    else cacheMetrics.recordMiss(family);
     res.type("png");
     res.send(buffer);
     if (meta.cacheHit === false) {
@@ -1014,6 +1177,18 @@ router.get("/api/tiles/:style/:z/:x/:y.png", verifyToken, async (req, res) => {
   }
   const { z, x, y } = coords;
 
+  const startedAt = Date.now();
+  const family = boundary ? "clipped-basemap" : "basemap";
+  const access = checkAccess(req, { family });
+  if (!access.allowed) {
+    cacheMetrics.recordDenied(family);
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const { hash: keyHash } = boundary
+    ? cacheKeyBuilder.buildClippedBasemapKey({ style, boundaryLayer: boundary, z, x, y })
+    : cacheKeyBuilder.buildBasemapKey({ style, z, x, y });
+  const accessPolicyHash = computeAccessPolicyHash({ shareScope: getShareScope(family), city: boundary || null });
+
   const meta = {};
   try {
     const buffer = boundary
@@ -1028,6 +1203,18 @@ router.get("/api/tiles/:style/:z/:x/:y.png", verifyToken, async (req, res) => {
           : "public, max-age=2592000, immutable" // 30 days
     );
     res.set("X-Cache", meta.isFallback ? "FALLBACK" : meta.cacheHit ? "HIT" : "MISS");
+    const nodeCache = nodeCacheStateFromMeta(meta);
+    applyCacheHeaders(res, {
+      nodeCache,
+      family,
+      shareScope: getShareScope(family),
+      keyHash,
+      accessPolicyHash,
+      loadMs: Date.now() - startedAt,
+    });
+    if (nodeCache === "HIT") cacheMetrics.recordHit(family);
+    else if (nodeCache === "FALLBACK") cacheMetrics.recordFallback(family);
+    else cacheMetrics.recordMiss(family);
     res.type("png");
     res.send(buffer);
     if (!meta.cacheHit) {
@@ -1084,23 +1271,45 @@ async function fetchBoundaryGeoJson(layerName, priority = "normal") {
     if (stat && Date.now() - stat.mtimeMs < BOUNDARY_TTL_MS) {
       const geojson = JSON.parse(await fs.promises.readFile(diskPath, "utf-8"));
       boundaryGeoJsonMemoryCache.set(safeKey, { geojson, fetchedAt: stat.mtimeMs });
+      cacheIndex.touchAccess(diskPath);
       return geojson;
     }
   } catch {
     // fall through to a fresh fetch
   }
 
-  const url =
-    `${GEOSERVER_UPSTREAM_BASE}/wfs?service=WFS&version=1.1.0&request=GetFeature` +
-    `&typeName=${encodeURIComponent(layerName)}&outputFormat=application/json` +
-    `&srsName=EPSG:3857`;
-  const limit = priority === "low" ? geoserverLimiter.low : geoserverLimiter;
-  const buffer = await limit(() => fetchViaHttp(url, BOUNDARY_FETCH_TIMEOUT_MS));
-  const geojson = JSON.parse(buffer.toString("utf-8"));
+  // Previously un-deduplicated: two concurrent misses for the same layer
+  // both fired a GeoServer fetch. Wrapped with SharedTilePromiseManager
+  // (server/src/cache/promiseManager.js) so only the first triggers the
+  // real fetch; the rest await the same in-flight promise.
+  const { key: cacheKeyStr, hash: cacheKeyHash } = cacheKeyBuilder.buildBoundaryGeojsonKey({ layerName });
+  const geojson = await sharedTilePromiseManager.run(`boundary-geojson:${cacheKeyStr}`, async () => {
+    const url =
+      `${GEOSERVER_UPSTREAM_BASE}/wfs?service=WFS&version=1.1.0&request=GetFeature` +
+      `&typeName=${encodeURIComponent(layerName)}&outputFormat=application/json` +
+      `&srsName=EPSG:3857`;
+    const limit = priority === "low" ? geoserverLimiter.low : geoserverLimiter;
+    const buffer = await limit(() => fetchViaHttp(url, BOUNDARY_FETCH_TIMEOUT_MS));
+    const parsed = JSON.parse(buffer.toString("utf-8"));
 
-  boundaryGeoJsonMemoryCache.set(safeKey, { geojson, fetchedAt: Date.now() });
-  await ensureDir(BOUNDARY_CACHE_ROOT);
-  fs.promises.writeFile(diskPath, JSON.stringify(geojson)).catch(() => {});
+    boundaryGeoJsonMemoryCache.set(safeKey, { geojson: parsed, fetchedAt: Date.now() });
+    await ensureDir(BOUNDARY_CACHE_ROOT);
+    const serialized = JSON.stringify(parsed);
+    await fs.promises.writeFile(diskPath, serialized).catch(() => {});
+
+    cacheIndex.recordWrite({
+      cacheKey: cacheKeyStr,
+      cacheKeyHash,
+      family: "boundary-geojson",
+      shareScope: getShareScope("boundary-geojson"),
+      layerName: String(layerName),
+      filePath: diskPath,
+      sizeBytes: Buffer.byteLength(serialized),
+      accessPolicyHash: computeAccessPolicyHash({ shareScope: getShareScope("boundary-geojson"), layerName }),
+    });
+
+    return parsed;
+  });
   return geojson;
 }
 
@@ -1110,9 +1319,27 @@ router.get("/api/boundary-geojson/:workspace/:layer", verifyToken, async (req, r
   if (!isKnownGeoserverLayer(layerName)) {
     return res.status(400).json({ error: "Unknown layer" });
   }
+  const startedAt = Date.now();
+  const family = "boundary-geojson";
+  const access = checkAccess(req, { family, city: req.query.city || null });
+  if (!access.allowed) {
+    cacheMetrics.recordDenied(family);
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const { hash: keyHash } = cacheKeyBuilder.buildBoundaryGeojsonKey({ layerName });
+  const accessPolicyHash = computeAccessPolicyHash({ shareScope: getShareScope(family), layerName });
   try {
     const geojson = await fetchBoundaryGeoJson(layerName);
     res.set("Cache-Control", "public, max-age=3600");
+    applyCacheHeaders(res, {
+      nodeCache: "HIT", // fetchBoundaryGeoJson always resolves from its cache tiers or a fresh fetch it just persisted
+      family,
+      shareScope: getShareScope(family),
+      keyHash,
+      accessPolicyHash,
+      loadMs: Date.now() - startedAt,
+    });
+    cacheMetrics.recordHit(family);
     res.json(geojson);
   } catch (err) {
     console.error("Boundary GeoJSON fetch error:", layerName, err.message);
@@ -1121,72 +1348,39 @@ router.get("/api/boundary-geojson/:workspace/:layer", verifyToken, async (req, r
 });
 
 // ---------------------------------------------------------------------
-// Automatic eviction sweep — hourly, fully async, off the request path.
-// Prunes least-recently-served tiles (by mtime) once the cache exceeds
-// CACHE_CAP_BYTES, back down to CACHE_PRUNE_TARGET_BYTES.
-// ---------------------------------------------------------------------
-async function walkFiles(dir) {
-  const results = [];
-  let entries;
-  try {
-    entries = await fs.promises.readdir(dir, { withFileTypes: true });
-  } catch {
-    return results;
-  }
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      results.push(...(await walkFiles(full)));
-    } else if (entry.isFile()) {
-      results.push(full);
-    }
-  }
-  return results;
-}
-
+// Automatic eviction sweep. Previously a recursive directory walk
+// (`walkFiles`) that held every file path in memory and then did
+// `results.push(...(await walkFiles(full)))` — spreading a multi-hundred-
+// thousand-element array as call arguments, which is exactly what threw
+// "Maximum call stack size exceeded" once this cache grew past ~1.3M
+// files (confirmed: V8's argument-spread ceiling is well below that count,
+// long before Node.js's own default stack depth would be a factor).
+//
+// Replaced with server/src/cache/cacheIndex.js's SQLite-indexed batch
+// eviction: every query is an indexed `ORDER BY last_accessed_at LIMIT
+// 500`, so no directory walk and no full file list ever exists in memory,
+// on every request or otherwise. `runCacheEvictionSweep`/
+// `startTileCacheEvictionSchedule` keep their original exported names —
+// server/src/app.js's `import { startTileCacheEvictionSchedule } from
+// "./routes/tiles.js"` is unchanged — only what happens inside changed.
+//
+// The one-time backfill of the ~43G/~1.39M files that predate this index
+// is kicked off here too (also iterative/batched, see
+// cacheIndex.backfillFromDisk) so the new eviction sweep actually manages
+// the whole existing cache, not just files written after this deploy.
 export async function runCacheEvictionSweep() {
-  try {
-    const files = await walkFiles(CACHE_ROOT);
-    if (!files.length) return;
-
-    const stats = await Promise.all(
-      files.map(async (f) => {
-        try {
-          const s = await fs.promises.stat(f);
-          return { file: f, size: s.size, mtime: s.mtimeMs };
-        } catch {
-          return null;
-        }
-      })
-    );
-    const valid = stats.filter(Boolean);
-    const totalSize = valid.reduce((sum, s) => sum + s.size, 0);
-
-    if (totalSize <= CACHE_CAP_BYTES) return;
-
-    // Oldest (least-recently-served) first.
-    valid.sort((a, b) => a.mtime - b.mtime);
-
-    let remaining = totalSize;
-    for (const s of valid) {
-      if (remaining <= CACHE_PRUNE_TARGET_BYTES) break;
-      try {
-        await fs.promises.unlink(s.file);
-        remaining -= s.size;
-      } catch {
-        // ignore — file may have been removed/replaced concurrently
-      }
-    }
-    console.log(
-      `Tile cache eviction: pruned to ~${(remaining / 1024 / 1024 / 1024).toFixed(2)}GB`
-    );
-  } catch (err) {
-    console.error("Tile cache eviction sweep failed:", err.message);
-  }
+  return cacheIndex.runIndexedEvictionSweep();
 }
 
 export function startTileCacheEvictionSchedule() {
-  setInterval(runCacheEvictionSweep, EVICTION_SWEEP_INTERVAL_MS);
+  cacheIndex.startIndexedEvictionSchedule();
+  cacheIndex
+    .backfillFromDisk({
+      onProgress: (count) => {
+        if (count % 50000 === 0) console.log(`[cacheIndex] backfill progress: ${count} files indexed so far`);
+      },
+    })
+    .catch((err) => console.error("[cacheIndex] backfill failed:", err.message));
 }
 
 // Exported for server/src/services/cacheWarmer.js — pre-warming reuses
