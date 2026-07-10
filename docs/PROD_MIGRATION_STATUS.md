@@ -93,6 +93,54 @@ tooling in this repo, written before this session:
 - The user considered this runbook "old" as of 2026-07-10 and may want it
   reviewed/refreshed before relying on it — wasn't re-audited this session.
 
+## PM2 configuration (`deploy/ecosystem.config.js`, unchanged from the repo)
+
+```js
+{
+  name: "urida-backend",
+  script: "./server/src/server.js",
+  cwd: "/srv/urida/current",
+  instances: "max",       // one worker per CPU core
+  exec_mode: "cluster",
+  autorestart: true,
+  watch: false,
+  max_memory_restart: "1G",
+  env: { NODE_ENV: "production", PORT: 8060, HOST: "127.0.0.1" }
+}
+```
+
+- `cwd` is hardcoded to `/srv/urida/current` — the bootstrap script's symlink
+  swap (`ln -sfn <release> current`) is what makes this correct after each
+  deploy; if a release ever gets extracted somewhere else, this needs editing.
+- `instances: "max"` + `exec_mode: "cluster"` — one Node worker per CPU core.
+  This isn't the default; it replaced a single-process setup after a real
+  200-concurrent-user load test showed event-loop lag climbing to ~180ms
+  with only 1 process while 7 of the App server's 8 cores sat idle (see the
+  comment header in `ecosystem.config.js` itself). The App server has 8
+  vCPUs per the baseline report, so expect 8 workers.
+- **Important for anyone reading PM2 logs or debugging**: `server/src/app.js`
+  reads PM2's `NODE_APP_INSTANCE` env var to run certain background jobs
+  (tile-cache eviction, WFS-cache eviction, active-token retention, the cache
+  warmer, and the SQLite cache-index's backfill/hit-accumulator-flush) in
+  **exactly one worker only** (`NODE_APP_INSTANCE` unset or `"0"`), not all 8
+  — running them in every worker would multiply the same disk-scan/GeoServer-
+  warm work by the worker count for zero benefit, since all workers share the
+  same on-disk cache. So log lines like `[cacheIndex] backfill complete` or
+  `[cache-warmer] GWC re-warm complete` will only ever appear in one worker's
+  log output — that's expected, not a sign 7 workers are silently broken.
+  Per-worker metrics (event-loop lag, memory) are NOT gated this way and
+  report from every worker individually.
+- Binds to `127.0.0.1:8060` only (not `0.0.0.0`) — deliberately not reachable
+  from outside the App server itself; Nginx is what's supposed to expose it
+  externally on :80. If Nginx isn't configured yet (per this repo's earlier
+  decision to apply that by hand), the app is only reachable via
+  `curl http://127.0.0.1:8060/...` from a shell on the App server itself —
+  useful for the bootstrap script's own health check, but don't expect it to
+  answer from outside that machine until Nginx is actually set up.
+- Start/inspect commands: `pm2 start deploy/ecosystem.config.js`, `pm2 save`
+  (persists across reboots once a startup hook is registered separately —
+  not done by the bootstrap script), `pm2 logs urida-backend`, `pm2 status`.
+
 ## What's NOT done — Database
 
 **No runbook or script exists yet for the actual PostgreSQL data migration**
