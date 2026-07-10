@@ -2803,7 +2803,18 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       }
     };
 
-    if (!getIsLowBandwidth()) {
+    {
+      // Deliberately NOT gated by getIsLowBandwidth(): this data is exactly
+      // what the migration above this block moved away from re-fetching
+      // per-tile because it's small and changes essentially never — a
+      // one-time fetch of a few dozen polygons. Bandwidth-gating it here
+      // was a leftover from before that migration. It also has a real user-
+      // facing failure mode: navigator.connection.effectiveType (what
+      // getIsLowBandwidth() reads) is known to report an artificially
+      // conservative estimate on a cold page load before the browser has
+      // RTT history, then self-corrects shortly after — which silently
+      // skipped Zone/Ward boundaries on a page's first load only, until a
+      // remount (confirmed live 2026-07-10).
       const applyBoundaryLabelStyles = async () => {
         // Zone stroke is deliberately much wider than ward's (not just
         // 1px more) - at the exact edge where a zone and ward boundary

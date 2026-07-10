@@ -28,6 +28,7 @@
 import fs from "fs";
 import path from "path";
 import sharp from "sharp";
+import { atomicWriteFile } from "../utils/atomicFile.js";
 
 const CANDIDATE_MAX_BYTES = Number(process.env.CACHE_EMPTY_TILE_MAX_BYTES) > 0
   ? Number(process.env.CACHE_EMPTY_TILE_MAX_BYTES)
@@ -46,9 +47,9 @@ async function ensureSharedEmptyFile(familyRoot, buffer) {
   if (sharedFileReady.has(familyRoot)) return path.join(familyRoot, "_shared_empty_tile.png");
   const sharedPath = path.join(familyRoot, "_shared_empty_tile.png");
   const exists = await fs.promises.stat(sharedPath).catch(() => null);
-  if (!exists) {
+  if (!exists || exists.size === 0) {
     await fs.promises.mkdir(familyRoot, { recursive: true });
-    await fs.promises.writeFile(sharedPath, buffer);
+    await atomicWriteFile(sharedPath, buffer);
   }
   sharedFileReady.add(familyRoot);
   return sharedPath;
@@ -83,11 +84,11 @@ export async function tryStoreEmptyTile({ buffer, filePath, familyRoot }) {
     if (err.code === "EXDEV") {
       // Cross-device link (tile-cache spans multiple mounts) — fall back
       // to a normal write so the tile is never silently dropped.
-      await fs.promises.writeFile(filePath, buffer);
+      await atomicWriteFile(filePath, buffer);
       return false;
     }
     console.error("[emptyTile] hardlink failed, falling back to normal write:", err.message);
-    await fs.promises.writeFile(filePath, buffer);
+    await atomicWriteFile(filePath, buffer);
     return false;
   }
   return true;

@@ -13,6 +13,7 @@ import { getShareScope } from "../cache/cachePolicy.js";
 import { checkAccess, computeAccessPolicyHash } from "../cache/tileAccessPolicy.js";
 import { applyCacheHeaders } from "../cache/cacheHeaders.js";
 import * as cacheMetrics from "../cache/cacheMetrics.js";
+import { atomicWriteFile } from "../utils/atomicFile.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -158,7 +159,7 @@ router.get("/api/road-wfs-cache", verifyToken, async (req, res) => {
 
   try {
     const stat = await fs.promises.stat(filePath).catch(() => null);
-    if (stat && Date.now() - stat.mtimeMs < CACHE_TTL_MS) {
+    if (stat && stat.size > 0 && Date.now() - stat.mtimeMs < CACHE_TTL_MS) {
       res.set("Cache-Control", "public, max-age=60");
       res.set("X-Cache", "HIT");
       emitHeaders("HIT");
@@ -243,7 +244,7 @@ router.get("/api/road-wfs-cache", verifyToken, async (req, res) => {
               { label: `wfs ${layer}/${req.query.bbox || "bbox"}`, signal: controller.signal }
             );
             await ensureDir(CACHE_ROOT);
-            await fs.promises.writeFile(filePath, body);
+            await atomicWriteFile(filePath, body);
             const { key: cacheKeyStr, hash: cacheKeyHash, dims } = buildWfsBboxKey({
               layerName: layer,
               bbox,
@@ -297,7 +298,7 @@ router.get("/api/road-wfs-cache", verifyToken, async (req, res) => {
     // Graceful degradation: serve a stale cached copy over a hard failure
     // if we have one, same principle as the GWC tile cache.
     const stat = await fs.promises.stat(filePath).catch(() => null);
-    if (stat) {
+    if (stat && stat.size > 0) {
       res.set("Cache-Control", "public, max-age=60");
       res.set("X-Cache", "STALE");
       emitHeaders("STALE");

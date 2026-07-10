@@ -18,6 +18,7 @@ import { applyCacheHeaders, nodeCacheStateFromMeta } from "../cache/cacheHeaders
 import * as cacheMetrics from "../cache/cacheMetrics.js";
 import { sharedTilePromiseManager } from "../cache/promiseManager.js";
 import { tryStoreEmptyTile } from "../cache/emptyTile.js";
+import { atomicWriteFile } from "../utils/atomicFile.js";
 import { HotTileLRU } from "../cache/hotTileLRU.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -411,7 +412,7 @@ async function fetchAndCacheTile(style, z, x, y, priority = "normal", signal) {
 
       const filePath = tileCachePath(style, z, x, y);
       await ensureDir(path.dirname(filePath));
-      await fs.promises.writeFile(filePath, buffer);
+      await atomicWriteFile(filePath, buffer);
 
       const { key, hash } = cacheKeyBuilder.buildBasemapKey({ style, z, x, y });
       cacheIndex.recordWrite({
@@ -473,7 +474,7 @@ async function getRawTileBuffer(style, z, x, y, priority = "normal", meta = null
   const cacheKey = `${style}/${z}/${x}/${y}`;
 
   const stat = await fs.promises.stat(filePath).catch(() => null);
-  if (stat) {
+  if (stat && stat.size > 0) {
     if (meta) meta.cacheHit = true;
     const now = new Date();
     fs.promises.utimes(filePath, now, now).catch(() => {});
@@ -597,7 +598,7 @@ async function fetchBoundaryRings(boundaryRaw, priority = "normal") {
   const diskPath = path.join(BOUNDARY_CACHE_ROOT, `${safeKey}.json`);
   try {
     const stat = await fs.promises.stat(diskPath).catch(() => null);
-    if (stat && Date.now() - stat.mtimeMs < BOUNDARY_TTL_MS) {
+    if (stat && stat.size > 0 && Date.now() - stat.mtimeMs < BOUNDARY_TTL_MS) {
       const entry = JSON.parse(await fs.promises.readFile(diskPath, "utf-8"));
       boundaryMemoryCache.set(safeKey, entry);
       return entry;
@@ -621,7 +622,7 @@ async function fetchBoundaryRings(boundaryRaw, priority = "normal") {
 
   boundaryMemoryCache.set(safeKey, entry);
   await ensureDir(BOUNDARY_CACHE_ROOT);
-  fs.promises.writeFile(diskPath, JSON.stringify(entry)).catch(() => {});
+  atomicWriteFile(diskPath, JSON.stringify(entry)).catch(() => {});
   return entry;
 }
 
@@ -699,7 +700,7 @@ async function getMaskedTile(style, boundaryRaw, z, x, y, priority = "normal", m
   const filePath = maskedTileCachePath(style, safeKey, z, x, y);
 
   const stat = await fs.promises.stat(filePath).catch(() => null);
-  if (stat) {
+  if (stat && stat.size > 0) {
     if (meta) meta.cacheHit = true;
     const now = new Date();
     fs.promises.utimes(filePath, now, now).catch(() => {});
@@ -755,7 +756,7 @@ async function getMaskedTile(style, boundaryRaw, z, x, y, priority = "normal", m
   }
 
   await ensureDir(path.dirname(filePath));
-  await fs.promises.writeFile(filePath, masked);
+  await atomicWriteFile(filePath, masked);
 
   const { key, hash } = cacheKeyBuilder.buildClippedBasemapKey({ style, boundaryLayer: boundaryRaw, z, x, y });
   cacheIndex.recordWrite({
@@ -826,7 +827,7 @@ async function fetchAndCacheGwcTile(layerRaw, z, x, y, priority = "normal", sign
   // not an index-redirect, keeps the read path unchanged).
   const storedAsEmpty = await tryStoreEmptyTile({ buffer, filePath, familyRoot: path.join(CACHE_ROOT, "gwc") });
   if (!storedAsEmpty) {
-    await fs.promises.writeFile(filePath, buffer);
+    await atomicWriteFile(filePath, buffer);
   }
 
   const { key, hash } = cacheKeyBuilder.buildGwcKey({ layerName: layerRaw, z, x, y });
@@ -908,7 +909,7 @@ async function fetchAndCacheFilteredWmsTile(layerRaw, cqlFilter, styles, z, x, y
     familyRoot: path.join(CACHE_ROOT, "wms-filtered"),
   });
   if (!storedAsEmpty) {
-    await fs.promises.writeFile(filePath, buffer);
+    await atomicWriteFile(filePath, buffer);
   }
 
   const { key, hash, dims } = cacheKeyBuilder.buildWmsFilteredKey({ layerName: layerRaw, cqlFilter, styles, z, x, y });
@@ -942,7 +943,7 @@ async function getFilteredWmsTileBuffer(layerRaw, cqlFilter, styles, z, x, y, pr
   const cacheKey = `wms-filtered/${safeGwcLayerKey(layerRaw)}/${filteredWmsVariantHash(cqlFilter, styles)}/${z}/${x}/${y}`;
 
   const stat = await fs.promises.stat(filePath).catch(() => null);
-  if (stat && Date.now() - stat.mtimeMs < FILTERED_WMS_TTL_MS) {
+  if (stat && stat.size > 0 && Date.now() - stat.mtimeMs < FILTERED_WMS_TTL_MS) {
     if (meta) meta.cacheHit = true;
     cacheIndex.touchAccess(filePath);
     return fs.promises.readFile(filePath);
@@ -962,7 +963,7 @@ async function getFilteredWmsTileBuffer(layerRaw, cqlFilter, styles, z, x, y, pr
   try {
     return await entry.promise;
   } catch (err) {
-    if (stat) {
+    if (stat && stat.size > 0) {
       if (meta) meta.cacheHit = "stale";
       cacheIndex.touchAccess(filePath);
       return fs.promises.readFile(filePath);
@@ -979,7 +980,7 @@ async function getGwcTileBuffer(layerRaw, z, x, y, priority = "normal", meta = n
   const cacheKey = `gwc/${safeGwcLayerKey(layerRaw)}/${z}/${x}/${y}`;
 
   const stat = await fs.promises.stat(filePath).catch(() => null);
-  if (stat && Date.now() - stat.mtimeMs < GWC_TILE_TTL_MS) {
+  if (stat && stat.size > 0 && Date.now() - stat.mtimeMs < GWC_TILE_TTL_MS) {
     if (meta) meta.cacheHit = true;
     cacheIndex.touchAccess(filePath);
     return fs.promises.readFile(filePath);
@@ -999,7 +1000,7 @@ async function getGwcTileBuffer(layerRaw, z, x, y, priority = "normal", meta = n
   try {
     return await entry.promise;
   } catch (err) {
-    if (stat) {
+    if (stat && stat.size > 0) {
       if (meta) meta.cacheHit = "stale"; // upstream failed, served a TTL-expired cached copy
       cacheIndex.touchAccess(filePath);
       return fs.promises.readFile(filePath); // serve stale over nothing
@@ -1268,7 +1269,7 @@ async function fetchBoundaryGeoJson(layerName, priority = "normal") {
   const diskPath = path.join(BOUNDARY_CACHE_ROOT, `${safeKey}.json`);
   try {
     const stat = await fs.promises.stat(diskPath).catch(() => null);
-    if (stat && Date.now() - stat.mtimeMs < BOUNDARY_TTL_MS) {
+    if (stat && stat.size > 0 && Date.now() - stat.mtimeMs < BOUNDARY_TTL_MS) {
       const geojson = JSON.parse(await fs.promises.readFile(diskPath, "utf-8"));
       boundaryGeoJsonMemoryCache.set(safeKey, { geojson, fetchedAt: stat.mtimeMs });
       cacheIndex.touchAccess(diskPath);
@@ -1295,7 +1296,7 @@ async function fetchBoundaryGeoJson(layerName, priority = "normal") {
     boundaryGeoJsonMemoryCache.set(safeKey, { geojson: parsed, fetchedAt: Date.now() });
     await ensureDir(BOUNDARY_CACHE_ROOT);
     const serialized = JSON.stringify(parsed);
-    await fs.promises.writeFile(diskPath, serialized).catch(() => {});
+    await atomicWriteFile(diskPath, serialized).catch(() => {});
 
     cacheIndex.recordWrite({
       cacheKey: cacheKeyStr,
