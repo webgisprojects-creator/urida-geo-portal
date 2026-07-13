@@ -22,6 +22,9 @@ import telemetryRoutes from "./routes/telemetry.js";
 import wfsCacheRoutes, { startWfsCacheEvictionSchedule } from "./routes/wfsCache.js";
 import { startCacheWarmer } from "./services/cacheWarmer.js";
 import { startMetricsSampler, getCurrentMetrics } from "./services/metricsSampler.js";
+import * as cacheIndex from "./cache/cacheIndex.js";
+import * as cacheMetrics from "./cache/cacheMetrics.js";
+import { sharedTilePromiseManager } from "./cache/promiseManager.js";
 
 // Use __dirname-relative path so this works regardless of which directory
 // the process is started from (project root, server/, or anywhere else).
@@ -194,6 +197,35 @@ app.get('/api/internal/metrics', verifyToken, verifyRole('admin'), (req, res) =>
   res.json(getCurrentMetrics());
 });
 
+// Smart Shared Cache Delivery Engine diagnostics — admin-only, read-only,
+// off the request path entirely (every call here queries the SQLite index
+// or in-memory counters, never walks the tile-cache directory tree unless
+// ?deep=true is explicitly passed, which runs the same bounded/yielding
+// walk the one-time backfill uses). See server/scripts/cache-diagnostics.mjs
+// for the equivalent CLI form when a browser session isn't available.
+app.get('/api/internal/cache-diagnostics', verifyToken, verifyRole('admin'), async (req, res) => {
+  try {
+    const includeUnindexedEstimate = String(req.query.deep || '').toLowerCase() === 'true';
+    const [health] = await Promise.all([
+      cacheIndex.getIndexHealthReport({ includeUnindexedEstimate }),
+    ]);
+    res.json({
+      metrics: cacheMetrics.snapshot(),
+      health,
+      eviction: {
+        config: cacheIndex.getEvictionConfigSnapshot(),
+        lastResult: cacheIndex.getLastEvictionResult(),
+      },
+      promiseManager: sharedTilePromiseManager.stats(),
+      hitAccumulator: cacheIndex.getHitAccumulatorStats(),
+      dbPath: cacheIndex.getDbPathForDiagnostics(),
+    });
+  } catch (err) {
+    console.error('cache-diagnostics endpoint failed:', err.message);
+    res.status(500).json({ error: 'Unable to build cache diagnostics report' });
+  }
+});
+
 // Under PM2 cluster mode (deploy/ecosystem.config.js), this module loads
 // once per worker process — running the cache warmer or the eviction
 // sweep in every worker would multiply the same disk-scan/GeoServer-warm
@@ -212,6 +244,11 @@ if (isSingletonWorker) {
   startCacheWarmer();
 }
 startMetricsSampler();
+// Per-worker, NOT gated by isSingletonWorker: hit_count/last_accessed_at
+// accounting (cacheIndex.js) is in-memory per-process, same as the
+// concurrency limiters — every worker accumulates hits for the requests it
+// personally served and must flush its own batch, not just worker 0.
+cacheIndex.startHitAccumulatorFlushSchedule();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

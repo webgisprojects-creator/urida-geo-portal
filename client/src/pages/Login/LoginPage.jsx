@@ -17,6 +17,9 @@ const ceoSmall = require("../../assets/Login/ceo.png");
 const uridaLogo = require("../../assets/Login/URIDA.PNG");
 const rsacBanner = require("../../assets/Login/rsac_banner.png");
 
+// Small, readable build marker in the footer corner.
+const APP_VERSION = "26.7.10";
+
 const API_BASE_URL = "/api/auth";
 
 export default function LoginPage() {
@@ -342,6 +345,7 @@ export default function LoginPage() {
         <div className="footer-content">
           <img src={rsacBanner} alt="RSAC Banner" className="footer-banner" />
         </div>
+        <span className="footer-version">v{APP_VERSION}</span>
       </footer>
 
       {/* LOGIN POPUP OVERLAY */}

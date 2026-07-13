@@ -7,6 +7,13 @@ import { fileURLToPath } from "url";
 import { geoserverLimiter } from "../utils/concurrencyLimiter.js";
 import { verifyToken } from "../middleware/authMiddleware.js";
 import { isKnownGeoserverLayer } from "../utils/knownGeoserverLayers.js";
+import { buildWfsBboxKey } from "../cache/cacheKey.js";
+import * as cacheIndex from "../cache/cacheIndex.js";
+import { getShareScope } from "../cache/cachePolicy.js";
+import { checkAccess, computeAccessPolicyHash } from "../cache/tileAccessPolicy.js";
+import { applyCacheHeaders } from "../cache/cacheHeaders.js";
+import * as cacheMetrics from "../cache/cacheMetrics.js";
+import { atomicWriteFile } from "../utils/atomicFile.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -123,6 +130,25 @@ router.get("/api/road-wfs-cache", verifyToken, async (req, res) => {
     return res.status(400).json({ error: "Unknown layer" });
   }
 
+  const startedAt = Date.now();
+  const family = "wfs-bbox";
+  const access = checkAccess(req, { family });
+  if (!access.allowed) {
+    cacheMetrics.recordDenied(family);
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const { hash: keyHash } = buildWfsBboxKey({ layerName: layer, bbox, srsName, maxFeatures, cqlFilter });
+  const accessPolicyHash = computeAccessPolicyHash({ shareScope: getShareScope(family), layerName: layer });
+  const emitHeaders = (nodeCache) =>
+    applyCacheHeaders(res, {
+      nodeCache,
+      family,
+      shareScope: getShareScope(family),
+      keyHash,
+      accessPolicyHash,
+      loadMs: Date.now() - startedAt,
+    });
+
   const key = cacheKeyFor(req.query);
   const filePath = path.join(CACHE_ROOT, `${key}.json`);
   // Declared outside the try/catch (not inside `try`) so the catch block
@@ -133,9 +159,12 @@ router.get("/api/road-wfs-cache", verifyToken, async (req, res) => {
 
   try {
     const stat = await fs.promises.stat(filePath).catch(() => null);
-    if (stat && Date.now() - stat.mtimeMs < CACHE_TTL_MS) {
+    if (stat && stat.size > 0 && Date.now() - stat.mtimeMs < CACHE_TTL_MS) {
       res.set("Cache-Control", "public, max-age=60");
       res.set("X-Cache", "HIT");
+      emitHeaders("HIT");
+      cacheMetrics.recordHit(family);
+      cacheIndex.touchAccess(filePath);
       res.type("application/json");
       return res.sendFile(filePath);
     }
@@ -215,7 +244,26 @@ router.get("/api/road-wfs-cache", verifyToken, async (req, res) => {
               { label: `wfs ${layer}/${req.query.bbox || "bbox"}`, signal: controller.signal }
             );
             await ensureDir(CACHE_ROOT);
-            await fs.promises.writeFile(filePath, body);
+            await atomicWriteFile(filePath, body);
+            const { key: cacheKeyStr, hash: cacheKeyHash, dims } = buildWfsBboxKey({
+              layerName: layer,
+              bbox,
+              srsName,
+              maxFeatures,
+              cqlFilter,
+            });
+            cacheIndex.recordWrite({
+              cacheKey: cacheKeyStr,
+              cacheKeyHash,
+              family: "wfs-bbox",
+              shareScope: getShareScope("wfs-bbox"),
+              layerName: String(layer),
+              cqlNormalized: dims.cqlNormalized,
+              cqlHash: dims.cqlHash,
+              filePath,
+              sizeBytes: Buffer.byteLength(body),
+              accessPolicyHash: computeAccessPolicyHash({ shareScope: getShareScope("wfs-bbox"), layerName: layer }),
+            });
             return body;
           } finally {
             clearTimeout(timeout);
@@ -240,6 +288,8 @@ router.get("/api/road-wfs-cache", verifyToken, async (req, res) => {
     entry.refCount -= 1;
     res.set("Cache-Control", "public, max-age=60");
     res.set("X-Cache", "MISS");
+    emitHeaders("MISS");
+    cacheMetrics.recordMiss(family);
     res.type("application/json");
     return res.send(body);
   } catch (err) {
@@ -248,9 +298,12 @@ router.get("/api/road-wfs-cache", verifyToken, async (req, res) => {
     // Graceful degradation: serve a stale cached copy over a hard failure
     // if we have one, same principle as the GWC tile cache.
     const stat = await fs.promises.stat(filePath).catch(() => null);
-    if (stat) {
+    if (stat && stat.size > 0) {
       res.set("Cache-Control", "public, max-age=60");
       res.set("X-Cache", "STALE");
+      emitHeaders("STALE");
+      cacheMetrics.recordStale(family);
+      cacheIndex.touchAccess(filePath);
       res.type("application/json");
       return res.sendFile(filePath);
     }

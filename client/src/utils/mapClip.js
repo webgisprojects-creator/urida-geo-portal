@@ -95,3 +95,67 @@ export function attachInvertedMask(layer, map, ringsRef, fillColor = "rgba(234,2
     ctx.restore();
   });
 }
+
+// ---------------------------------------------------------------------
+// Point-in-city-boundary test (used by "locate me" — a resolved GPS
+// position outside the current city's coverage shouldn't pan the map away
+// from it). Rings are the same flat coordinate-ring lists extractClipRings
+// produces, in the map's projection (EPSG:3857 everywhere this app uses
+// them, so plain Euclidean distance below is already in meters).
+// ---------------------------------------------------------------------
+
+// Even-odd ray-casting test — same winding-independent rule the clip/mask
+// functions above already rely on, so a coordinate is judged "inside" by
+// exactly the same logic that decides what's rendered as inside the city.
+function isCoordinateInRing(coordinate, ring) {
+  const [x, y] = coordinate;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    const crosses = (yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+function isCoordinateInRings(coordinate, rings) {
+  let inside = false;
+  rings.forEach((ring) => {
+    if (isCoordinateInRing(coordinate, ring)) inside = !inside;
+  });
+  return inside;
+}
+
+function distanceToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq === 0 ? 0 : ((px - x1) * dx + (py - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+function distanceToRings(coordinate, rings) {
+  const [x, y] = coordinate;
+  let min = Infinity;
+  rings.forEach((ring) => {
+    for (let i = 0; i < ring.length - 1; i++) {
+      const d = distanceToSegment(x, y, ring[i][0], ring[i][1], ring[i + 1][0], ring[i + 1][1]);
+      if (d < min) min = d;
+    }
+  });
+  return min;
+}
+
+// True if `coordinate` is inside the boundary rings, or within
+// `bufferMeters` of the nearest edge (a small tolerance for GPS jitter and
+// genuinely boundary-adjacent locations, per city). If no rings are loaded
+// yet (boundary still fetching, or this city has no zone/ward layer
+// configured), this fails open — it doesn't block "locate me" just because
+// the boundary hasn't arrived yet.
+export function isCoordinateWithinCityBounds(coordinate, rings, bufferMeters = 2000) {
+  if (!Array.isArray(rings) || !rings.length) return true;
+  if (isCoordinateInRings(coordinate, rings)) return true;
+  return distanceToRings(coordinate, rings) <= bufferMeters;
+}

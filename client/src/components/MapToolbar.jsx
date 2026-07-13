@@ -4,10 +4,39 @@ import "../assets/styles/Dashboard.css";
 import QueryPanel from "./QueryPanel";
 import { useLocation, useNavigate } from "react-router-dom";
 import { isChainageAvailable, chainageUnavailableMessage } from "../utils/chainageAvailability";
+import { DSS_MODULE_ORDER, resolveDssModule, DSS_STATUS } from "../assets/configs/dssLayerConfig";
+import dssStreetLightImage from "../assets/images/Street_light.JPG";
+import dssUnderdevelopedImage from "../assets/images/Underdeveloped_zones.JPG";
+import dssRoadMaintenanceImage from "../assets/images/road.png";
+import dssEncroachmentImage from "../assets/images/Encroachment.JPG";
+
+// Reference image shown in the DSS Info panel for each module — same source
+// images the old /dss page used. Purely presentational; layer/status data
+// still comes from dssLayerConfig.
+const DSS_INFO_IMAGES = {
+  streetLight: dssStreetLightImage,
+  underdeveloped: dssUnderdevelopedImage,
+  roadMaintenance: dssRoadMaintenanceImage,
+  encroachment: dssEncroachmentImage,
+};
+
+// Same FontAwesome classes the old /dss page's own buttons used for these
+// four modules — kept identical rather than generic circles.
+const DSS_MODULE_ICONS = {
+  streetLight: "fas fa-lightbulb",
+  underdeveloped: "fas fa-city",
+  roadMaintenance: "fas fa-road",
+  encroachment: "fas fa-ban",
+};
 
 const MapToolbar = ({
   onDataAnalysis,
   onDssRoad,
+  isDssMode = false,
+  activeDssModule = null,
+  onDssModuleSelect,
+  dssModuleStatus = null,
+  dssCheckingModule = null,
   onSearch,
   onQuery,
   onSummary,
@@ -53,6 +82,13 @@ const MapToolbar = ({
     : undefined;
   // const [showRoadFilter, setShowRoadFilter] = useState(false); // REMOVED local state
   const [isLoading, setIsLoading] = useState(false);
+  // DSS Info panel — only ever reflects whichever DSS module is currently
+  // rendered on the map (activeDssModule), never a module the user merely
+  // clicked while it was still pending/unavailable.
+  const [dssInfoOpen, setDssInfoOpen] = useState(false);
+  useEffect(() => {
+    if (!isDssMode || !activeDssModule) setDssInfoOpen(false);
+  }, [isDssMode, activeDssModule]);
 
   const [showSearchBox, setShowSearchBox] = useState(false);
   const [selectedRoads, setSelectedRoads] = useState({});
@@ -877,75 +913,246 @@ const MapToolbar = ({
     <>
       {/* Left Toolbar */}
       <div className="map-toolbar left-toolbar">
-        <button
-          className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
-          disabled={restrictedMode}
-          style={restrictedBtnStyle}
-          onClick={() => !restrictedMode && onStreetViewToggle?.(!streetViewVisible)}
-        >
-          <i className="fas fa-street-view" /> <span>Street View</span>
-        </button>
-
-        <button className="map-btn wide-btn" onClick={toggleRoadFilter}>
-          <i className="fas fa-road" /> <span>Road Network</span>
-        </button>
-
-        <button
-          className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
-          disabled={restrictedMode}
-          style={restrictedBtnStyle}
-          onClick={() => !restrictedMode && handleDataAnalysis()}
-        >
-          <i className="fas fa-chart-column" /> <span>Data Analysis</span>
-        </button>
-
-        <button
-          className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
-          disabled={restrictedMode}
-          style={restrictedBtnStyle}
-          onClick={() => !restrictedMode && onDssRoad?.()}
-        >
-          <i className="fas fa-sitemap" /> <span>DSS</span>
-        </button>
-         {/* chainage — "Patch Creation / View Chainage": grayed out (but still
-             clickable, so it can explain why) until some road layer is
-             visible on the map, since chainage needs a road to click. */}
-              <button
-            className={`map-btn wide-btn${chainageActive ? " active" : ""}${
-              !chainageActive && chainageDisabled ? " map-btn--disabled-look" : ""
-            }`}
-              onClick={() => {
-                if (!isChainageAvailable(city)) {
-                  if (mapRef?.current?.showFeatureNotice) {
-                    mapRef.current.showFeatureNotice({
-                      feature: "Chainage",
-                      message: chainageUnavailableMessage(city),
-                      dedupeKey: `${city}|chainage-unavailable`,
-                    });
-                  } else {
-                    window.alert(chainageUnavailableMessage(city));
-                  }
-                  return;
-                }
-                if (onChainageToggle) {
-                  onChainageToggle();
-                } else {
-                  // Fallback for any context without an in-place toggle handler.
-                  navigate(`/chainage?city=${city?.toLowerCase()}&mode=CHAINAGE`);
-                }
-              }}
-              title={
-                chainageActive
-                  ? "Exit Patch Creation / View Chainage (select a road on the map)"
-                  : chainageDisabled
-                    ? "Patch Creation / View Chainage — open a road layer first"
-                    : "Patch Creation / View Chainage"
-              }
+        {isDssMode ? (
+          <>
+            {/* Exit DSS / DSS Active — always-active indicator that also exits. */}
+            <button
+              className="map-btn wide-btn active"
+              onClick={() => onDssRoad?.()}
+              title="DSS Active — click to exit DSS mode"
             >
-            🔗
-          </button>
+              <i className="fas fa-sitemap" /> <span>Exit DSS</span>
+            </button>
 
+            {DSS_MODULE_ORDER.map((key) => {
+              const resolved = resolveDssModule(key, city);
+              if (!resolved) return null;
+              // Availability is only known for certain once a live WFS probe
+              // (or, for Encroachment, the confirmed-layer whitelist) has
+              // run — UNKNOWN renders as a normal-looking, clickable button
+              // (clicking triggers the probe); a terminal bad status greys
+              // it out. READY never needs to be assumed client-side.
+              const status = dssModuleStatus?.[key] || DSS_STATUS.UNKNOWN;
+              const knownUnavailable = status !== DSS_STATUS.READY && status !== DSS_STATUS.UNKNOWN;
+              const isChecking = dssCheckingModule === key;
+              const isActive = activeDssModule === key;
+              return (
+                <button
+                  key={key}
+                  className={`map-btn wide-btn${isActive ? " active" : ""}${knownUnavailable ? " map-btn--disabled-look" : ""}`}
+                  style={isChecking ? { opacity: 0.6 } : undefined}
+                  onClick={() => onDssModuleSelect?.(key)}
+                  title={knownUnavailable ? `${resolved.label} — data is in process` : resolved.label}
+                >
+                  <i className={DSS_MODULE_ICONS[key] || "fas fa-layer-group"} /> <span>{resolved.label}</span>
+                </button>
+              );
+            })}
+
+            {(() => {
+              // Info only ever reacts to a DSS layer that is actually open
+              // on the map right now — activeDssModule is only ever set to
+              // an already-confirmed-READY module (see Dashboard's
+              // handleDssModuleSelect), so its mere presence is sufficient.
+              const activeResolved = activeDssModule ? resolveDssModule(activeDssModule, city) : null;
+              const hasOpenLayer = !!activeResolved;
+              return (
+                <button
+                  className={`map-btn wide-btn${hasOpenLayer ? "" : " map-btn--disabled-look"}`}
+                  onClick={() => {
+                    if (!hasOpenLayer) {
+                      if (mapRef?.current?.showFeatureNotice) {
+                        mapRef.current.showFeatureNotice({
+                          feature: "DSS",
+                          message: "Open a DSS layer (e.g. Street Light) first, then use Info to view its details.",
+                          dedupeKey: `dss-info-none|${city}`,
+                        });
+                      }
+                      return;
+                    }
+                    setDssInfoOpen((v) => !v);
+                  }}
+                  title={hasOpenLayer ? `${activeResolved.label} info` : "Open a DSS layer first"}
+                >
+                  <i className="fas fa-circle-info" /> <span>Info</span>
+                </button>
+              );
+            })()}
+          </>
+        ) : (
+          <>
+            <button
+              className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+              disabled={restrictedMode}
+              style={restrictedBtnStyle}
+              onClick={() => !restrictedMode && onStreetViewToggle?.(!streetViewVisible)}
+            >
+              <i className="fas fa-street-view" /> <span>Street View</span>
+            </button>
+
+            <button className="map-btn wide-btn" onClick={toggleRoadFilter}>
+              <i className="fas fa-road" /> <span>Road Network</span>
+            </button>
+
+            <button
+              className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+              disabled={restrictedMode}
+              style={restrictedBtnStyle}
+              onClick={() => !restrictedMode && handleDataAnalysis()}
+            >
+              <i className="fas fa-chart-column" /> <span>Data Analysis</span>
+            </button>
+
+            <button
+              className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+              disabled={restrictedMode}
+              style={restrictedBtnStyle}
+              onClick={() => !restrictedMode && onDssRoad?.()}
+            >
+              <i className="fas fa-sitemap" /> <span>DSS</span>
+            </button>
+             {/* chainage — "Patch Creation / View Chainage": grayed out (but still
+                 clickable, so it can explain why) until some road layer is
+                 visible on the map, since chainage needs a road to click. */}
+                  <button
+                className={`map-btn wide-btn${chainageActive ? " active" : ""}${
+                  !chainageActive && chainageDisabled ? " map-btn--disabled-look" : ""
+                }`}
+                  onClick={() => {
+                    if (!isChainageAvailable(city)) {
+                      if (mapRef?.current?.showFeatureNotice) {
+                        mapRef.current.showFeatureNotice({
+                          feature: "Chainage",
+                          message: chainageUnavailableMessage(city),
+                          dedupeKey: `${city}|chainage-unavailable`,
+                        });
+                      } else {
+                        window.alert(chainageUnavailableMessage(city));
+                      }
+                      return;
+                    }
+                    if (onChainageToggle) {
+                      onChainageToggle();
+                    } else {
+                      // Fallback for any context without an in-place toggle handler.
+                      navigate(`/chainage?city=${city?.toLowerCase()}&mode=CHAINAGE`);
+                    }
+                  }}
+                  title={
+                    chainageActive
+                      ? "Exit Patch Creation / View Chainage (select a road on the map)"
+                      : chainageDisabled
+                        ? "Patch Creation / View Chainage — open a road layer first"
+                        : "Patch Creation / View Chainage"
+                  }
+                >
+                🔗
+              </button>
+          </>
+        )}
       </div>
+
+      {/* DSS Info panel — image reference for the currently active DSS
+          module. Closes via the × button (correct top-right corner of the
+          panel), clicking the overlay outside it, or toggling Info again. */}
+      {isDssMode && dssInfoOpen && activeDssModule && DSS_INFO_IMAGES[activeDssModule] && (() => {
+        // activeDssModule is only ever set by Dashboard once a module has
+        // been confirmed READY by a live WFS probe — no separate status
+        // check needed here.
+        const resolved = resolveDssModule(activeDssModule, city);
+        if (!resolved) return null;
+        return (
+          <div
+            className="dss-info-overlay"
+            onClick={() => setDssInfoOpen(false)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 100000,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "24px",
+              background: "rgba(15, 23, 42, 0.7)",
+              backdropFilter: "blur(4px)",
+            }}
+          >
+            <div
+              className="dss-info-panel"
+              onClick={(event) => event.stopPropagation()}
+              style={{
+                position: "relative",
+                width: "min(92vw, 920px)",
+                maxHeight: "88vh",
+                background: "#ffffff",
+                borderRadius: "16px",
+                boxShadow: "0 25px 60px rgba(0, 0, 0, 0.35)",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                className="dss-info-header"
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "14px 18px",
+                  borderBottom: "1px solid #e2e8f0",
+                  fontWeight: 700,
+                  color: "#1e293b",
+                  background: "#f8fafc",
+                }}
+              >
+                <span>{resolved.label}</span>
+                <button
+                  className="dss-info-close"
+                  onClick={() => setDssInfoOpen(false)}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "#475569",
+                    fontSize: "28px",
+                    lineHeight: 1,
+                    cursor: "pointer",
+                  }}
+                  aria-label="Close info image"
+                >
+                  ×
+                </button>
+              </div>
+              <div
+                style={{
+                  width: "100%",
+                  padding: "18px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "#ffffff",
+                }}
+              >
+                <img
+                  className="dss-info-image"
+                  src={DSS_INFO_IMAGES[activeDssModule]}
+                  alt={resolved.label}
+                  style={{
+                    display: "block",
+                    maxWidth: "100%",
+                    maxHeight: "calc(88vh - 90px)",
+                    width: "auto",
+                    height: "auto",
+                    objectFit: "contain",
+                    borderRadius: "8px",
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Right Toolbar */}
       <div className="map-toolbar right-toolbar">
@@ -1247,28 +1454,32 @@ const MapToolbar = ({
           </button>
         </div>
 
-        <button
-          className={`map-btn wide-btn right-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
-          disabled={restrictedMode}
-          style={restrictedBtnStyle}
-          onClick={() => {
-            if (restrictedMode) return;
-            setActiveTool("query");
-            setShowSearchBox(false);
-            setControlsVisible(false);
-          }}
-        >
-          <span>Query</span> <i className="fas fa-filter" />
-        </button>
+        {!isDssMode && (
+          <button
+            className={`map-btn wide-btn right-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+            disabled={restrictedMode}
+            style={restrictedBtnStyle}
+            onClick={() => {
+              if (restrictedMode) return;
+              setActiveTool("query");
+              setShowSearchBox(false);
+              setControlsVisible(false);
+            }}
+          >
+            <span>Query</span> <i className="fas fa-filter" />
+          </button>
+        )}
 
-        <button
-          className={`map-btn wide-btn right-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
-          disabled={restrictedMode}
-          style={restrictedBtnStyle}
-          onClick={() => !restrictedMode && onSummary?.()}
-        >
-          <span>Summary</span> <i className="fas fa-table" />
-        </button>
+        {!isDssMode && (
+          <button
+            className={`map-btn wide-btn right-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+            disabled={restrictedMode}
+            style={restrictedBtnStyle}
+            onClick={() => !restrictedMode && onSummary?.()}
+          >
+            <span>Summary</span> <i className="fas fa-table" />
+          </button>
+        )}
 
         <button className="map-btn wide-btn right-btn" onClick={onClear}>
           <span>Clear</span> <i className="fas fa-trash" />
