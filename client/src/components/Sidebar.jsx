@@ -40,7 +40,8 @@ const otherIconMap = {
 };
 
 const networkIconMap = {
-    sewage_diameter: "fa-faucet-drip",
+    sewage: "fa-water",
+    sewage_diameter: "fa-drafting-compass",
     sewage_length: "fa-ruler-horizontal",
     lulc: "fa-map",
     slum_roads: "fa-road",
@@ -319,7 +320,23 @@ const Sidebar = ({
                                             ))}
                                         </div>
                                     )}
-                                    {isGroup && isChecked && key !== "slum" && (
+                                    {isGroup && isChecked && key === "sewage" && (
+                                        <div className="sub-options-radio">
+                                            {Object.entries(specCfg.options).map(([optKey, optCfg]) => (
+                                                <label key={optKey}>
+                                                    <input
+                                                        type="radio"
+                                                        name={`specialized-${key}`}
+                                                        checked={String(activeOption) === String(optKey)}
+                                                        onChange={() => toggleLayer("network", key, true, optKey)}
+                                                    />
+                                                    <i className={`icon fa-solid ${optKey === "diameter" ? "fa-drafting-compass" : "fa-ruler-horizontal"}`}></i>
+                                                    <span className="text">{typeof optCfg === "string" ? formatLabel(optKey) : optCfg.label}</span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {isGroup && isChecked && key !== "slum" && key !== "sewage" && (
                                         <div className="sub-options-selector">
                                             {Object.entries(specCfg.options).map(([optKey, optCfg]) => (
                                                 <button

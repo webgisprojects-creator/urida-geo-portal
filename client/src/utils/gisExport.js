@@ -661,6 +661,10 @@ export const exportToExcel = async (rows, city, opts = {}) => {
         return Array.from(keys).map((k) => ({ label: toLabel(k), key: k }));
       })());
 
+  if (!columns.length) {
+    throw new Error("No exportable columns found.");
+  }
+
   const isNumericExportColumn = (key) => {
     const values = inputRows
       .slice(0, 200)
@@ -669,17 +673,24 @@ export const exportToExcel = async (rows, city, opts = {}) => {
     return values.length > 0 && values.every((value) => Number.isFinite(Number(value)));
   };
 
-  const schema = columns.map((col) => {
+  const sheetColumns = columns.map((col) => {
     const isNumeric = isNumericExportColumn(col.key);
     return {
-      column: col.label,
-      type: isNumeric ? Number : String,
-      value: (row) => {
+      header: { value: col.label, fontWeight: "bold" },
+      cell: (row) => {
         const val = row?.[col.key];
-        if (val === null || val === undefined) return isNumeric ? undefined : "";
+        if (val === null || val === undefined || String(val).trim() === "") {
+          return { value: isNumeric ? null : "", type: isNumeric ? Number : String };
+        }
         const asNum = Number(val);
-        if (isNumeric && Number.isFinite(asNum) && String(val).trim() !== "") return asNum;
-        return String(val);
+        if (isNumeric && Number.isFinite(asNum)) {
+          return {
+            value: asNum,
+            type: Number,
+            ...(NUMERIC_KEYS.includes(col.key) ? { format: "#,##0.00" } : { format: "#,##0" }),
+          };
+        }
+        return { value: String(val), type: String };
       },
       width: Math.min(
         Math.max(
@@ -692,11 +703,12 @@ export const exportToExcel = async (rows, city, opts = {}) => {
   });
 
   const dateStr = new Date().toISOString().slice(0, 10);
-  await writeXlsxFile(inputRows, {
-    schema,
-    fileName: `${safeTitle}_${String(city).toLowerCase()}_${dateStr}.xlsx`,
+  const fileName = `${safeTitle}_${String(city).toLowerCase()}_${dateStr}.xlsx`;
+  const blob = await writeXlsxFile(inputRows, {
+    columns: sheetColumns,
     sheet: opts?.sheetName || (hasRoadColumns ? "Road Data" : "Table Data"),
-  });
+  }).toBlob();
+  saveAs(blob, fileName);
 };
 
 // ─── Convert GeoJSON geometry to KML coords string ────────────────────────────

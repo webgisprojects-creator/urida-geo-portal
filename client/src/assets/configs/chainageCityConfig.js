@@ -17,6 +17,14 @@ export const chainageCityConfig = {
         chainageApi: "/api/chainage",
     },
 
+    ghaziabad: {
+        workspace: "Chainage",
+        roadLayer: "Chainage:Ghaziabad_Chainage_Segment",
+        chainageLayer: "Chainage:Ghaziabad_Chainage_Points",
+        roadIdField: "road_id",
+        chainageField: "distance",
+        chainageApi: "/api/chainage",
+    }
     // jhansi: {
     //     roadLayer: "india:jhansi_roads",
     //     chainageLayer: "india:jhansi_chainage",

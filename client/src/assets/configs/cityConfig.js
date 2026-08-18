@@ -260,6 +260,19 @@ export const cityConfig = {
       religious: "Amenities:Ghaziabad_Religious",
       state_gov: "Amenities:Ghaziabad_State_Gov",
     },
+
+    specializedNetworks: {
+      drainage: {
+        label: "Drainage Network",
+        options: {
+          network: "Road_Network:Ghaziabad_Drain",
+          condition: "Road_Network:Ghaziabad_Drain_Condition",
+          material: "Road_Network:Ghaziabad_Drain_Material",
+          status: "Road_Network:Ghaziabad_Drain_Status",
+          type: "Road_Network:Ghaziabad_Drain_Type",
+        },
+      },
+    },
   },
 
   gorakhpur: {
@@ -394,6 +407,18 @@ export const cityConfig = {
       religious: "Amenities:Kanpur_Religious",
       state_gov: "Amenities:Kanpur_State_Gov",
     },
+    specializedNetworks: {
+      drainage: {
+        label: "Drainage Network",
+        options: {
+          network: "Road_Network:Kanpur_Drain",
+          condition: "Road_Network:Kanpur_Drain_Condition",
+          material: "Road_Network:Kanpur_Drain_Material",
+          status: "Road_Network:Kanpur_Drain_Status",
+          type: "Road_Network:Kanpur_Drain_Type",
+        },
+      },
+    },
 
     LCLUClassifications: {
       Kanpur_LCLU_Bridge_Culvert: "Amenities:Kanpur_LCLU_Bridge_Culvert",
@@ -417,8 +442,15 @@ export const cityConfig = {
 
     roadLayer: "Road_Network:Lucknow_Road_Network",
 
-    sewageLayer_dia: "Road_Network:Lucknow_Sewage_Diameter_Net",
-    sewageLayer_len: "Road_Network:Lucknow_Sewage_Length_Net",
+    specializedNetworks: {
+      sewage: {
+        label: "Sewage Network",
+        options: {
+          diameter: { label: "Diameter", layer: "Road_Network:Lucknow_Sewage_Diameter_Net" },
+          length: { label: "Length", layer: "Road_Network:Lucknow_Sewage_Length_Net" },
+        },
+      },
+    },
 
     roadClassifications: {
       category: { layer: "Road_Network:Lucknow_Road_Network_Category" },

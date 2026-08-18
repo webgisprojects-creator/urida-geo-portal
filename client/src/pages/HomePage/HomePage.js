@@ -13,6 +13,7 @@ import "ol/ol.css";
 import Map from "ol/Map";
 import View from "ol/View";
 import TileLayer from "ol/layer/Tile";
+import LayerGroup from "ol/layer/Group";
 import ImageLayer from "ol/layer/Image";
 import VectorLayer from "ol/layer/Vector";
 import XYZ from "ol/source/XYZ";
@@ -364,7 +365,7 @@ const resolveCmGridEntry = (entry) => {
 };
 
 const CM_GRID_MENU_OPTIONS = [
-  { value: "", label: "CM-Grid Roads", kind: "header" },
+  
   { value: "Phase1", label: "Phase 1", unavailableLabel: "Phase 1" },
   { value: "Phase2", label: "Phase 2", unavailableLabel: "Phase 2" },
   { value: "Phase3", label: "Phase 3", unavailableLabel: "Phase 3" },
@@ -516,7 +517,7 @@ export default function HomePage() {
   const baseLayerBoundaryRef = useRef(null);
 
   const [selectedCity, setSelectedCity] = useState("");
-  const [selectedPhase, setSelectedPhase] = useState("");
+  const [selectedPhases, setSelectedPhases] = useState([]);
   const [phaseMenuOpen, setPhaseMenuOpen] = useState(false);
   const [cmGridNotice, setCmGridNotice] = useState(null);
   // const [cityData] = useState(null);
@@ -601,10 +602,7 @@ export default function HomePage() {
     return options;
   }, [selectedCity]);
 
-  const selectedPhaseLabel = useMemo(
-    () => phaseOptions.find((option) => option.value === selectedPhase)?.label || "CM-Grid Roads",
-    [phaseOptions, selectedPhase],
-  );
+  const selectedPhaseLabel = "CM-Grid Roads";
 
   useEffect(() => {
     if (!phaseMenuOpen) return undefined;
@@ -617,19 +615,10 @@ export default function HomePage() {
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [phaseMenuOpen]);
 
-  const cmGridLegendUrl = useMemo(() => {
-    if (!selectedCity || !selectedPhase) return "";
-    const entry = resolveCmGridEntry(CM_GRID_WMS[selectedCity]?.[selectedPhase]);
-    if (!entry) return "";
-    const styleParam = entry.style
-      ? `&STYLE=${encodeURIComponent(entry.style)}`
-      : "";
-    return `${entry.baseUrl}/${entry.workspace}/wms?SERVICE=WMS&REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&LAYER=${encodeURIComponent(
-      entry.layerName,
-    )}${styleParam}&LEGEND_OPTIONS=forceLabels:on;fontName:Arial;fontSize:11&_=${encodeURIComponent(
-      `${selectedCity}-${selectedPhase}`,
-    )}`;
-  }, [selectedCity, selectedPhase]);
+  const getCmGridLayers = useCallback(
+    () => cmGridRef.current?.getLayers?.().getArray?.().filter(Boolean) || [],
+    [],
+  );
 
   // ✅ Toggle Overlay Layers
   const getBasemapBoundaryForCity = useCallback((cityKey) => {
@@ -1125,13 +1114,7 @@ export default function HomePage() {
           }
 
           // --- ADD WMS HOVER TOOLTIP FOR ROADS ---
-          const candidates = [];
-          if (
-            mapRef.current.cmGridRef?.current &&
-            mapRef.current.cmGridRef.current.getVisible()
-          ) {
-            candidates.push(mapRef.current.cmGridRef.current);
-          }
+          const candidates = getCmGridLayers().filter((layer) => layer.getVisible());
 
           if (candidates.length === 0) {
             if (mapRef.current.roadHoverEl)
@@ -1403,21 +1386,13 @@ export default function HomePage() {
           isPhase2: false,
         });
       }
-      if (
-        mapRef.current.cmGridRef?.current &&
-        mapRef.current.cmGridRef.current.getVisible()
-      ) {
-        const sourceUrl =
-          mapRef.current.cmGridRef.current.getSource().getUrls?.()?.[0] ||
-          mapRef.current.cmGridRef.current.getSource().getUrl?.() ||
-          "";
+      getCmGridLayers().filter((layer) => layer.getVisible()).forEach((layer) => {
+        const sourceUrl = layer.getSource().getUrls?.()?.[0] || layer.getSource().getUrl?.() || "";
         candidates.push({
-          layer: mapRef.current.cmGridRef.current,
-          isPhase2:
-            PHASE2_GEOSERVER_BASE !== GEOSERVER_BASE &&
-            sourceUrl.includes(PHASE2_GEOSERVER_BASE),
+          layer,
+          isPhase2: PHASE2_GEOSERVER_BASE !== GEOSERVER_BASE && sourceUrl.includes(PHASE2_GEOSERVER_BASE),
         });
-      }
+      });
 
       if (candidates.length === 0) return;
 
@@ -1702,8 +1677,7 @@ export default function HomePage() {
       // 3. Reset opacity on WMS layers
       if (mapRef.current.above10mRef?.current)
         mapRef.current.above10mRef.current.setOpacity(1);
-      if (mapRef.current.cmGridRef?.current)
-        mapRef.current.cmGridRef.current.setOpacity(1);
+      getCmGridLayers().forEach((layer) => layer.setOpacity(1));
 
       // 4. Zoom map back to fit the current city bounds
       if (selectedCityRef.current && mapRef.current.fitViewToCityBoundaryFn) {
@@ -2600,51 +2574,28 @@ export default function HomePage() {
   };
 
   // CM-Grid / GPR WMS
-  const addCmGridLayer = (city, phase) => {
+  const addCmGridLayer = (city, phases) => {
     removeLayer(cmGridRef);
-    const entry = resolveCmGridEntry(CM_GRID_WMS[city]?.[phase]);
-    if (!entry) return;
-
-    const layer = new TileLayer({
-      title: `${city.toUpperCase()} ${phase}`,
-      opacity: 0, // graceful fade-in
-      zIndex: 600,
-      source: new TileWMS({
-        url: `${entry.baseUrl}/${entry.workspace}/wms`,
-        params: {
-          LAYERS: entry.layerName,
-          FORMAT: "image/png",
-          VERSION: "1.3.0",
-          TRANSPARENT: true,
-          TILED: true,
-          FORMAT_OPTIONS: "antiAlias:false",
-          ...(entry.style ? { STYLES: entry.style } : {}),
-        },
-        serverType: "geoserver",
-        crossOrigin: "anonymous",
-        wrapX: false,
-      }),
-      visible: true,
-      imageSmoothing: false,
-    });
-
+    const layers = (Array.isArray(phases) ? phases : [phases])
+      .map((phase, index) => {
+        const entry = resolveCmGridEntry(CM_GRID_WMS[city]?.[phase]);
+        if (!entry) return null;
+        return new TileLayer({
+          title: `${city.toUpperCase()} ${phase}`,
+          opacity: 1,
+          zIndex: 600 + index,
+          source: new TileWMS({ url: `${entry.baseUrl}/${entry.workspace}/wms`, params: { LAYERS: entry.layerName, FORMAT: "image/png", VERSION: "1.3.0", TRANSPARENT: true, TILED: true, FORMAT_OPTIONS: "antiAlias:false", ...(entry.style ? { STYLES: entry.style } : {}) }, serverType: "geoserver", crossOrigin: "anonymous", wrapX: false }),
+          visible: true,
+          imageSmoothing: false,
+        });
+      })
+      .filter(Boolean);
+    if (layers.length === 0) return;
+    const group = new LayerGroup({ layers, visible: true, zIndex: 600 });
     setLayerVisibility((prev) => ({ ...prev, cmGrid: true }));
-
-    const map =
-      mapRef.current?.instance || mapRef.current?.map || mapRef.current;
-    if (map && typeof map.addLayer === "function") {
-      map.addLayer(layer);
-      layer.once("postrender", () => {
-        let op = 0;
-        const step = () => {
-          op = Math.min(1, op + 0.08);
-          layer.setOpacity(op);
-          if (op < 1) requestAnimationFrame(step);
-        };
-        requestAnimationFrame(step);
-      });
-    }
-    cmGridRef.current = layer;
+    const map = mapRef.current?.instance || mapRef.current?.map || mapRef.current;
+    if (map && typeof map.addLayer === "function") map.addLayer(group);
+    cmGridRef.current = group;
   };
 
   /* ----------------- EVENTS ----------------- */
@@ -2683,7 +2634,7 @@ export default function HomePage() {
     if (!map) return;
 
     const view = map.getView();
-    setSelectedPhase("");
+    setSelectedPhases([]);
 
     if (!city) {
       removeLayer(boundaryRef);
@@ -2723,25 +2674,18 @@ export default function HomePage() {
   }, [cmGridNotice]);
 
   const handlePhaseChange = (phase, option) => {
-    if (option && option.available === false) {
+    if (!phase || option?.kind === "header") return;
+    if (option?.available === false) {
       showCmGridUnavailableNotice(option);
-      setPhaseMenuOpen(false);
       return;
     }
-
-    setSelectedPhase(phase);
+    const next = selectedPhases.includes(phase)
+      ? selectedPhases.filter((value) => value !== phase)
+      : [...selectedPhases, phase];
+    setSelectedPhases(next);
     setCmGridNotice(null);
-    setPhaseMenuOpen(false);
-    removeLayer(cmGridRef);
-
-    if (phase) {
-      addCmGridLayer(selectedCity, phase);
-    } else {
-      // Phase cleared -> ensure Above 10m is visible if toggle is on
-      if (layerVisibility.above10m && !above10mRef.current) {
-        addAbove10mLayer(selectedCity);
-      }
-    }
+    if (next.length > 0) addCmGridLayer(selectedCity, next);
+    else removeLayer(cmGridRef);
   };
 
   const handleDashboardClick = () => {
@@ -2823,27 +2767,20 @@ export default function HomePage() {
         baseUrl: GEOSERVER_BASE,
       });
     }
-    if (layerVisibility.cmGrid && selectedPhase) {
-      if (selectedPhase === "GPR" && CM_GRID_WMS[selectedCity]?.GPR) {
-        const entry = resolveCmGridEntry(CM_GRID_WMS[selectedCity].GPR);
+    if (layerVisibility.cmGrid && selectedCity) {
+      selectedPhases.forEach((phase) => {
+        const entry = resolveCmGridEntry(CM_GRID_WMS[selectedCity]?.[phase]);
+        if (!entry) return;
         arr.push({
           layerName: entry.layerName,
-          label: "GPR Priority",
+          label: phase === "GPR" ? "GPR Priority" : `${phaseOptions.find((option) => option.value === phase)?.label || phase} Progress`,
           baseUrl: entry.baseUrl,
           style: entry.style,
         });
-      } else if (CM_GRID_WMS[selectedCity]?.[selectedPhase]) {
-        const entry = resolveCmGridEntry(CM_GRID_WMS[selectedCity][selectedPhase]);
-        arr.push({
-          layerName: entry.layerName,
-          label: `${selectedPhase} Progress`,
-          baseUrl: entry.baseUrl,
-          style: entry.style,
-        });
-      }
+      });
     }
     return arr;
-  }, [layerVisibility, selectedCity, selectedPhase]);
+  }, [layerVisibility, phaseOptions, selectedCity, selectedPhases]);
 
   /* ----------------- RENDER ----------------- */
 
@@ -2977,29 +2914,15 @@ export default function HomePage() {
                   {phaseMenuOpen && (
                     <div className="phase-menu__list" role="listbox">
                       {phaseOptions.map((option) => {
-                        const isSelected = option.value === selectedPhase;
+                        const isSelected = selectedPhases.includes(option.value);
                         const isDisabled = option.available === false;
+                        if (option.kind === "header") {
+                          return <div key={option.label} className="phase-menu__option phase-menu__option--header">{option.label}</div>;
+                        }
                         return (
-                          <button
-                            key={option.value || "cm-grid-default"}
-                            type="button"
-                            className={[
-                              "phase-menu__option",
-                              option.kind === "header" ? "phase-menu__option--header" : "",
-                              isSelected ? "phase-menu__option--selected" : "",
-                              isDisabled ? "phase-menu__option--disabled" : "",
-                            ].filter(Boolean).join(" ")}
-                            role="option"
-                            aria-selected={isSelected}
-                            aria-disabled={isDisabled}
-                            onClick={() => handlePhaseChange(option.value, option)}
-                          >
-                            <span>{option.label}</span>
-                            {isDisabled && (
-                              <span className="phase-menu__option-note">
-                                Not available
-                              </span>
-                            )}
+                          <button key={option.value} type="button" className={["phase-menu__option", isSelected ? "phase-menu__option--selected" : "", isDisabled ? "phase-menu__option--disabled" : ""].filter(Boolean).join(" ")} role="menuitemcheckbox" aria-checked={isSelected} aria-disabled={isDisabled} onClick={() => handlePhaseChange(option.value, option)}>
+                            <span className="phase-menu__option-main"><input type="checkbox" className="phase-menu__checkbox" checked={isSelected} readOnly tabIndex={-1} disabled={isDisabled} /><span>{option.label}</span></span>
+                            {isDisabled && <span className="phase-menu__option-note">Not available</span>}
                           </button>
                         );
                       })}
@@ -3079,6 +3002,7 @@ export default function HomePage() {
           className={styles["map-reset-btn"] || "map-reset-btn"}
           onClick={() => {
             setSelectedCity("");
+            setSelectedPhases([]);
             setLayerVisibility((prev) => ({ ...prev, upDistrict: true }));
             mapRef.current?.upDistrictLayer?.setVisible(true);
             localStorage.removeItem("selectedCity");
@@ -3274,10 +3198,9 @@ export default function HomePage() {
                   },
                   {
                     key: "cmGrid",
-                    label:
-                      selectedPhase === "GPR" ? "GPR Data" : "CM-Grid Roads",
+                    label: "CM-Grid Roads",
                     alwaysShow: false,
-                    show: !!selectedPhase,
+                    show: selectedPhases.length > 0,
                     disabled: !cmGridRef.current,
                   },
                 ]

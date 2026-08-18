@@ -2,7 +2,7 @@
 import { pool } from "./config/db.js";
 import express from "express";
 import NodeCache from "node-cache";
-import { getRoadTable, getWardTable, citySchemaMap, getAmenityTable, getCityUtmEpsg } from "./config/cityConfig.js";
+import { getRoadTable, getWardTable, citySchemaMap, getAmenityTable, getCityUtmEpsg, getDrainTable } from "./config/cityConfig.js";
 import { verifyToken } from "./middleware/authMiddleware.js";
 import {
   refreshUnderdevelopedAnalysis,
@@ -369,7 +369,7 @@ async function resolveRelationForLayer(schema, cityCode, layerName) {
     const filtered = includeCity ? tokens : tokens.filter((t) => t !== city);
     if (filtered.length === 0) return null;
     const conditions = filtered
-      .map((_, i) => `lower(c.relname) LIKE ${i + 2}`)
+      .map((_, i) => `lower(c.relname) LIKE $${i + 2}`)
       .join(" AND ");
     return {
       text: `
@@ -654,6 +654,8 @@ router.get("/:cityCode/distinct/:column", async (req, res) => {
 });
 
 router.get("/:cityCode/specialized-details", async (req, res) => {
+  let debugStage = "init";
+  let resolutionDebug = null;
   try {
     const { cityCode } = req.params;
     const layer = String(req.query.layer || "").trim();
@@ -677,6 +679,21 @@ router.get("/:cityCode/specialized-details", async (req, res) => {
 
     let schema = citySchema;
     let relname = null;
+    debugStage = "init";
+    resolutionDebug = {
+      cityKey,
+      citySchema,
+      network,
+      option,
+      layer,
+      relInCity: null,
+      relInPublic: null,
+      fixedFallback: null,
+      resolvedSchema: null,
+      resolvedRelation: null,
+      columns: null,
+      stage: "init",
+    };
 
     if (network) {
       const n = network.toLowerCase();
@@ -696,36 +713,82 @@ router.get("/:cityCode/specialized-details", async (req, res) => {
         });
       }
 
-      const fixed =
-        n === "drainage"
-          ? "ann_drain"
-          : n === "slum"
-            ? (o === "roads" ? "ann_slum_roads" : (o === "boundary" ? "ann_slum_boundary" : null))
-            : null;
-
-      if (fixed) {
-        const preferredSchemas = [citySchema, "public"];
-
-        const sql = `
+      if (n === "drainage") {
+        // For drainage, always use the city-specific drain table regardless of option
+        const drainTable = getDrainTable(cityKey);
+        const { schema: drainSchema, table: drainRelname } = parseQualified(drainTable);
+        
+        // Verify the table exists
+        const checkSql = `
           SELECT n.nspname AS schema, c.relname
           FROM pg_class c
           JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE n.nspname::text = ANY($1::text[])
-            AND c.relkind IN ('r','v','m','p','f')
+          WHERE n.nspname = $1
+            AND c.relkind IN ('r','v','m')
             AND c.relname = $2
-          ORDER BY CASE WHEN n.nspname::text = $3 THEN 0 ELSE 1 END
           LIMIT 1
         `;
-        const r = await pool.query(sql, [preferredSchemas, fixed, citySchema]);
-        const found = r.rows[0] || null;
-
-        if (!found) {
-          return res.status(404).json({ error: `Table not found: ${fixed}` });
+        const checkRes = await pool.query(checkSql, [drainSchema, drainRelname]);
+        
+        if (checkRes.rows[0]) {
+          schema = drainSchema;
+          relname = drainRelname;
+        } else {
+          resolutionDebug.stage = "drain-table-not-found";
+          return res.status(404).json({
+            error: `Drainage table not found: ${drainTable}`,
+            debug: resolutionDebug,
+          });
+        }
+      } else if (n === "slum") {
+        // Slum logic remains unchanged
+        const fixed = o === "roads" ? "ann_slum_roads" : (o === "boundary" ? "ann_slum_boundary" : null);
+        
+        if (layer) {
+          const relInCity = await resolveRelationForLayer(citySchema, cityKey, layer);
+          resolutionDebug.relInCity = relInCity;
+          if (relInCity) {
+            relname = relInCity;
+            schema = citySchema;
+          } else {
+            const relInPublic = await resolveRelationForLayer("public", cityKey, layer);
+            resolutionDebug.relInPublic = relInPublic;
+            if (relInPublic) {
+              relname = relInPublic;
+              schema = "public";
+            }
+          }
         }
 
-        schema = found.schema;
-        relname = found.relname;
-      } else {
+        if (!relname && fixed) {
+          resolutionDebug.fixedFallback = fixed;
+          const preferredSchemas = [citySchema, "public"];
+
+          const sql = `
+            SELECT n.nspname AS schema, c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname::text = ANY($1::text[])
+              AND c.relkind IN ('r','v','m','p','f')
+              AND c.relname = $2
+            ORDER BY CASE WHEN n.nspname::text = $3 THEN 0 ELSE 1 END
+            LIMIT 1
+          `;
+          const r = await pool.query(sql, [preferredSchemas, fixed, citySchema]);
+          const found = r.rows[0] || null;
+
+          if (!found) {
+            resolutionDebug.stage = "fixed-fallback-miss";
+            return res.status(404).json({
+              error: `Table not found: ${fixed}`,
+              debug: resolutionDebug,
+            });
+          }
+
+          schema = found.schema;
+          relname = found.relname;
+        }
+      } else if (!relname) {
         if (layer) {
           const relInCity = await resolveRelationForLayer(citySchema, cityKey, layer);
           if (relInCity) {
@@ -762,19 +825,29 @@ router.get("/:cityCode/specialized-details", async (req, res) => {
       }
     }
 
+    resolutionDebug.resolvedSchema = schema;
+    resolutionDebug.resolvedRelation = relname;
+
     if (!isSafeIdent(schema) || !isSafeIdent(relname)) {
-      return res.status(400).json({ error: "Unsafe identifier" });
+      resolutionDebug.stage = "unsafe-identifier";
+      return res.status(400).json({ error: "Unsafe identifier", debug: resolutionDebug });
     }
 
+    debugStage = "columns";
+    resolutionDebug.stage = debugStage;
     const columns = await getNonGeometryColumns(schema, relname);
+    resolutionDebug.columns = columns;
     if (!columns.length) {
-      return res.status(404).json({ error: "No readable columns found" });
+      resolutionDebug.stage = "no-readable-columns";
+      return res.status(404).json({ error: "No readable columns found", debug: resolutionDebug });
     }
 
     const identCols = columns.map((c) => `"${c}"`).join(", ");
     const dataSql = `SELECT ${identCols} FROM "${schema}"."${relname}" LIMIT $1 OFFSET $2`;
     const countSql = `SELECT COUNT(1)::int AS total FROM "${schema}"."${relname}"`;
 
+    debugStage = "query";
+    resolutionDebug.stage = debugStage;
     const [dataRes, countRes] = await Promise.all([
       pool.query(dataSql, [limit, offset]),
       pool.query(countSql),
@@ -793,7 +866,14 @@ router.get("/:cityCode/specialized-details", async (req, res) => {
     });
   } catch (err) {
     console.error("Error fetching specialized details:", err);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({
+      error: "Internal server error",
+      debug: {
+        ...(typeof resolutionDebug === "object" && resolutionDebug ? resolutionDebug : {}),
+        stage: debugStage || resolutionDebug?.stage || "unknown",
+        message: err?.message || String(err),
+      },
+    });
   }
 });
 
@@ -954,7 +1034,7 @@ router.get("/:cityCode/wards", async (req, res) => {
     const mappedResponse = result.rows.map((r) => ({
       ward_no: r.ward_no,
       ward_name: r.ward_name,
-      name: `Ward ${r.ward_no}`,
+      name: r.ward_name || "",
     }));
     
     queryCache.set(cacheKey, mappedResponse);
@@ -1009,7 +1089,7 @@ router.get("/:cityCode/adjacent-wards", async (req, res) => {
       result.rows.map((r) => ({
         ward_no: r.ward_no,
         ward_name: r.ward_name,
-        name: `Ward ${r.ward_no}`,
+        name: r.ward_name || "",
       }))
     );
   } catch (err) {
@@ -1086,10 +1166,8 @@ router.get("/:cityCode", async (req, res) => {
   try {
     const table = getRoadTable(req.params.cityCode);
 
-    // zone_no is a plain integer for every city now, so the display label
-    // is always a simple prefix - no per-city text-format handling needed.
     const zones = await pool.query(`
-      SELECT DISTINCT zone_no, ('Zone ' || zone_no) AS name
+      SELECT DISTINCT zone_no, zone_name AS name
       FROM ${table}
       WHERE zone_no IS NOT NULL
       ORDER BY zone_no;
