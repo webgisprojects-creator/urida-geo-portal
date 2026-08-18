@@ -49,6 +49,28 @@ function formatLoadingMessage(labels) {
   return `Loading ${list[0]}, ${list[1]} and ${list.length - 2} more, please wait…`;
 }
 
+const normalizeLegendToken = (value) => String(value || "").trim().toUpperCase().replace(/[\s_-]+/g, "");
+const getLegendRuleColor = (rule) => {
+  const symbolizers = Array.isArray(rule?.symbolizers) ? rule.symbolizers : [];
+  for (const sym of symbolizers) {
+    if (sym?.Polygon?.fill) return sym.Polygon.fill;
+    if (sym?.Line?.stroke) return sym.Line.stroke;
+    if (sym?.Point?.graphics?.[0]?.mark?.fill) return sym.Point.graphics[0].mark.fill;
+  }
+  return null;
+};
+const getStreetLightLegendKeyFromRule = (rule) => {
+  const candidates = [rule?.title, rule?.name];
+  for (const candidate of candidates) {
+    const token = normalizeLegendToken(candidate);
+    if (!token) continue;
+    if (token.includes("NONILLUMINATED")) return "nonIlluminated";
+    if (token === "ILLUMINATED" || token.includes("ILLUMINATED")) return "illuminated";
+    if (token.includes("OTHER") || token === "NA") return "others";
+  }
+  return null;
+};
+
 const RangeSlider = ({ col, min, max, value, onChange }) => {
   const [lo, setLo] = React.useState(value?.[0] ?? min);
   const [hi, setHi] = React.useState(value?.[1] ?? max);
@@ -554,6 +576,7 @@ const DashboardPage = () => {
   // exact same `row[col.key]` rendering the rest of this file uses.
   const [dssAllRows, setDssAllRows] = useState([]);
   const [dssColumnFilters, setDssColumnFilters] = useState({});
+  const [dssLegendColorMap, setDssLegendColorMap] = useState({});
   const [dssTableStatus, setDssTableStatus] = useState(null); // null | "loading" | "ready" | "empty" | "error"
   const [dssTableMessage, setDssTableMessage] = useState("");
   const [dssTableMinimized, setDssTableMinimized] = useState(false);
@@ -1110,14 +1133,42 @@ const DashboardPage = () => {
     () => (activeDssModule ? buildDssLegendCounts(activeDssModule, dssFilteredRows) : []),
     [activeDssModule, dssFilteredRows]
   );
+  useEffect(() => {
+    if (!isDssMode || activeDssModule !== "streetLight" || !activeDssModuleConfig?.layer) {
+      setDssLegendColorMap({});
+      return;
+    }
+    const controller = new AbortController();
+    const url = `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=application/json&LAYER=${encodeURIComponent(activeDssModuleConfig.layer)}`;
+    fetch(url, { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        const rules = json?.Legend?.[0]?.rules || [];
+        const next = {};
+        rules.forEach((rule) => {
+          const key = getStreetLightLegendKeyFromRule(rule);
+          const color = getLegendRuleColor(rule);
+          if (key && color) next[key] = color;
+        });
+        setDssLegendColorMap(next);
+      })
+      .catch((err) => {
+        if (err?.name !== "AbortError") setDssLegendColorMap({});
+      });
+    return () => controller.abort();
+  }, [isDssMode, activeDssModule, activeDssModuleConfig?.layer]);
+  const effectiveDssLegendItems = useMemo(
+    () => dssLegendItems.map((item) => ({ ...item, color: dssLegendColorMap[item.key] || item.color })),
+    [dssLegendItems, dssLegendColorMap]
+  );
   const dssLegendGroups = useMemo(() => {
-    if (!activeDssModule || !dssLegendItems.length) return [];
+    if (!activeDssModule || !effectiveDssLegendItems.length) return [];
     return [{
       id: activeDssModule,
       title: activeDssModuleConfig?.label || activeDssModule,
-      rows: dssLegendItems.map(({ label, color, count }) => ({ label, color, count })),
+      rows: effectiveDssLegendItems.map(({ label, color, count }) => ({ label, color, count })),
     }];
-  }, [activeDssModule, activeDssModuleConfig, dssLegendItems]);
+  }, [activeDssModule, activeDssModuleConfig, effectiveDssLegendItems]);
 
   const handleDssColumnFilterChange = (key, selectedValues) => {
     setDssColumnFilters((prev) => {
@@ -1333,6 +1384,31 @@ const DashboardPage = () => {
       return true; // was closed — open fresh
     });
   };
+  const handleChartPanelChartClick = useCallback((col, val) => {
+    if (val) handleColumnFilterChange(col, [val]);
+    else handleColumnFilterChange(col, []);
+  }, [handleColumnFilterChange]);
+  const handleChartPanelFilterChange = useCallback((filter) => {
+    if (!filter) {
+      setBaseFilter("");
+      setTableRows([]);
+      setShouldFetchTable(false);
+      return;
+    }
+    setShouldFetchTable(true);
+    setBaseFilter(filter);
+    setIsTableMinimized(false);
+    setCurrentPage(1);
+  }, []);
+  const handleChartPanelAmenityToggle = useCallback((amenityKey) => {
+    setLayerVisibility((prev) => ({
+      ...prev,
+      amenities: {
+        ...(prev.amenities || {}),
+        [amenityKey]: !prev.amenities?.[amenityKey],
+      },
+    }));
+  }, []);
   const [streetViewVisible, setStreetViewVisible] = useState(false);
 
   const toggleSidebar = () => {
@@ -1493,20 +1569,28 @@ const DashboardPage = () => {
         },
       };
 
-      if (option && group === "network") {
-        next.specializedOptions = {
-          ...(prev.specializedOptions || {}),
-          [id]: option,
-        };
-      } else if (checked && group === "network" && !prev.specializedOptions?.[id]) {
-        // Set default option if turning on for the first time
-        const cfg = cityConfig[city.toLowerCase()]?.specializedNetworks?.[id];
-        if (cfg && cfg.options) {
-          const defaultOpt = id === "slum" ? "none" : Object.keys(cfg.options)[0];
+      if (group === "network") {
+        if (option) {
           next.specializedOptions = {
             ...(prev.specializedOptions || {}),
-            [id]: defaultOpt,
+            [id]: option,
           };
+        } else if (!checked && (prev.specializedOptions?.[id] !== undefined)) {
+          const updatedOptions = { ...(prev.specializedOptions || {}) };
+          delete updatedOptions[id];
+          next.specializedOptions = updatedOptions;
+        } else if (checked && !prev.specializedOptions?.[id]) {
+          const cfg = cityConfig[city.toLowerCase()]?.specializedNetworks?.[id];
+          if (cfg && cfg.options) {
+            const requiresExplicitOption = id === "sewage";
+            if (!requiresExplicitOption) {
+              const defaultOpt = id === "slum" ? "none" : Object.keys(cfg.options)[0];
+              next.specializedOptions = {
+                ...(prev.specializedOptions || {}),
+                [id]: defaultOpt,
+              };
+            }
+          }
         }
       }
 
@@ -2871,7 +2955,6 @@ const DashboardPage = () => {
           isMultiSelectModeProp={isMultiSelectMode} //chainage
           activeDssModule={isDssMode ? activeDssModule : null}
           activeDssLayer={activeDssModuleConfig?.layer || null}
-          activeDssStyle={activeDssModuleConfig?.styleName || null}
           dssLegendGroups={isDssMode ? dssLegendGroups : null}
         />
 
@@ -2992,27 +3075,11 @@ const DashboardPage = () => {
             }}
             onMinimize={() => setChartPanelMinimized(true)}
             panelSide="left"
-            onChartClick={(col, val) => {
-              if (val) {
-                handleColumnFilterChange(col, [val]);
-              } else {
-                handleColumnFilterChange(col, []);
-              }
-            }}
-            onFilterChange={(filter) => {
-              if (!filter) {
-                setBaseFilter("");
-                setTableRows([]);
-                setShouldFetchTable(false);
-              } else {
-                setShouldFetchTable(true);
-                setBaseFilter(filter);
-                setIsTableMinimized(false);
-                setCurrentPage(1);
-              }
-            }}
+            onChartClick={handleChartPanelChartClick}
+            onFilterChange={handleChartPanelFilterChange}
             onClassificationChange={handleClassificationChange}
-            roadWmsSource={mapRef.current?.getRoadWmsSource?.()}
+            layerVisibility={layerVisibility}
+            onAmenityToggle={handleChartPanelAmenityToggle}
           />
           </div>
         )}

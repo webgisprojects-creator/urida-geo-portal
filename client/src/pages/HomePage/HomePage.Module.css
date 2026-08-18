@@ -1284,6 +1284,20 @@ body {
   cursor: pointer;
 }
 
+:global(.phase-menu__option-main) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+:global(.phase-menu__checkbox) {
+  margin: 0;
+  pointer-events: none;
+  accent-color: #4caf50;
+  flex-shrink: 0;
+}
+
 :global(.phase-menu__option:hover),
 :global(.phase-menu__option--selected) {
   background: rgba(76, 175, 80, 0.12);
@@ -1443,6 +1457,20 @@ body {
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+}
+
+.phase-menu__option-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.phase-menu__checkbox {
+  margin: 0;
+  pointer-events: none;
+  accent-color: #4caf50;
+  flex-shrink: 0;
 }
 
 .phase-menu__option:hover,

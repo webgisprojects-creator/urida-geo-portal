@@ -612,11 +612,13 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
           const isGroup = specCfg && typeof specCfg === "object" && specCfg.options;
           const activeOption = layerVisibility?.specializedOptions?.[id];
           const defaultNoneGroup = id === "drainage" || id === "slum";
+          const requiresExplicitOption = id === "sewage";
 
           if (
             isGroup &&
             (String(activeOption) === "none" ||
-              (defaultNoneGroup && (activeOption === undefined || activeOption === null)))
+              (defaultNoneGroup && (activeOption === undefined || activeOption === null)) ||
+              (requiresExplicitOption && (activeOption === undefined || activeOption === null)))
           ) {
             return;
           }

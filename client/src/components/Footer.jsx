@@ -13,8 +13,8 @@ const Footer = () => {
         <span>All rights reserved</span>
       </div>
       <div className="footer-middle">
-        <span>
-          © {currentYear} Remote Sensing and Applications Centre. RSAC-UP{" "}
+        <span className="footer-middle-text">
+          © {currentYear} Remote Sensing and Applications Centre, UTTAR PRADESH. RSAC-UP
         </span>
         <img src={rightLogo} alt="RSAC Logo" className="footer-logo" />
       </div>

@@ -32,6 +32,13 @@ export const getWardTable = (city) => {
   return `${schema}.${c}_ward_boundary`;
 };
 
+export const getDrainTable = (city) => {
+  const c = city.toLowerCase();
+  const schema = citySchemaMap[c];
+  if (!schema) throw new Error(`Invalid city schema for ${city}`);
+  return `${schema}.${c}_drain`;
+};
+
 export const getZoneTable = (city) => {
     const c = city.toLowerCase();
     const schema = citySchemaMap[c];

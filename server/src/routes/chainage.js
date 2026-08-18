@@ -93,6 +93,15 @@ export const chainageDbConfig = {
         distanceColumn: "distance",
         segmentIdColumn: "segment_id",
     },
+
+    ghaziabad: {
+        schema: "ghaziabad",
+        chainageTable: 'ghaziabad.chainage_points_4326',
+        segmentTable: 'ghaziabad.chainage_segment_4326',
+        roadIdColumn: "road_id",
+        distanceColumn: "distance",
+        segmentIdColumn: "segment_id",
+    },
 };
 router.get("/api/chainage/:city/:roadId", verifyToken, async (req, res) => {
     const city = authorizeCityAccess(req, res, req.params.city);
