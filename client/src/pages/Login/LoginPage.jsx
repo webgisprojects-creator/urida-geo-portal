@@ -3,9 +3,9 @@ import React, { useState, useEffect } from "react";
 import "./LoginPage.css";
 
 const cmYogi = require("../../assets/Login/CM-Yogi-PNG.png");
-const cmGrid1 = require("../../assets/Login/CMGRID.png");
 const cmGrid2 = require("../../assets/Login/CMGRID2.jpg");
 const cmGrid3 = require("../../assets/Login/CMGRID3.jpg");
+const cmGrid4 = require("../../assets/Login/CMGRID4.jpg");
 const minister1 = require("../../assets/Login/urida minister.png");
 const minister2 = require("../../assets/Login/state_urban.png");
 const secretary = require("../../assets/Login/P_Guruprasad_1.jpg");
@@ -243,7 +243,7 @@ export default function LoginPage() {
             onMouseLeave={() => setCarouselPaused(false)}
           >
             <div className="road-carousel-fade">
-              {[cmGrid1, cmGrid2, cmGrid3].map((src, i) => (
+              {[cmGrid2, cmGrid3, cmGrid4].map((src, i) => (
                 <img
                   key={i}
                   src={src}
@@ -275,7 +275,7 @@ export default function LoginPage() {
               className="login-button"
               onClick={() => setShowLogin(true)}
             >
-              Nagar Nigam Login
+              Geo-Portal Login
             </button>
           </div>
         </div>
@@ -350,7 +350,16 @@ export default function LoginPage() {
 
       {/* LOGIN POPUP OVERLAY */}
       {showLogin && (
-        <div className="login-overlay">
+        <div
+          className="login-overlay"
+          onClick={(e) => {
+            // Only the backdrop itself should close it — a click that
+            // starts inside .login-modal and bubbles up still has
+            // e.target pointing at whatever was actually clicked inside
+            // the modal, not the overlay, so this never fires for those.
+            if (e.target === e.currentTarget) setShowLogin(false);
+          }}
+        >
           <div className="login-modal">
             <button
               className="close-btn"

@@ -1328,37 +1328,43 @@ right-btn {
   bottom: 0;
   left: 0;
   width: 100%;
-  /* Was a fixed 25px, single row, with the legal-disclaimer text
-     ellipsis-truncated on mobile (see the max-width:30vw rule this
-     replaces below) — auto height + flex-wrap lets each section stack
-     onto its own row when the viewport is too narrow for all three side
-     by side, instead of silently cutting off the disclaimer text. */
-  min-height: 25px;
-  height: auto;
-  flex-wrap: wrap;
+  /* clamp(), not a fixed px — scales smoothly (broader/slimmer) with the
+     effective viewport width, which is exactly what browser zoom changes
+     under the hood (zooming in behaves the same as the CSS viewport
+     shrinking). Never grows past the max or shrinks past the min, and —
+     combined with the white-space/overflow rules on each section's span
+     below, which truncate with an ellipsis rather than wrapping — the bar
+     always stays one fixed-height line at any zoom level or window width,
+     just proportionally larger or smaller. */
+  height: clamp(20px, 1.8vw, 30px);
   background: linear-gradient(149deg, rgba(54, 209, 214, 0.85) 20%, rgba(91, 134, 229, 0.85) 35%);
   backdrop-filter: blur(2px);
   border-top: 1px solid rgba(255, 255, 255, 0.4);
   color: #000000;
-  display: flex;
+  /* Grid, not flex: with 3 flex children weighted 1/1/2 (footer-right got
+     extra room for the legal disclaimer), footer-middle's box only ever
+     centered within its own narrower flex share, not the true visual
+     center of the bar. A grid's auto-sized middle column is always
+     centered in the full container width, independent of how much content
+     the left/right columns hold. */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 20px;
+  gap: clamp(6px, 0.9vw, 14px);
+  padding: clamp(3px, 0.3vw, 6px) clamp(10px, 1.5vw, 24px);
   /* Bottom safe-area padding for notched phones (iPhone home-indicator
      etc.) — without it, this fixed-bottom bar can sit partly under the
      device's own gesture-bar overlay. Adds nothing on devices without a
      safe-area inset. */
   padding-bottom: max(4px, env(safe-area-inset-bottom));
-  font-size: 13px;
+  font-size: clamp(10px, 1vw, 15px);
   box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.25);
   z-index: var(--dashboard-footer-z);
-  text-align: center;
 }
 
 .dashboard-footer .footer-left,
-.dashboard-footer .footer-middle {
-  flex: 1 1 0;
+.dashboard-footer .footer-middle,
+.dashboard-footer .footer-right {
   display: flex;
   align-items: center;
   min-width: 0;
@@ -1372,18 +1378,7 @@ right-btn {
   justify-content: center;
 }
 
-/* Was an equal 1fr third like the other two columns, with the legal
-   disclaimer text forced to nowrap+ellipsis inside it — on any desktop
-   width narrower than ~1450px (a laptop, a half-width browser window, or
-   the same width with the sidebar open eating into it) that silently cut
-   the disclaimer off mid-sentence. Given twice the flex weight and allowed
-   to wrap, so it degrades to two short lines instead of losing the text
-   outright. */
 .dashboard-footer .footer-right {
-  flex: 2 1 0;
-  display: flex;
-  align-items: center;
-  min-width: 0;
   justify-content: flex-end;
   text-align: right;
 }
@@ -1393,12 +1388,22 @@ right-btn {
 .dashboard-footer .footer-right span {
   color: #000000;
   font-weight: 500;
+  /* Truncate instead of wrapping — the footer's height is fixed above, so
+     text that doesn't fit at the current zoom/viewport width gets an
+     ellipsis rather than growing the bar or silently overflowing it. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dashboard-footer .footer-right span {
-  font-size: 12px;
-  white-space: normal;
-  line-height: 1.3;
+  font-size: clamp(9px, 0.9vw, 12px);
+}
+
+/* Mobile-only short form ("URIDA | RSAC-UP") — hidden by default, swapped
+   in for the full desktop text under the <=720px breakpoint below. */
+.dashboard-footer .footer-text-mobile {
+  display: none;
 }
 
 .dashboard-footer .footer-logo {
@@ -1407,11 +1412,12 @@ right-btn {
      rectangular box just showed that padding as a visible square instead
      of a clean circle. Forcing an equal-sided box + object-fit:cover crops
      into the emblem itself, same treatment as .lucknow-header__logo. */
-  height: 22px;
-  width: 22px;
+  height: clamp(14px, 1.6vw, 22px);
+  width: clamp(14px, 1.6vw, 22px);
   border-radius: 50%;
   object-fit: cover;
   filter: brightness(1.1);
+  flex-shrink: 0;
 }
 
 /* Persistent "get the road table back" handle for field-task sessions —
@@ -2823,68 +2829,27 @@ right-btn {
   }
 }
 
-/* Between the full desktop 3-column footer and the <=720px stacked-rows
-   layout there was nothing — the disclaimer column (flex:2) just kept
-   getting squeezed as the viewport (or an equivalent effective width from
-   browser zoom, which shrinks how many CSS px fit on screen the same way
-   a narrower window does) shrank, with no intermediate relief until it
-   suddenly jumped to full-width stacking at 720px. This softens that
-   transition instead of the footer looking visibly cramped for the whole
-   721-1024px range. */
-@media (max-width: 1024px) and (min-width: 721px) {
-  .dashboard-footer {
-    padding: 4px 12px;
-    gap: 8px;
-    font-size: 12px;
-  }
-
-  .dashboard-footer .footer-right span {
-    font-size: 11px;
-  }
-
-  .dashboard-footer .footer-logo {
-    height: 18px;
-    width: 18px;
-  }
-}
-
+/* Sizing (height/padding/gap/font-size/logo) is handled by the clamp()
+   values on the base .dashboard-footer rule above, which already scale
+   smoothly across every width and zoom level — no discrete step needed
+   here anymore. Only the structural change (dropping "All rights
+   reserved" and the legal disclaimer, keeping just the compact brand mark)
+   is breakpoint-specific, since that's a content decision, not sizing. */
 @media (max-width: 720px) {
-  /* Was 3 stacked full-width rows (left/middle/right each on its own
-     line) — on a short phone screen that grew tall enough to cover the
-     bottom table underneath it. Mobile only needs the compact brand
-     mark: "All rights reserved" and the legal disclaimer are dropped
-     here (still shown on desktop/tablet above), leaving one short,
-     single-line, non-overlapping bar. */
-  .dashboard-footer {
-    height: auto;
-    min-height: 18px;
-    padding: 3px 10px;
-    padding-bottom: max(3px, env(safe-area-inset-bottom));
-    font-size: 10px;
-    gap: 4px;
-    justify-content: center;
-  }
-
   .dashboard-footer .footer-left,
   .dashboard-footer .footer-right {
     display: none;
   }
 
-  .dashboard-footer .footer-middle {
-    flex: 0 1 auto;
-    justify-content: center;
+  /* Short brand-only form ("URIDA | RSAC-UP") in place of the full desktop
+     copyright/attribution line — keeps this compact mobile bar to one
+     short line without needing to shrink the font further. */
+  .dashboard-footer .footer-text-desktop {
+    display: none;
   }
 
-  .dashboard-footer .footer-middle span {
-    max-width: none;
-    white-space: nowrap;
-    overflow: visible;
-    text-overflow: clip;
-  }
-
-  .dashboard-footer .footer-logo {
-    height: 13px;
-    width: 13px;
+  .dashboard-footer .footer-text-mobile {
+    display: inline;
   }
 
   .summary-panel {
