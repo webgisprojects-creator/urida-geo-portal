@@ -13,9 +13,10 @@ const Footer = () => {
         <span>All rights reserved</span>
       </div>
       <div className="footer-middle">
-        <span className="footer-middle-text">
-          © {currentYear} Remote Sensing and Applications Centre, UTTAR PRADESH. RSAC-UP
+        <span className="footer-text-desktop">
+          © {currentYear} | URIDA | Remote Sensing Applications Centre - Uttar Pradesh . RSAC-UP
         </span>
+        <span className="footer-text-mobile">URIDA | RSAC-UP</span>
         <img src={rightLogo} alt="RSAC Logo" className="footer-logo" />
       </div>
       <div className="footer-right">

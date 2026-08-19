@@ -19,9 +19,11 @@ html.login-page,
 body.login-page,
 #root.login-page {
   height: 100%;
-  /* No scroll on the login page, ever — content below keeps its original
-     fixed design sizing (not viewport-scaled), so on an unusually short
-     viewport this clips rather than showing a scrollbar. */
+  /* Locked, no scroll, on desktop only — the design is meant to fit one
+     screen there. On mobile the layout stacks vertically (see the 800px
+     breakpoint below) and can genuinely exceed the viewport height, so
+     scroll is re-enabled there instead of silently clipping content -
+     see the max-width:800px override further down. */
   overflow: hidden;
 }
 
@@ -89,6 +91,21 @@ body.login-page,
   padding: 20px 30px;
   gap: 20px;
   flex: 1;
+  /* This was the actual remaining cause of the footer disappearing at
+     100% zoom (visible again only after zooming out to ~90%). Flex items
+     default to min-height:auto, which secretly means "never shrink below
+     my children's own natural minimum content size" — so even though
+     everything *inside* main-content (carousel, Yogi's oval, minister
+     cards) now correctly fills whatever space it's given, main-content
+     itself was still being held to at least its children's combined
+     intrinsic minimum, which on some real resolutions is taller than the
+     genuinely available "100vh minus header/title/footer" space —
+     pushing the footer below the visible area even though
+     .login-container's overflow:hidden meant there was no scrollbar to
+     reveal it. min-height:0 removes that hidden floor, so flex:1 actually
+     shrinks main-content to the real available space, guaranteeing the
+     footer always has room. */
+  min-height: 0;
 }
 
 /* Left Side - Yogi Ji */
@@ -96,21 +113,31 @@ body.login-page,
   flex: 0 0 400px;
   display: flex;
   justify-content: center;
-  align-items: flex-start;
-  /* Matches road image alignment perfectly */
+  /* Was flex-start (top-aligned, own intrinsic height) — stretch lets
+     .img-wrap below fill left-side's real height exactly, which
+     .main-content's own align-items:stretch already computed as "however
+     tall the row actually is." That's what makes Yogi's oval track the
+     carousel's real height automatically instead of both being sized by
+     separate guesses that can drift apart. */
+  align-items: stretch;
   position: relative;
   width: 100%;
 }
 
 .left-side .img-wrap {
   position: relative;
-  width: 100%;
+  /* Self-contained default (width + aspect-ratio derives height on its
+     own) — works at any width without needing an ancestor's definite
+     height. .main-content only has a real stretched row height above
+     1200px (see the min-width:1201px override below); at and below
+     1200px it's height:auto (wraps/stacks), so the old height:100% here
+     had nothing real to resolve against and silently collapsed to 0,
+     taking Yogi's photo — and, when the same thing happened to
+     .road-carousel-box, the login button too — down with it. */
+  height: auto;
+  width: min(280px, 55vw);
   max-width: 380px;
-  max-height: 646px;
-  /* Do not allow infinite zoom blowout on 2K monitors */
-  /* Allows Yogi to shrink naturally on laptops instead of breaking out */
   aspect-ratio: 380 / 646;
-  /* mathematically guaranteed to preserve the squashed oval proportions */
   overflow: hidden;
   border-radius: 50%;
   border: 4px solid #fff;
@@ -174,9 +201,20 @@ body.login-page,
 .road-carousel-box {
   position: relative !important;
   width: 100% !important;
-  height: 646px !important;
+  /* Self-contained default height — does NOT depend on any ancestor
+     having a definite height to stretch into. .center-form/.main-content
+     only have a real, definite row height above 1200px (see the
+     min-width:1201px override below, which switches back to the
+     height-driven stretch-fill technique there); at and below 1200px
+     .main-content is height:auto (wraps/stacks), so the old
+     flex:1 1 auto + min-height:0 here had nothing real to fill and
+     silently collapsed this whole box — carousel image AND the login
+     button positioned inside it — to 0 height. That's what was making
+     the login button invisible/unclickable (covered by .main-content)
+     on mobile. */
+  height: clamp(260px, min(45vw, 55vh), 646px) !important;
 
-  border-radius: 24px !important;
+  border-radius: clamp(16px, 2.2vw, 24px) !important;
   overflow: hidden !important;
 
   border: none !important;
@@ -272,29 +310,15 @@ body.login-page,
   z-index: 10 !important;
 }
 
-@media (max-width: 1200px) {
-  .road-carousel-box {
-    height: 520px !important;
-  }
-}
-
+/* Height and border-radius are now handled by the clamp() values on the
+   base .road-carousel-box rule above, which already scale smoothly across
+   every width and zoom level — no discrete steps needed here anymore. */
 @media (max-width: 800px) {
-  .road-carousel-box {
-    height: 360px !important;
-    border-radius: 18px !important;
-  }
-
   .road-carousel-dots {
     bottom: 12px;
   }
 }
 
-@media (max-width: 520px) {
-  .road-carousel-box {
-    height: 260px !important;
-    border-radius: 16px !important;
-  }
-}
 
 .login-button {
   position: absolute;
@@ -326,25 +350,49 @@ body.login-page,
   flex: 0 0 300px;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  max-height: 646px;
-  /* Absolute lock corresponding to Yogi/Center Image on 2K displays */
+  /* Was justify-content:space-between, which distributes the 2 card
+     groups with whatever leftover space remains between them — that
+     leftover varied depending on how tall the groups' own content
+     happened to be, which is why the gap between "top ministers" and
+     "bottom IAS" never quite matched the 14px gap .grid-images uses
+     between its own 2 cards, reading as uneven/asymmetrical. A single
+     real gap value, matching .grid-images's own, makes every gap in this
+     column — within a group or between the two groups — the same 14px. */
+  gap: 14px;
+  /* Self-contained default — see .road-carousel-box above for why
+     height:100% doesn't work at/below 1200px (.main-content isn't a
+     definite-height row there). Restored to the real height-driven
+     version, matching .road-carousel-box and .left-side .img-wrap, only
+     above 1200px (see the min-width:1201px override below). */
+  height: auto;
 }
 
 .grid-images {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* Lets this group actually shrink when .right-side's own height is
+     compressed (see max-height: min(646px, 55vh) above) — without this,
+     flex's default min-height:auto keeps the group pinned to its content's
+     natural size, overflowing past the now-shorter parent instead of
+     compressing along with it. */
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .small-circle {
   width: 100%;
   max-width: 300px;
-  max-height: 151px;
-  /* Stop infinite scaling on huge screens */
-  /* Flexible height calculated to fill the space cleanly on laptops */
-  aspect-ratio: 300 / 151;
-  flex-shrink: 0;
+  /* Was aspect-ratio:300/151 + flex-shrink:1 — letting each card keep its
+     own preferred ratio while also trying to shrink meant the 4 cards'
+     resulting heights depended on how much each one was willing to give
+     up, not a clean even split, which is what made the spacing between
+     them look asymmetrical. flex:1 1 0 (with .grid-images doing the same)
+     divides .right-side's real available height into 4 equal shares
+     instead — height comes purely from that division now, not from a
+     ratio fighting the division. */
+  flex: 1 1 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -357,8 +405,13 @@ body.login-page,
 }
 
 .small-circle img {
-  width: 90px;
-  height: 90px;
+  /* Was a flat 90x90px — fine while the card itself was a fixed size, but
+     now that .small-circle can shrink (see flex-shrink/min-height above),
+     a photo that refuses to shrink with it would still overflow the
+     card's own bounds on a short viewport. Scales down together instead,
+     capped at the original 90px. */
+  width: clamp(50px, 9vh, 90px);
+  height: clamp(50px, 9vh, 90px);
   border-radius: 50%;
   border: 3px solid #ff9100;
   object-fit: cover;
@@ -370,7 +423,12 @@ body.login-page,
   width: 92%;
   background: rgb(255 141 0);
   color: #fff;
-  padding: 6px 4px 6px 4px;
+  /* clamp() vertical padding, not a flat 6px — with 4 cards now evenly
+     dividing whatever height is actually available (see .small-circle),
+     a fixed padding could eat a disproportionate share of a genuinely
+     compact card; this shrinks it gracefully instead of the name/title
+     text getting squeezed into less room than they need. */
+  padding: clamp(2px, 0.8vh, 6px) 4px;
   margin: auto auto 6px auto;
   /* Centers horizontally and snaps near bottom */
   border-radius: 10px;
@@ -387,7 +445,7 @@ body.login-page,
 
 /* Beautiful Typographic Hierarchy for Cards */
 .minister-name {
-  font-size: 0.80rem;
+  font-size: clamp(0.65rem, 1.7vh, 0.80rem);
   font-weight: 600;
   margin: 0 0 2px 0;
   display: block;
@@ -401,7 +459,7 @@ body.login-page,
 }
 
 .minister-title {
-  font-size: 0.60rem;
+  font-size: clamp(0.5rem, 1.3vh, 0.60rem);
   font-weight: 400;
   margin: 0;
   line-height: 1.25;
@@ -702,6 +760,30 @@ body.login-page,
 /* Responsive Layout Adjustments */
 /* ============================= */
 
+/* 0. Desktop (above 1200px) — .main-content is a real, definite-height row
+   here (no wrap, align-items:stretch), so the road carousel / Yogi's oval
+   / minister-cards column can safely stretch-fill it exactly instead of
+   using the self-contained clamp()/aspect-ratio defaults those elements
+   fall back to everywhere else. Keeps all three columns' heights in sync
+   with each other and the real viewport, same as before — just now scoped
+   to only the widths where that assumption actually holds. */
+@media (min-width: 1201px) {
+  .road-carousel-box {
+    height: auto !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+  }
+
+  .left-side .img-wrap {
+    height: 100%;
+    width: auto;
+  }
+
+  .right-side {
+    height: 100%;
+  }
+}
+
 /* 1. Remove the asymmetric visual offset for screens where layout wraps */
 @media (max-width: 1400px) {
   .page-title-container {
@@ -746,6 +828,16 @@ body.login-page,
     gap: 15px;
   }
 
+  /* .right-side is height:auto in this range too (see its base rule) —
+     flex:1 1 0 dividing an auto-height parent would let these cards
+     collapse toward min-content instead of a usable size. A fixed height
+     sidesteps that same way the 800px block below already does. */
+  .small-circle {
+    flex: 1 1 300px;
+    max-width: 320px;
+    height: 140px;
+  }
+
   .login-button {
     bottom: 4%;
   }
@@ -753,6 +845,26 @@ body.login-page,
 
 /* 3. Mobile (800px and below) - Strict User Hierarchy */
 @media (max-width: 800px) {
+  /* The stacked layout below (Yogi image + carousel + minister cards, each
+     full-width, one after another) is regularly taller than a phone's
+     viewport — unlike desktop's single-screen design. Re-enable scrolling
+     here instead of the desktop-wide overflow:hidden silently clipping
+     content, and let the container grow past 100vh instead of forcing it
+     to fit. */
+  html.login-page,
+  body.login-page,
+  #root.login-page {
+    height: auto;
+    min-height: 100%;
+    overflow-y: auto;
+  }
+
+  .login-container {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
   .page-title {
     font-size: clamp(20px, 4vw, 24px);
     margin: 10px 0;

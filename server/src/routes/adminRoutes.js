@@ -267,7 +267,7 @@ router.post("/users", async (req, res) => {
     }
     if (selected.role) {
       cols.push(selected.role);
-      vals.push(role ? String(role).trim() : "user");
+      vals.push(role ? String(role).trim().toUpperCase() : "USER");
     }
     if (selected.city) {
       cols.push(selected.city);
@@ -376,7 +376,7 @@ router.patch("/users/:userId/status", async (req, res) => {
 router.patch("/users/:userId/role", async (req, res) => {
   try {
     const userId = String(req.params.userId || "").trim();
-    const nextRole = String(req.body?.role || "").trim();
+    const nextRole = String(req.body?.role || "").trim().toUpperCase();
     if (!userId || !nextRole) {
       return res.status(400).json({ error: "userId and role are required" });
     }
