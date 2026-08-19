@@ -1370,12 +1370,26 @@ right-btn {
   min-width: 0;
 }
 
+.dashboard-footer .footer-left {
+  flex: 1 1 0;
+}
+
 /* Was no gap at all between the copyright text and the RSAC logo — the
    trailing space in Footer.jsx's JSX text node isn't reliable spacing in a
    flex row, so the icon rendered crammed directly against the text. */
 .dashboard-footer .footer-middle {
+  flex: 0 1 auto;
+  max-width: 52vw;
   gap: 8px;
   justify-content: center;
+  flex-wrap: nowrap;
+}
+
+.dashboard-footer .footer-middle-text {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dashboard-footer .footer-right {
@@ -2554,6 +2568,21 @@ right-btn {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+}
+
+.amenity-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.14);
+}
+
+.amenity-card--active {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(29, 78, 216, 0.58);
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.22);
 }
 
 .amenity-name {

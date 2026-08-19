@@ -50,6 +50,11 @@ export default function LoginPage() {
     return () => clearInterval(id);
   }, [carouselPaused]);
 
+  const closeLoginModal = () => {
+    setShowLogin(false);
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  };
+
   const handleCaptchaAudio = () => {
     if (!("speechSynthesis" in window) || !captchaAudioText) return;
     // Speak each character as its own word ("A7K9" -> "A, 7, K, 9") instead
@@ -121,6 +126,21 @@ export default function LoginPage() {
     if (showLogin) {
       loadCaptcha();
     }
+  }, [showLogin]);
+
+  useEffect(() => {
+    if (!showLogin) return undefined;
+
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        closeLoginModal();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [showLogin]);
 
   const handleLogin = async (e) => {
@@ -360,14 +380,17 @@ export default function LoginPage() {
             if (e.target === e.currentTarget) setShowLogin(false);
           }}
         >
-          <div className="login-modal">
+          <div className="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
             <button
+              type="button"
               className="close-btn"
-              onClick={() => setShowLogin(false)}
+              onClick={closeLoginModal}
+              aria-label="Close login"
+              title="Close"
             >
-            
+              <span aria-hidden="true">×</span>
             </button>
-            <h2 className="form__title">Login</h2>
+            <h2 className="form__title" id="login-modal-title">Login</h2>
             {message && (
               <div
                 className={`form__message${messageType === "success" ? " form__message--success" : ""}`}

@@ -1011,43 +1011,42 @@ const MapToolbar = ({
             >
               <i className="fas fa-sitemap" /> <span>DSS</span>
             </button>
-             {/* chainage — "Patch Creation / View Chainage": grayed out (but still
+            {/* chainage — "Patch Creation / View Chainage": grayed out (but still
                  clickable, so it can explain why) until some road layer is
                  visible on the map, since chainage needs a road to click. */}
-                  <button
-                className={`map-btn wide-btn${chainageActive ? " active" : ""}${
-                  !chainageActive && chainageDisabled ? " map-btn--disabled-look" : ""
+            <button
+              className={`map-btn wide-btn${chainageActive ? " active" : ""}${!chainageActive && chainageDisabled ? " map-btn--disabled-look" : ""
                 }`}
-                  onClick={() => {
-                    if (!isChainageAvailable(city)) {
-                      if (mapRef?.current?.showFeatureNotice) {
-                        mapRef.current.showFeatureNotice({
-                          feature: "Chainage",
-                          message: chainageUnavailableMessage(city),
-                          dedupeKey: `${city}|chainage-unavailable`,
-                        });
-                      } else {
-                        window.alert(chainageUnavailableMessage(city));
-                      }
-                      return;
-                    }
-                    if (onChainageToggle) {
-                      onChainageToggle();
-                    } else {
-                      // Fallback for any context without an in-place toggle handler.
-                      navigate(`/chainage?city=${city?.toLowerCase()}&mode=CHAINAGE`);
-                    }
-                  }}
-                  title={
-                    chainageActive
-                      ? "Exit Patch Creation / View Chainage (select a road on the map)"
-                      : chainageDisabled
-                        ? "Patch Creation / View Chainage — open a road layer first"
-                        : "Patch Creation / View Chainage"
+              onClick={() => {
+                if (!isChainageAvailable(city)) {
+                  if (mapRef?.current?.showFeatureNotice) {
+                    mapRef.current.showFeatureNotice({
+                      feature: "Chainage",
+                      message: chainageUnavailableMessage(city),
+                      dedupeKey: `${city}|chainage-unavailable`,
+                    });
+                  } else {
+                    window.alert(chainageUnavailableMessage(city));
                   }
-                >
-                🔗
-              </button>
+                  return;
+                }
+                if (onChainageToggle) {
+                  onChainageToggle();
+                } else {
+                  // Fallback for any context without an in-place toggle handler.
+                  navigate(`/chainage?city=${city?.toLowerCase()}&mode=CHAINAGE`);
+                }
+              }}
+              title={
+                chainageActive
+                  ? "Exit Patch Creation / View Chainage (select a road on the map)"
+                  : chainageDisabled
+                    ? "Patch Creation / View Chainage — open a road layer first"
+                    : "Patch Creation / View Chainage"
+              }
+            >
+              🔗
+            </button>
           </>
         )}
       </div>
@@ -1559,13 +1558,15 @@ const MapToolbar = ({
                 (restrictedMode
                   ? zones.filter((z) => String(z.zone_no) === String(lockedZone))
                   : zones
+                ).filter((zone, index, self) =>
+                  index === self.findIndex((z) => String(z.zone_no) === String(zone.zone_no))
                 ).map((zone, index) => (
                   <li
-                    key={index}
+                    key={zone.zone_no || index}
                     className="menu-item"
                     onClick={() => handleZoneClick(zone)}
                   >
-                    {zone.name} »
+                    Zone No.{zone.zone_no} »
                   </li>
                 ))
               ))}
@@ -1578,7 +1579,7 @@ const MapToolbar = ({
               <div className="modern-submenu">
                 <div className="submenu-header">
                   {hasZones
-                    ? (selectedZone?.name || (isAllRoadsSelected ? "All Roads" : "Road Network"))
+                    ? (selectedZone ? `Zone No.${selectedZone.zone_no}` : (isAllRoadsSelected ? "All Roads" : "Road Network"))
                     : "Road Network"}
                 </div>
 

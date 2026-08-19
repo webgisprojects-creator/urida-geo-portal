@@ -228,7 +228,7 @@ const doughnutOptions = {
 
 
 
-function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters = DEFAULT_FILTERS, onFilterChange, onClassificationChange, onChartClick, roadWmsSource, panelSide = "right", tableOpen = false }) {
+function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters = DEFAULT_FILTERS, onFilterChange, onClassificationChange, onChartClick, panelSide = "right", tableOpen = false, layerVisibility = {}, onAmenityToggle = null }) {
     const [activeFilter, setActiveFilter] = useState(null);
 
     const [metrics, setMetrics] = useState({ total_roads: "--", total_length_km: "--", });
@@ -295,6 +295,11 @@ const wardDropdownRef = useRef(null);//new
 
     const cityKey = resolveCityKey(city);
     const baseApi = "/api/road-networks";
+    const onFilterChangeRef = useRef(onFilterChange);
+    useEffect(() => {
+        onFilterChangeRef.current = onFilterChange;
+    }, [onFilterChange]);
+    const selectedAmenities = layerVisibility?.amenities || {};
     const cityLayer = cityConfig[cityKey]?.roadLayer || null;
     const amenityTables = useMemo(() => {
         return Object.keys(cityConfig[cityKey]?.amenities || {});
@@ -507,21 +512,6 @@ const wardDropdownRef = useRef(null);//new
         setActiveFilter(key);
         setSelectedChartValue("");
         onClassificationChange?.(FILTER_LAYER_KEY[key] || null);
-
-        if (!roadWmsSource) return;
-        console.log(
-            "SLD before:",
-            roadWmsSource.getParams().STYLES
-        );
-
-        const layerKey = FILTER_LAYER_KEY[key];
-        const layerName = cityConfig[cityKey]?.roadClassifications?.[layerKey]?.layer;
-        if (!layerName) return;
-
-        roadWmsSource.updateParams({
-            LAYERS: layerName,
-            _t: Date.now(),
-        });
     };
     const handleChartSelection = (event, elements) => {
         if (!elements?.length) {
@@ -555,27 +545,6 @@ const wardDropdownRef = useRef(null);//new
         }
     };
 
-
-
-    // Reset the WMS SLD back to default only when this panel is actually
-    // unmounted (a real Close) — not on every isOpen flip, since Minimize
-    // now keeps the component mounted (just visually hidden) specifically
-    // so filters/layers are preserved and restorable.
-    const roadWmsSourceRef = useRef(roadWmsSource);
-    roadWmsSourceRef.current = roadWmsSource;
-    const cityLayerRef = useRef(cityLayer);
-    cityLayerRef.current = cityLayer;
-    useEffect(() => {
-        return () => {
-            const source = roadWmsSourceRef.current;
-            const layer = cityLayerRef.current;
-            if (!source || !layer) return;
-            source.updateParams({
-                LAYERS: layer,
-                _t: Date.now(),
-            });
-        };
-    }, []);
 
 
 
@@ -775,7 +744,7 @@ const wardDropdownRef = useRef(null);//new
             total_roads: "--",
             total_length_km: "--",
         });
-        onFilterChange?.(null);
+        onFilterChangeRef.current?.(null);
         setActiveSection("charts");
 
 
@@ -793,27 +762,14 @@ const wardDropdownRef = useRef(null);//new
 
 
     useEffect(() => {
-        if (!roadWmsSource) return;
-
-        // If panel closed → remove CQL
         if (!isOpen) {
-            onFilterChange?.("");
-            roadWmsSource.updateParams({
-                CQL_FILTER: null,
-                _t: Date.now(),
-            });
+            onFilterChangeRef.current?.("");
             return;
         }
 
         const cql = buildMapFilter();
-        onFilterChange?.(cql || "");
-
-        roadWmsSource.updateParams({
-            CQL_FILTER: cql || null,
-            _t: Date.now(),
-        });
-
-    }, [isOpen, selectedZone, selectedWard, activeFilter, selectedChartValue, roadWmsSource]);
+        onFilterChangeRef.current?.(cql || "");
+    }, [isOpen, selectedZone, selectedWard, activeFilter, selectedChartValue]);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -1039,7 +995,7 @@ const wardDropdownRef = useRef(null);//new
                             setShowWardDropdown(false);
                         }}
                     >
-                        <span>{selectedZone ? (zones.find(z => String(z.zone_no) === String(selectedZone))?.name || `Zone ${selectedZone}`) : "All Zones"}</span>
+                        <span>{selectedZone ? (zones.find(z => String(z.zone_no) === String(selectedZone))?.name || "") : "All Zones"}</span>
                         <i className={`fas fa-chevron-${showZoneDropdown ? 'up' : 'down'}`}></i>
                     </div>
                     {showZoneDropdown && (
@@ -1054,7 +1010,7 @@ const wardDropdownRef = useRef(null);//new
                                         setShowZoneDropdown(false);
                                     }}
                                 >
-                                    {z.name || `Zone ${z.zone_no}`}
+                                    {z.name || ""}
                                 </div>
                             ))}
                         </div>
@@ -1076,7 +1032,7 @@ const wardDropdownRef = useRef(null);//new
                             setShowZoneDropdown(false);
                         }}
                     >
-                        <span>{selectedWard ? (wards.find(w => String(w.ward_no) === String(selectedWard))?.name || `Ward ${selectedWard}`) : "All Wards"}</span>
+                        <span>{selectedWard ? (wards.find(w => String(w.ward_no) === String(selectedWard))?.name || "") : "All Wards"}</span>
                         <i className={`fas fa-chevron-${showWardDropdown ? 'up' : 'down'}`}></i>
                     </div>
                     {showWardDropdown && (
@@ -1091,7 +1047,7 @@ const wardDropdownRef = useRef(null);//new
                                         setShowWardDropdown(false);
                                     }}
                                 >
-                                    {w.name || `Ward ${w.ward_no}`}
+                                    {w.name || ""}
                                 </div>
                             ))}
                         </div>
@@ -1287,17 +1243,27 @@ const wardDropdownRef = useRef(null);//new
 
             {activeSection === "amenities" && (
                 <div className="amenities-grid">
-                    {amenitiesData.map((item) => (
-                        <div key={item.name} className="amenity-card">
-                            <div className="amenity-name">
-                                <img className="amenity-icon" src={getAmenityIcon(item.name)} alt={formatAmenityName(item.name)} />
-                                {formatAmenityName(item.name)}
-                            </div>
-                            <div className="amenity-count">
-                                {amenitiesLoading ? "--" : item.count}
-                            </div>
-                        </div>
-                    ))}
+                    {amenitiesData.map((item) => {
+                        const isSelected = !!selectedAmenities[item.name];
+                        return (
+                            <button
+                                key={item.name}
+                                type="button"
+                                className={`amenity-card ${isSelected ? "amenity-card--active" : ""}`}
+                                onClick={() => onAmenityToggle?.(item.name)}
+                                aria-pressed={isSelected}
+                                title={isSelected ? "Hide on map" : "Show on map"}
+                            >
+                                <div className="amenity-name">
+                                    <img className="amenity-icon" src={getAmenityIcon(item.name)} alt={formatAmenityName(item.name)} />
+                                    {formatAmenityName(item.name)}
+                                </div>
+                                <div className="amenity-count">
+                                    {amenitiesLoading ? "--" : item.count}
+                                </div>
+                            </button>
+                        );
+                    })}
                     {!!amenitiesError && (
                         <div className="amenities-empty">{amenitiesError}</div>
                     )}

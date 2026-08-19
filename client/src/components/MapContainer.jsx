@@ -1046,7 +1046,6 @@ const MapContainer = forwardRef(({
   onMapLoadingChange, // ⭐ NEW: Callback for map layer loading state
   activeDssModule = null, // DSS foundation patch: e.g. "streetLight" | null
   activeDssLayer = null, // resolved GeoServer layer name, e.g. Road_Network:MV_Lucknow_Street_Light
-  activeDssStyle = null, // resolved GeoServer SLD name, e.g. Road_Network:MV_Street_Light
   dssLegendGroups = null, // [{id, title, rows:[{label,color,count}]}] from live GeoServer WFS rows (Dashboard-owned)
   onChainageCandidateContextChange, // Stage 1 chainage candidate guidance — {active, road1Id, road2Id, candidateRoadIds}
 }, ref) => {
@@ -2679,121 +2678,36 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
     // /api/boundary-geojson in tiles.js) and style/label them entirely in
     // the browser. GeoServer/GWC still does the heavy lifting for every
     // layer that has a fixed, reusable style (Road Network tiles, basemaps).
-    const boundaryFeatureFormat = new GeoJSON();
-    // Polygon outline/fill and the number label are now two separate
-    // VectorLayers sharing one VectorSource per boundary type (adding
-    // features to the source populates both automatically), instead of one
-    // combined stroke+text style on a single layer. A single layer's
-    // zIndex can't interleave with another layer's content, so there was
-    // no way to have Ward's outline draw over Zone's outline while Zone's
-    // own number still draws over Ward's number — that needs Zone-fill <
-    // Ward-fill < Ward-label < Zone-label as four independently-ordered
-    // layers, not two.
-    const createBoundaryLayer = (source, title, zIndex, declutter = false) => {
-      const layer = new VectorLayer({ title, source, declutter });
+    const buildBoundaryCqlFilter = (layerName) => {
+      const params = new URLSearchParams(location.search);
+      if (params.get("mode") !== "CHAINAGE") return undefined;
+      const zoneNum = Number(params.get("zone"));
+      const wardNum = Number(params.get("ward"));
+      if (layerName === cfg.zoneLayer && Number.isFinite(zoneNum)) return `zone_no=${zoneNum}`;
+      if (layerName === cfg.wardLayer && Number.isFinite(zoneNum)) return `zone_no=${zoneNum}`;
+      if (layerName === cfg.wardLayer && Number.isFinite(wardNum)) return `ward_no=${wardNum}`;
+      return undefined;
+    };
+    const createBoundaryLayer = (title, layerName, zIndex) => {
+      if (!layerName) return null;
+      const params = { LAYERS: layerName };
+      const cqlFilter = buildBoundaryCqlFilter(layerName);
+      if (cqlFilter) params.CQL_FILTER = cqlFilter;
+      const layer = new ImageLayer({
+        title,
+        source: new ImageWMS({
+          url: WARD_ZONE_WMS,
+          params,
+          serverType: "geoserver",
+          ratio: 1,
+          crossOrigin: "anonymous",
+        }),
+      });
       layer.setZIndex(zIndex);
       return layer;
     };
-    const zoneSource = cfg.zoneLayer ? new VectorSource(manualVectorSourceOptions()) : null;
-    const wardSource = cfg.wardLayer ? new VectorSource(manualVectorSourceOptions()) : null;
-    // Zone is the coarser, larger boundary — a little extra stroke width
-    // keeps it visibly distinguishable now that it deliberately renders
-    // behind Ward's own outline (previously both used the same 2px width).
-    const zoneBoundary = zoneSource && createBoundaryLayer(zoneSource, "Zone Boundary", 39970);
-    const wardBoundary = wardSource && createBoundaryLayer(wardSource, "Ward Boundary", 39975);
-    // declutter:true within each label layer still only fights collisions
-    // among that layer's own labels (Zone vs Zone, Ward vs Ward) — cross-
-    // layer visibility (Zone's number never hidden by Ward's) is guaranteed
-    // by zIndex alone, same reasoning the old single-layer comment made.
-    // No title (unlike the fill layers below) - this is a visual split of
-    // the same Zone/Ward Boundary a user already sees, not a separate
-    // layer to expose anywhere, matching mapLoadingTracker.js's existing
-    // "untitled helper layers shouldn't clutter the loading message" rule.
-    // Label layers deliberately sit in their own top tier (50000s), above
-    // every other layer in this map (including the selected-road/chainage
-    // tier at 40000) - labels must never be hidden behind a data layer,
-    // regardless of which combination of toggles a user has active.
-    const wardLabelLayer = wardSource && createBoundaryLayer(wardSource, undefined, 50001, true);
-    const zoneLabelLayer = zoneSource && createBoundaryLayer(zoneSource, undefined, 50002, true);
-
-    const makeBoundaryFillStyle = (color, strokeWidth) => () =>
-      new Style({
-        stroke: new Stroke({ color, width: strokeWidth }),
-        fill: new Fill({ color: "rgba(255,255,255,0)" }),
-      });
-    const makeBoundaryLabelStyle = (labelAttr, color) => (feature) =>
-      new Style({
-        text: new TextStyle({
-          text: String(feature.get(labelAttr) ?? ""),
-          font: "bold 14px Arial",
-          fill: new Fill({ color: "#ffffff" }),
-          stroke: new Stroke({ color, width: 4 }),
-          overflow: true,
-          geometry: (f) => f.getGeometry()?.getInteriorPoint?.() || f.getGeometry(),
-        }),
-      });
-
-    const loadBoundaryLayer = async (layer, labelLayer, layerName, labelAttr, fallbackColor, strokeWidth = 2) => {
-      if (!layer || !layerName) return null;
-      const [workspace, layerId] = layerName.split(":");
-      const color = (await fetchLegendColor(layerName)) || fallbackColor;
-      layer.setStyle(makeBoundaryFillStyle(color, strokeWidth));
-      labelLayer?.setStyle(makeBoundaryLabelStyle(labelAttr, color));
-      try {
-        const res = await fetch(
-          `/api/boundary-geojson/${encodeURIComponent(workspace)}/${encodeURIComponent(layerId)}`
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const geojson = await res.json();
-        let features = boundaryFeatureFormat.readFeatures(geojson, {
-          dataProjection: "EPSG:3857",
-          featureProjection: "EPSG:3857",
-        });
-
-        // A field-task deep link is scoped to one zone — every other zone's
-        // polygons/labels are pure visual noise for someone sent here to
-        // work on one patch. The ward layer, though, shows every ward
-        // *within* that zone (not just the URL's own ward) so the assigned
-        // ward's position relative to its neighbors is still visible —
-        // only the road layer itself stays scoped down to the target ward
-        // plus whichever wards actually border it, to keep load down.
-        const params = new URLSearchParams(location.search);
-        if (params.get("mode") === "CHAINAGE") {
-          const rawZone = params.get("zone");
-          const zoneNum = rawZone ? Number(rawZone) : NaN;
-          if (labelAttr === "zone_no") {
-            if (Number.isFinite(zoneNum)) {
-              features = features.filter((f) => Number(f.get("zone_no")) === zoneNum);
-            }
-          } else {
-            const hasZoneAttr = features.some((f) => Number.isFinite(Number(f.get("zone_no"))));
-            if (Number.isFinite(zoneNum) && hasZoneAttr) {
-              features = features.filter((f) => Number(f.get("zone_no")) === zoneNum);
-            } else {
-              // Fallback for ward layers with no zone_no attribute at all
-              // (e.g. Agra) — better to show just the assigned ward than
-              // either the whole city or nothing.
-              const rawWard = params.get("ward");
-              const wardNum = rawWard ? Number(rawWard) : NaN;
-              if (Number.isFinite(wardNum)) {
-                features = features.filter((f) => Number(f.get("ward_no")) === wardNum);
-              }
-            }
-          }
-        }
-
-        layer.getSource()?.addFeatures(features);
-      } catch (err) {
-        console.error(`Boundary layer load failed (${layerName}):`, err.message);
-        showLayerUnavailableNotice({
-          feature: "Boundary layer",
-          layerName,
-          reason: `The boundary layer ${layerName} could not be loaded. The map will continue without it.`,
-          dedupeKey: `${city}|boundary-layer|${layerName}`,
-        });
-      }
-      return color;
-    };
+    const zoneBoundary = createBoundaryLayer("Zone Boundary", cfg.zoneLayer, 39970);
+    const wardBoundary = createBoundaryLayer("Ward Boundary", cfg.wardLayer, 39975);
 
     const applyRoadLabelStyle = (layer, layerName) => {
       if (!layer || !layerName) return;
@@ -2815,26 +2729,20 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       // RTT history, then self-corrects shortly after — which silently
       // skipped Zone/Ward boundaries on a page's first load only, until a
       // remount (confirmed live 2026-07-10).
-      const applyBoundaryLabelStyles = async () => {
-        // Zone stroke is deliberately much wider than ward's (not just
-        // 1px more) - at the exact edge where a zone and ward boundary
-        // coincide, the thinner ward line needs to sit visibly inside a
-        // clearly wider zone line peeking out from behind it, or the
-        // "zone is behind ward" z-order is invisible to the eye even
-        // though it's technically correct in the layer stack.
+      const syncBoundaryColors = async () => {
         const [zoneColor, wardColor] = await Promise.all([
-          loadBoundaryLayer(zoneBoundary, zoneLabelLayer, cfg.zoneLayer, "zone_no", "#e11d48", 6),
-          loadBoundaryLayer(wardBoundary, wardLabelLayer, cfg.wardLayer, "ward_no", "#16a34a", 2),
+          cfg.zoneLayer ? fetchLegendColor(cfg.zoneLayer) : null,
+          cfg.wardLayer ? fetchLegendColor(cfg.wardLayer) : null,
         ]);
         if (zoneColor) setZoneBoundaryColor(zoneColor);
         if (wardColor) setWardBoundaryColor(wardColor);
       };
-      applyBoundaryLabelStyles();
+      syncBoundaryColors();
     }
 
     const adminLayers = new LayerGroup({
       title: "Administrative Layers",
-      layers: [zoneBoundary, wardBoundary, wardLabelLayer, zoneLabelLayer].filter(Boolean),
+      layers: [zoneBoundary, wardBoundary].filter(Boolean),
       fold: "open",
     });
     adminLayers.setZIndex(20000);
@@ -2982,15 +2890,17 @@ const cfg1 = chainageCityConfig[city?.toLowerCase()];//chainage
       const isGroup = specCfg && typeof specCfg === "object" && specCfg.options;
       const activeOption = layerVisibility?.specializedOptions?.[id];
       const defaultNoneGroup = id === "drainage" || id === "slum";
+      const requiresExplicitOption = id === "sewage";
       const wantsNone =
         isGroup &&
         (String(activeOption) === "none" ||
-          (defaultNoneGroup && (activeOption === undefined || activeOption === null)));
+          (defaultNoneGroup && (activeOption === undefined || activeOption === null)) ||
+          (requiresExplicitOption && (activeOption === undefined || activeOption === null)));
 
       let layerName = "";
       if (isGroup) {
         const firstKey = Object.keys(specCfg.options)[0];
-        const optKey = wantsNone ? firstKey : (activeOption || firstKey);
+        const optKey = activeOption || firstKey;
         const opt = specCfg.options[optKey];
         layerName = typeof opt === "string" ? opt : (opt?.layer || "");
       } else {
@@ -3711,8 +3621,8 @@ if (cfg1) {
           return;
         }
         const title = layer.get("title");
-        // Zone/Ward Boundary are outline+label only (client-rendered vector
-        // polygons covering the whole city) — purely visual, never a click
+        // Zone/Ward Boundary are outline+label WMS overlays covering the
+        // whole city — purely visual, never a click target.
         // target. Without this guard every click anywhere inside a
         // zone/ward polygon (i.e. almost every click) would win this
         // hit-test ahead of the actual road underneath it, since these
@@ -5786,9 +5696,11 @@ if (cfg1) {
         if (isVisible && isGroup) {
           const activeOption = layerVisibility?.specializedOptions?.[key];
           const defaultNoneGroup = key === "drainage" || key === "slum";
+          const requiresExplicitOption = key === "sewage";
           const wantsNone =
             String(activeOption) === "none" ||
-            (defaultNoneGroup && (activeOption === undefined || activeOption === null));
+            (defaultNoneGroup && (activeOption === undefined || activeOption === null)) ||
+            (requiresExplicitOption && (activeOption === undefined || activeOption === null));
 
           if (wantsNone) {
             layer.setVisible(false);
@@ -5801,7 +5713,13 @@ if (cfg1) {
 
           const source = layer.getSource();
           if (source && source.getParams().LAYERS !== newLayerName) {
-            source.updateParams({ LAYERS: newLayerName, _t: Date.now() });
+            layer.setSource(
+              makeTileWmsSource({
+                layerName: newLayerName,
+                workspace: getWorkspaceFromLayerName(newLayerName),
+                cacheable: true,
+              })
+            );
           }
         }
       }
@@ -6247,7 +6165,7 @@ if (cfg1) {
 
   // ---------- DSS WMS (foundation patch — GeoServer contract) ----------
   // Exactly one DSS WMS layer at a time, driven by activeDssModule/
-  // activeDssLayer/activeDssStyle from Dashboard. Deliberately not part of
+  // activeDssLayer from Dashboard. Deliberately not part of
   // the dssLayersRef vector-layer path above (that stays fed by the old
   // /dss page's own GeoJSON fetches) and never added to the GetFeatureInfo
   // candidate list, so it can't intercept normal road clicks.
@@ -6268,7 +6186,6 @@ if (cfg1) {
           url: GEOSERVER_BASE + "/wms",
           params: {
             LAYERS: activeDssLayer,
-            STYLES: activeDssStyle || "",
             TILED: true,
             FORMAT: "image/png",
             TRANSPARENT: true,
@@ -6288,11 +6205,10 @@ if (cfg1) {
     } else {
       dssWmsLayerRef.current.getSource().updateParams({
         LAYERS: activeDssLayer,
-        STYLES: activeDssStyle || "",
       });
       dssWmsLayerRef.current.setVisible(true);
     }
-  }, [mapReady, city, activeDssModule, activeDssLayer, activeDssStyle]);
+  }, [mapReady, city, activeDssModule, activeDssLayer]);
 
   useEffect(() => {
     const map = mapRef.current;
