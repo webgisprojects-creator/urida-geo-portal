@@ -13,7 +13,9 @@
     "pm2:start": "pm2 start deploy/ecosystem.config.js",
     "pm2:reload": "pm2 reload deploy/ecosystem.config.js",
     "pm2:stop": "pm2 stop deploy/ecosystem.config.js",
-    "pm2:logs": "pm2 logs urida-backend"
+    "pm2:logs": "pm2 logs urida-backend",
+    "deploy:prod": "bash scripts/deploy-prod.sh",
+    "prod:version": "ssh root@192.168.190.112 'cat /srv/urida/current/VERSION 2>/dev/null || echo VERSION file not found'"
   },
   "engines": {
     "node": ">=18"
