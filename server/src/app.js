@@ -54,7 +54,8 @@ const envAllowedOrigins = (process.env.CORS_ORIGINS || '')
   .map(o => o.trim())
   .filter(Boolean);
 
-const allowedOrigins = [...new Set([...productionAllowedOrigins, ...envAllowedOrigins])];
+const allowedOrigins = [...new Set([...productionAllowedOrigins, ...envAllowedOrigins])]
+  .map(o => o.toLowerCase());
 
 // Patterns always allowed regardless of environment
 const localhostPattern = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
@@ -87,8 +88,9 @@ app.use(cors({
     // Non-browser requests (curl, server-to-server) have no Origin — allow them
     if (!origin) return callback(null, true);
 
-    // Normalize: some browsers / proxies append a trailing slash to the origin
-    const o = origin.replace(/\/$/, '');
+    // Normalize: some browsers / proxies append a trailing slash to the origin,
+    // and the allowlist is matched case-insensitively (see allowedOrigins above).
+    const o = origin.replace(/\/$/, '').toLowerCase();
 
     // In development: automatically allow any localhost / 127.0.0.1 origin
     // on any port so developers never need to touch .env for CORS.
@@ -115,8 +117,8 @@ app.use(
     target: process.env.GEOSERVER_PROXY_TARGET || 'http://localhost:8080',
     changeOrigin: true,
     onProxyRes: function (proxyRes, req, res) {
-      const origin = String(req.headers.origin || '').replace(/\/$/, '');
-      if (origin && (allowedOrigins.includes(origin) || (isDev && localhostPattern.test(origin)) || ngrokPattern.test(origin))) {
+      const originLc = String(req.headers.origin || '').replace(/\/$/, '').toLowerCase();
+      if (originLc && (allowedOrigins.includes(originLc) || (isDev && localhostPattern.test(originLc)) || ngrokPattern.test(originLc))) {
         proxyRes.headers['Access-Control-Allow-Origin'] = origin;
         proxyRes.headers['Vary'] = 'Origin';
       }

@@ -164,9 +164,6 @@ const consumeCaptcha = (req, res, captchaValue) => {
   if (entry.expiresAt <= Date.now()) {
     return { ok: false, status: 400, message: 'CAPTCHA expired. Please try again.' };
   }
-  if (entry.ip !== getClientIp(req) || entry.userAgent !== String(req.headers['user-agent'] || '')) {
-    return { ok: false, status: 400, message: 'Invalid CAPTCHA.' };
-  }
   if (entry.answerHash !== hashCaptchaValue(normalized)) {
     return { ok: false, status: 400, message: 'Invalid CAPTCHA.' };
   }

@@ -94,5 +94,13 @@ jobs:
             curl -sf http://127.0.0.1:8060/api/health > /dev/null && echo "API/DB OK"
             curl -sf http://127.0.0.1:8060/api/auth/captcha > /dev/null && echo "CAPTCHA OK"
 
+            echo "==> Writing VERSION file..."
+            printf 'COMMIT=%s\nSHORT=%s\nMESSAGE=%s\nDEPLOYED_AT=%s\nENVIRONMENT=pre-production\n' \
+              "$(git rev-parse HEAD)" \
+              "$(git rev-parse --short HEAD)" \
+              "$(git log -1 --format='%s' HEAD)" \
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              > /srv/urida/current/VERSION
+
             echo "==> Deploy complete."
             pm2 logs urida-backend --lines 20 --nostream
