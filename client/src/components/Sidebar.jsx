@@ -48,6 +48,13 @@ const networkIconMap = {
     slum_boundary: "fa-vector-square",
 };
 
+const utilityIconMap = {
+    manhole: "fa-circle-notch",
+    sewage: "fa-water",
+    sewage_diameter: "fa-drafting-compass",
+    sewage_length: "fa-ruler-horizontal",
+};
+
 const analysisOptions = [
     { id: "bankRoad", label: "Roads Near Banks", icon: "fa-university", color: "#2563eb" },
     { id: "hospitalRoad", label: "Roads Near Hospitals", icon: "fa-hospital", color: "#ef4444" },
@@ -75,6 +82,7 @@ const Sidebar = ({
 
     const amenities = useMemo(() => Object.keys(cityData.amenities || {}), [cityData]);
     const others = useMemo(() => Object.keys(cityData.others || {}), [cityData]);
+    const utilities = useMemo(() => Object.keys(cityData.utilities || {}), [cityData]);
     const lcluClassifications = useMemo(() => Object.keys(cityData.LCLUClassifications || {}), [cityData]);
     const classifications = useMemo(
         () => Object.keys(cityData.roadClassifications || {}),
@@ -165,6 +173,14 @@ const Sidebar = ({
                 </button>
                 <button
                     type="button"
+                    className={`sidebar-tab-btn ${activeTab === "utility" ? "active" : ""}`}
+                    onClick={() => setActiveTab("utility")}
+                >
+                    <i className="fa-solid fa-wrench utility-icon"></i>
+                    Utility
+                </button>
+                <button
+                    type="button"
                     className={`sidebar-tab-btn ${activeTab === "analysis" ? "active" : ""}`}
                     onClick={() => setActiveTab("analysis")}
                 >
@@ -246,7 +262,7 @@ const Sidebar = ({
                     <div className="section-divider"></div>
 
                     <form>
-                        {specializedNetworks.map((key) => {
+                        {specializedNetworks.length > 0 && specializedNetworks.map((key) => {
                             if (key === "drainage") {
                                 return (
                                     <DrainFilter
@@ -275,6 +291,7 @@ const Sidebar = ({
                                 );
                             }
                             const specCfg = cityData.specializedNetworks[key];
+                            if (!specCfg) return null;
                             const isGroup = specCfg && typeof specCfg === "object" && specCfg.options;
                             const isChecked = !!layerVisibility?.network?.[key];
                             const activeOption = layerVisibility?.specializedOptions?.[key];
@@ -292,7 +309,7 @@ const Sidebar = ({
                                             onChange={(e) => toggleLayer("network", key, e.target.checked)}
                                         />
                                         <i className={`icon fa-solid ${networkIconMap[key] || "fa-route"}`}></i>
-                                        <span className="text">{specCfg.label || formatLabel(key)}</span>
+                                        <span className="text">{String(specCfg.label || formatLabel(key))}</span>
                                     </label>
                                     {isGroup && isChecked && key === "slum" && (
                                         <div className="sub-options-radio">
@@ -320,23 +337,7 @@ const Sidebar = ({
                                             ))}
                                         </div>
                                     )}
-                                    {isGroup && isChecked && key === "sewage" && (
-                                        <div className="sub-options-radio">
-                                            {Object.entries(specCfg.options).map(([optKey, optCfg]) => (
-                                                <label key={optKey}>
-                                                    <input
-                                                        type="radio"
-                                                        name={`specialized-${key}`}
-                                                        checked={String(activeOption) === String(optKey)}
-                                                        onChange={() => toggleLayer("network", key, true, optKey)}
-                                                    />
-                                                    <i className={`icon fa-solid ${optKey === "diameter" ? "fa-drafting-compass" : "fa-ruler-horizontal"}`}></i>
-                                                    <span className="text">{typeof optCfg === "string" ? formatLabel(optKey) : optCfg.label}</span>
-                                                </label>
-                                            ))}
-                                        </div>
-                                    )}
-                                    {isGroup && isChecked && key !== "slum" && key !== "sewage" && (
+                                    {isGroup && isChecked && key !== "slum" && (
                                         <div className="sub-options-selector">
                                             {Object.entries(specCfg.options).map(([optKey, optCfg]) => (
                                                 <button
@@ -433,6 +434,62 @@ const Sidebar = ({
                             </div>
                         </div>
                     )}
+                </div>
+            )}
+
+            {activeTab === "utility" && (
+                <div className="sidebar-section">
+                    <form>
+                        {utilities.length > 0 ? (
+                            utilities.map((key) => {
+                                const utilCfg = cityData.utilities[key];
+                                const isGroup = utilCfg && typeof utilCfg === "object" && utilCfg.options;
+                                const isChecked = !!layerVisibility?.utility?.[key];
+                                const activeOption = layerVisibility?.specializedOptions?.[key];
+                                const effectiveOption = activeOption || (isGroup ? Object.keys(utilCfg.options)[0] : null);
+
+                                return (
+                                    <div key={key} className="specialized-network-item">
+                                        <label className="sidebar-checkable">
+                                            <input
+                                                type="checkbox"
+                                                checked={isChecked}
+                                                onChange={(e) => {
+                                                    const checked = e.target.checked;
+                                                    if (checked && isGroup && !activeOption) {
+                                                        const defaultOpt = Object.keys(utilCfg.options)[0];
+                                                        toggleLayer("utility", key, true, defaultOpt);
+                                                    } else {
+                                                        toggleLayer("utility", key, checked);
+                                                    }
+                                                }}
+                                            />
+                                            <i className={`icon fa-solid ${utilityIconMap[key] || "fa-location-dot"}`}></i>
+                                            <span className="text">{String(typeof utilCfg === 'object' ? (utilCfg.label || formatLabel(key)) : formatLabel(key))}</span>
+                                        </label>
+                                        {isGroup && isChecked && (
+                                            <div className="sub-options-radio">
+                                                {Object.entries(utilCfg.options).map(([optKey, opt]) => (
+                                                    <label key={optKey}>
+                                                        <input
+                                                            type="radio"
+                                                            name={`utility-${key}`}
+                                                            checked={String(effectiveOption) === optKey}
+                                                            onChange={() => toggleLayer("utility", key, true, optKey)}
+                                                        />
+                                                        <i className={`icon fa-solid ${utilityIconMap[`${key}_${optKey}`] || "fa-circle"}`}></i>
+                                                        <span className="text">{opt.label || formatLabel(optKey)}</span>
+                                                    </label>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })
+                        ) : (
+                            <div className="text">No utility layers available</div>
+                        )}
+                    </form>
                 </div>
             )}
 

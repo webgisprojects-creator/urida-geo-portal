@@ -40,6 +40,7 @@ export const cityConfig = {
       religious: "Amenities:Agra_Religious",
       state_gov: "Amenities:Agra_State_Gov",
     },
+    
   },
 
   aligarh: {
@@ -178,6 +179,19 @@ export const cityConfig = {
       post_office: "Amenities:Bareilly_Post_Office",
       religious: "Amenities:Bareilly_Religious",
       state_gov: "Amenities:Bareilly_State_Gov",
+    },
+
+    specializedNetworks: {
+      drainage: {
+        label: "Drainage Network",
+        options: {
+          network: "Road_Network:Bareilly_Drain",
+          condition: "Road_Network:Bareilly_Drain_Condition",
+          material: "Road_Network:Bareilly_Drain_Material",
+          status: "Road_Network:Bareilly_Drain_Status",
+          type: "Road_Network:Bareilly_Drain_Type",
+        },
+      },
     },
   },
 
@@ -443,13 +457,6 @@ export const cityConfig = {
     roadLayer: "Road_Network:Lucknow_Road_Network",
 
     specializedNetworks: {
-      sewage: {
-        label: "Sewage Network",
-        options: {
-          diameter: { label: "Diameter", layer: "Road_Network:Lucknow_Sewage_Diameter_Net" },
-          length: { label: "Length", layer: "Road_Network:Lucknow_Sewage_Length_Net" },
-        },
-      },
     },
 
     roadClassifications: {
@@ -480,10 +487,23 @@ export const cityConfig = {
       cental_gov: "Amenities:Lucknow_Central_Gov",
       education: "Amenities:Lucknow_Education",
       landmark: "Amenities:Lucknow_Landmark",
-      manhole: "Amenities:Lucknow_Manhole",
       post_office: "Amenities:Lucknow_Post_Office",
       religious: "Amenities:Lucknow_Religious",
       state_gov: "Amenities:Lucknow_State_Gov",
+    },
+
+    utilities: {
+      manhole: {
+        label: "Manhole",
+        layer: "Amenities:Lucknow_Manhole"
+      },
+      sewage: {
+        label: "Sewage Network",
+        options: {
+          diameter: { label: "Diameter", layer: "Road_Network:Lucknow_Sewage_Diameter_Net", style: "Sewage_Diamenter" },
+          length: { label: "Length", layer: "Road_Network:Lucknow_Sewage_Length_Net", style: "Sewage_Length" },
+        },
+      },
     },
   },
 
@@ -729,7 +749,21 @@ export const cityConfig = {
       religious: "Amenities:Shahjahanpur_Religious",
       // state_gov: "Amenities:Saharanpur_State_Gov",
     },
+
+    specializedNetworks: {
+      drainage: {
+        label: "Drainage Network",
+        options: {
+          network: "Road_Network:Shahjahanpur_Drain",
+          condition: "Road_Network:Shahjahanpur_Drain_Condition",
+          material: "Road_Network:Shahjahanpur_Drain_Material",
+          status: "Road_Network:Shahjahanpur_Drain_Status",
+          type: "Road_Network:Shahjahanpur_Drain_Type",
+        },
+      },
+    },
   },
+
   varanasi: {
     name: "Varanasi",
     center: fromLonLat([82.9566, 25.3176]),
