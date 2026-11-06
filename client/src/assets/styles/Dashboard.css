@@ -333,7 +333,7 @@ body {
 /* === Tabs / Header Buttons === */
 .sidebar-tabs {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px 6px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.2);
   padding: 10px 16px 8px;
@@ -392,6 +392,11 @@ body {
 .lclu-icon {
   color: #a78bfa;
   /* violet */
+}
+
+.utility-icon {
+  color: #f97316;
+  /* orange */
 }
 
 /* === Checkbox and Icons === */
@@ -2080,6 +2085,8 @@ right-btn {
   left: -50px;
   min-width: 280px;
   z-index: 2000;
+  transform: translate(0, 0);
+  transition: none;
 }
 
 .ol-popup:after,

@@ -66,14 +66,16 @@ const OTHER_ICON_MAP = {
 };
 
 // Component to fetch and render dynamic legend
-const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
+const DynamicLegendItem = ({ item, city, roadFilter, extent, specializedTableData, tableDataset, specializedColumnFilters }) => {
   const [legendItems, setLegendItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [counts, setCounts] = useState({});
+  const [useImageFallback, setUseImageFallback] = useState(false);
 
   // 1. Fetch Legend Graphics (Colors)
   useEffect(() => {
     let isMounted = true;
+    setLoading(true);
 
     const fetchLegendGraphic = async () => {
       try {
@@ -83,6 +85,7 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
         )}${styleParam}`;
 
         const res = await fetch(wmsUrl);
+        if (!res.ok) throw new Error("JSON legend not supported");
         const json = await res.json();
 
         if (!isMounted) return;
@@ -97,8 +100,6 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
           else if (sym?.Line?.stroke) color = sym.Line.stroke;
           else if (sym?.Point?.graphics?.[0]?.mark?.fill) color = sym.Point.graphics[0].mark.fill;
 
-          // Helper to get rule-specific icon if needed, but color block is usually enough and cleaner
-          // We can also use the GetLegendGraphic RULE param for the icon
           let iconUrl = `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(item.layer)}${styleParam}&LEGEND_OPTIONS=forceLabels:off`;
           if (rule.name) {
             iconUrl += `&RULE=${encodeURIComponent(rule.name)}`;
@@ -108,8 +109,13 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
         });
 
         setLegendItems(items);
+        setLoading(false);
       } catch (err) {
-        if (isMounted) setLegendItems([]);
+        console.log(`[Legend] JSON fetch failed for ${item.layer}, using image fallback`);
+        if (isMounted) {
+          setUseImageFallback(true);
+          setLoading(false);
+        }
       }
     };
 
@@ -122,6 +128,59 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
     let isMounted = true;
     setLoading(true);
 
+    // For specialized networks (drainage, slum, etc.), extract counts from table data
+    if (item.noCounts && specializedTableData && tableDataset?.kind === "specialized") {
+      const attributeMap = {};
+
+      // Check if zone filter is applied for drainage
+      const isDrainageWithZoneFilter = tableDataset.networkId === "drainage" &&
+        specializedColumnFilters?.zone_no &&
+        specializedColumnFilters.zone_no.length > 0;
+      const selectedZones = isDrainageWithZoneFilter
+        ? new Set(specializedColumnFilters.zone_no.map(String))
+        : null;
+
+      specializedTableData.forEach(row => {
+        // For drainage with zone filter, skip rows not in selected zones
+        if (isDrainageWithZoneFilter) {
+          const rowZone = String(row?.zone_no || "");
+          if (!selectedZones.has(rowZone)) return;
+        }
+
+        let value;
+
+        // Map specialized network options to their corresponding table columns
+        if (tableDataset.networkId === "drainage") {
+          if (tableDataset.option === "condition") value = row.condition;
+          else if (tableDataset.option === "material") value = row.material;
+          else if (tableDataset.option === "status") value = row.status;
+          else if (tableDataset.option === "type") value = row.type;
+          else if (tableDataset.option === "ownership") value = row.ownership;
+          else if (tableDataset.option === "network") value = row.zone_no; // fallback
+          else value = row[tableDataset.option];
+        } else if (tableDataset.networkId === "slum") {
+          if (tableDataset.option === "roads") value = row.condition || row.category;
+          else if (tableDataset.option === "boundary") value = row.type || row.category;
+          else value = row[tableDataset.option];
+        } else {
+          // Generic fallback for other specialized networks
+          value = row[tableDataset.option] || row.condition || row.category || row.type;
+        }
+
+        if (value !== null && value !== undefined && value !== "") {
+          const key = String(value).toLowerCase().trim();
+          attributeMap[key] = (attributeMap[key] || 0) + 1;
+        }
+      });
+
+      if (isMounted) {
+        setCounts(attributeMap);
+        setLoading(false);
+      }
+      return () => { isMounted = false; };
+    }
+
+    // For specialized networks without table data, skip counting
     if (item.noCounts) {
       if (isMounted) {
         setCounts({});
@@ -130,6 +189,7 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
       return () => { isMounted = false; };
     }
 
+    // Standard API fetch for road classifications
     const fetchCounts = async () => {
       try {
         const params = new URLSearchParams();
@@ -137,14 +197,11 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
           params.set("filter", roadFilter);
         }
         // Live extent sync: keep this badge's count matching the map's
-        // current viewport, same as the bottom table - without this it
-        // stayed static (zone/ward/category-scoped only) while everything
-        // else on screen updated on pan/zoom.
+        // current viewport, same as the bottom table
         if (Array.isArray(extent) && extent.length === 4) {
           params.set("bbox", extent.join(","));
         }
 
-        // Use the summary API which aggregates counts based on spatial filter
         const url = `/api/road-networks/${city.toLowerCase()}/summary?${params.toString()}`;
         const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to fetch summary");
@@ -153,18 +210,11 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
 
         if (!isMounted) return;
 
-        // Map attribute to the corresponding summary field
         let mapping = {};
         const getCountMap = (arr) => {
           const map = {};
           if (Array.isArray(arr)) {
             arr.forEach(obj => {
-              // normalize label — zone_no/ward_no come back as numbers (both
-              // columns are INTEGER in the DB), not strings, so this must
-              // coerce before lowercasing or every zone/ward count silently
-              // throws and the whole map ends up empty (which is what was
-              // making the legend fall back to showing every zone/ward
-              // swatch unfiltered instead of just the ones actually present).
               map[String(obj.label).toLowerCase()] = obj.count;
             });
           }
@@ -189,49 +239,66 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
 
     fetchCounts();
     return () => { isMounted = false; };
-  }, [city, item.attribute, roadFilter, item.noCounts, extent]);
+  }, [city, item.attribute, roadFilter, item.noCounts, extent, specializedTableData, tableDataset]);
 
-  if (loading && legendItems.length === 0) return <div style={{ fontSize: '11px', color: '#888' }}>Loading...</div>;
+  if (loading && legendItems.length === 0 && !useImageFallback) return <div style={{ fontSize: '11px', color: '#888' }}>Loading...</div>;
 
-  // Render items that have counts > 0, OR all items if no counts available (fallback)
-  // The user wants "fetch from table", so we prioritize items present in the table summary.
+  // If using image fallback, show the full legend image
+  if (useImageFallback) {
+    const styleParam = item.style ? `&STYLE=${encodeURIComponent(item.style)}` : "";
+    const legendUrl = `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=200&HEIGHT=300&LAYER=${encodeURIComponent(item.layer)}${styleParam}&LEGEND_OPTIONS=forceLabels:on;fontSize:11`;
+    console.log(`[Legend] Using image fallback for ${item.layer} with style ${item.style}:`, legendUrl);
+    return (
+      <img
+        src={legendUrl}
+        alt={item.label}
+        style={{
+          maxWidth: "100%",
+          display: "block",
+          background: "rgba(255,255,255,0.88)",
+          borderRadius: "6px",
+          padding: "4px 6px",
+          border: "1px solid rgba(0,0,0,0.08)",
+        }}
+        onLoad={(e) => console.log(`[Legend] Image loaded successfully for ${item.layer}`)}
+        onError={(e) => {
+          console.error(`[Legend] Image failed to load for ${item.layer}:`, e);
+          const img = e.currentTarget;
+          if (img) img.style.display = "none";
+        }}
+      />
+    );
+  }
 
   // Create a merged list
   let displayItems = [];
 
   // Special handling for Ward/Zone breakdown when WMS legend is generic
-  // (single symbol) - if we have detailed counts but only a generic legend
-  // item, we explode the counts into legend items instead of falling
-  // through to the plain WMS rule title. That title is frequently just the
-  // bare zone/ward number with no context ("1" instead of "Zone No. 1"),
-  // which reads as meaningless on its own next to a count.
   const explodeAttributeLabel = item.attribute === "ward_no"
     ? "Ward No."
     : item.attribute === "zone_no"
       ? "Zone No."
       : null;
   const hasManyCounts = Object.keys(counts).length > 0;
-  const hasFewLegendItems = legendItems.length <= 1; // Usually 1 generic item like "gold line"
+  const hasFewLegendItems = legendItems.length <= 1;
 
   if (explodeAttributeLabel && hasManyCounts && hasFewLegendItems) {
     // Explode counts into legend items using the generic style
     let template = legendItems[0];
 
     if (!template) {
-      // Fallback if no rules found: use generic layer legend
       const genericIconUrl = `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(item.layer)}&LEGEND_OPTIONS=forceLabels:off`;
       template = { color: '#ccc', iconUrl: genericIconUrl };
     }
 
     displayItems = Object.entries(counts).map(([label, count]) => ({
-      label: `${explodeAttributeLabel} ${label}`, // e.g. "Zone No. 1" / "Ward No. 1"
-      name: label, // e.g. "1" (used for filter)
+      label: `${explodeAttributeLabel} ${label}`,
+      name: label,
       color: template.color,
       iconUrl: template.iconUrl,
       count
     }));
 
-    // Sort numerically
     displayItems.sort((a, b) => {
       const na = parseInt(a.name, 10);
       const nb = parseInt(b.name, 10);
@@ -240,11 +307,7 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
     });
 
   } else {
-    // Standard matching: match WMS legend items to counts. GeoServer's own
-    // rule titles for a zone/ward layer are frequently just the bare number
-    // ("1"), one rule per zone/ward with its own real color - preserve that
-    // per-item color/icon, only relabel the bare-numeric title so it still
-    // reads as "Zone No. 1" instead of a meaningless "1".
+    // Standard matching: match WMS legend items to counts
     displayItems = legendItems.map(lItem => {
       const count = counts[lItem.label.toLowerCase()] || 0;
       const label = explodeAttributeLabel && /^\d+$/.test(String(lItem.label).trim())
@@ -254,11 +317,9 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
     });
   }
 
-  // Filter out zero counts if we have at least some data?
-  // If the table returns data, we should probably only show what's there.
+  // Filter out zero counts if we have at least some data
   const hasAnyCounts = Object.keys(counts).length > 0 && !item.noCounts;
 
-  // If we have counts, filter. If not (e.g. API error or empty), show all but with 0.
   const finalItems = hasAnyCounts
     ? displayItems.filter(i => i.count > 0)
     : displayItems;
@@ -270,23 +331,17 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent }) => {
   return (
     <div className="dynamic-legend-grid" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
       {finalItems.map((lItem, idx) => {
-        // Construct filter expression
-        // We need to handle numeric vs string values roughly
-        // For safety, assume string and quote it, unless we know it's numeric?
-        // Actually, the summary API returns labels.
-        // We'll use the label as the value.
-        // For Ward explosion, lItem.name is the raw value ("1").
-
-        const valToUse = lItem.name || lItem.label; // Prefer name if available
+        const valToUse = lItem.name || lItem.label;
         const safeVal = `'${valToUse.replace(/'/g, "''")}'`;
         const filterExpr = `${item.attribute}=${safeVal}`;
+        const isClickable = item.onApply && !item.noCounts;
 
         return (
           <div
             key={idx}
-            style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
-            onClick={() => item.onApply && item.onApply(filterExpr)}
-            title={`Filter by ${lItem.label} (${lItem.count})`}
+            style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: isClickable ? 'pointer' : 'default' }}
+            onClick={() => isClickable && item.onApply(filterExpr)}
+            title={isClickable ? `Filter by ${lItem.label} (${lItem.count})` : lItem.label}
           >
             {lItem.iconUrl ? (
               <img
@@ -443,7 +498,12 @@ const SectionTitle = ({ children }) => (
   </div>
 );
 
-const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadFilter, onApplyFilter, amenityCounts, otherCounts, extent, dssLegend, zoneBoundaryColor, wardBoundaryColor, restrictedMode = false }) => {
+const MapLegend = ({
+  city, mode, hasSelectedChainageRoad, layerVisibility, roadFilter,
+  onApplyFilter, amenityCounts, otherCounts, utilityCounts, extent, dssLegend,
+  zoneBoundaryColor, wardBoundaryColor, restrictedMode = false,
+  specializedTableData, tableDataset, specializedColumnFilters // Add specializedColumnFilters
+}) => {
   // Draggable & Minimized State
   const [position, setPosition] = useState(null); // {x, y} or null
   const [isDragging, setIsDragging] = useState(false);
@@ -588,6 +648,47 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
       });
     }
 
+    // 2B. Utilities
+    if (layerVisibility?.utility) {
+      Object.entries(layerVisibility.utility).forEach(([key, visible]) => {
+        if (visible && Object.prototype.hasOwnProperty.call(cfg.utilities || {}, key)) {
+          const utilCfg = cfg.utilities[key];
+          const isGroup = utilCfg && typeof utilCfg === "object" && utilCfg.options;
+          const activeOption = layerVisibility?.specializedOptions?.[key];
+          const effectiveOption = activeOption || (isGroup ? Object.keys(utilCfg.options)[0] : null);
+
+          console.log(`[Legend] Utility ${key}: visible=${visible}, isGroup=${isGroup}, activeOption=${activeOption}, effectiveOption=${effectiveOption}`);
+
+          let layerName = "";
+          let label = formatAmenityLabel(key);
+          let style = "";
+
+          if (isGroup) {
+            const opt = utilCfg.options[effectiveOption];
+            layerName = typeof opt === "string" ? opt : (opt?.layer || "");
+            style = typeof opt === "object" ? (opt?.style || "") : "";
+            const optLabel = typeof opt === "string" ? effectiveOption : String(opt?.label || effectiveOption);
+            const utilLabel = typeof utilCfg === "object" ? String(utilCfg.label) : key;
+            label = `${String(utilLabel || label)} (${String(optLabel)})`;
+            console.log(`[Legend] Utility group ${key}: opt=`, opt, `layerName=`, layerName, `style=`, style);
+          } else {
+            layerName = typeof utilCfg === "string" ? utilCfg : (utilCfg?.layer || "");
+            label = typeof utilCfg === "object" ? String(utilCfg.label || formatAmenityLabel(key)) : formatAmenityLabel(key);
+          }
+
+          if (layerName) {
+            items.push({
+              id: key,
+              label: label,
+              layer: layerName,
+              group: "utilities",
+              style: style,
+            });
+          }
+        }
+      });
+    }
+
     // 2A. LCLU
     if (layerVisibility?.lclu) {
       const cityPrefix = String(cfg.name || "").replace(/\s+/g, "_");
@@ -630,7 +731,7 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
             const optKey = activeOption || Object.keys(specCfg.options)[0];
             const opt = specCfg.options[optKey];
             layerName = typeof opt === "string" ? opt : (opt?.layer || "");
-            const optLabel = typeof opt === "string" ? optKey : (opt?.label || optKey);
+            const optLabel = typeof opt === "string" ? optKey : String(opt?.label || optKey);
             label = `${label} (${optLabel})`;
           } else {
             layerName = typeof specCfg === "string" ? specCfg : (specCfg.layer || "");
@@ -791,8 +892,9 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
   const chainageItems = safeItems.filter((item) => item.group === "chainage");
   const amenityItems = safeItems.filter((item) => item.group === "amenities");
   const otherItems = safeItems.filter((item) => item.group === "others");
+  const utilityItems = safeItems.filter((item) => item.group === "utilities");
   const remainingItems = safeItems.filter(
-    (item) => !item.boundary && item.group !== "chainage" && item.group !== "amenities" && item.group !== "others"
+    (item) => !item.boundary && item.group !== "chainage" && item.group !== "amenities" && item.group !== "others" && item.group !== "utilities"
   );
   const dssGroups = Array.isArray(dssLegend) ? dssLegend.filter(Boolean) : [];
 
@@ -1094,13 +1196,102 @@ const MapLegend = ({ city, mode, hasSelectedChainageRoad, layerVisibility, roadF
                 </div>
               </div>
             )}
+            {utilityItems.length > 0 && (
+              <div>
+                <SectionTitle>Utilities</SectionTitle>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {utilityItems.map((item) => {
+                    if (!item) return null;
+                    const icon = OTHER_ICON_MAP[item.id];
+                    const count = typeof utilityCounts?.[item.id] === "number" ? utilityCounts[item.id] : null;
+
+                    console.log(`[Legend] Utility item:`, item);
+
+                    // For utility layers with styles, use DynamicLegendItem to fetch and parse SLD values
+                    if (item.style) {
+                      return (
+                        <div key={item.id}>
+                          <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "6px", color: "#1e2b3a" }}>
+                            {item.label}
+                          </div>
+                          <DynamicLegendItem
+                            item={{
+                              ...item,
+                              isDynamic: true,
+                              noCounts: true,
+                            }}
+                            city={city}
+                            roadFilter={roadFilter}
+                            extent={extent}
+                            specializedTableData={specializedTableData}
+                            tableDataset={tableDataset}
+                            specializedColumnFilters={specializedColumnFilters}
+                          />
+                        </div>
+                      );
+                    }
+
+                    // For simple utility layers without styles
+                    const legendUrl = item.layer
+                      ? `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(
+                        item.layer
+                      )}${item.style ? `&STYLE=${encodeURIComponent(item.style)}` : ""}&LEGEND_OPTIONS=forceLabels:off`
+                      : "";
+                    return (
+                      <div
+                        key={item.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          background: "rgba(255,255,255,0.88)",
+                          borderRadius: "6px",
+                          padding: "4px 6px",
+                          border: "1px solid rgba(0,0,0,0.08)",
+                        }}
+                      >
+                        {icon ? (
+                          <img
+                            src={icon}
+                            alt={item.label}
+                            style={{ width: "16px", height: "16px", objectFit: "contain" }}
+                          />
+                        ) : legendUrl ? (
+                          <img
+                            src={legendUrl}
+                            alt={item.label}
+                            style={{ width: "16px", height: "16px", objectFit: "contain" }}
+                            onError={(e) => {
+                              const img = e.currentTarget;
+                              if (img) img.style.display = "none";
+                            }}
+                          />
+                        ) : null}
+                        <div style={{ display: "flex", justifyContent: "space-between", flex: 1, fontSize: "12px", color: "#1e2b3a" }}>
+                          <span>{item.label}</span>
+                          <span style={{ fontWeight: 600 }}>{count === null ? "—" : count}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {remainingItems.filter(Boolean).map((item) => (
               <div key={item.id}>
                 {!hideItemLabel && !item.boundary && (
                   <SectionTitle>{item.label}</SectionTitle>
                 )}
                 {item.isDynamic ? (
-                  <DynamicLegendItem item={item} city={city} roadFilter={roadFilter} extent={extent} />
+                  <DynamicLegendItem
+                    item={item}
+                    city={city}
+                    roadFilter={roadFilter}
+                    extent={extent}
+                    specializedTableData={specializedTableData}
+                    tableDataset={tableDataset}
+                    specializedColumnFilters={specializedColumnFilters}
+                  />
                 ) : (
                   <img
                     src={`${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(
