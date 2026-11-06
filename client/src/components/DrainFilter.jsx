@@ -137,6 +137,7 @@ const DrainFilter = ({
       const optLabel = typeof opt === "string" ? optionKey : (opt?.label || optionKey);
       if (!layerName) return;
 
+      console.log("Loading drainage table for option:", optionKey, "layer:", layerName);
       resetTableStateForSpecialized();
       setTableDataset({
         kind: "specialized",
@@ -151,30 +152,57 @@ const DrainFilter = ({
 
       setIsLoading(true);
       try {
-        const url = `/api/road-networks/${cityKey}/specialized-details?network=${encodeURIComponent(
+        // Fetch first page to get total count
+        const firstUrl = `/api/road-networks/${cityKey}/specialized-details?network=${encodeURIComponent(
           "drainage"
-        )}&option=${encodeURIComponent(optionKey)}&layer=${encodeURIComponent(layerName)}&page=1&limit=2000`;
-        const res = await fetch(url);
-        const payload = await res.json();
-        if (!res.ok) throw new Error(payload?.error || `HTTP ${res.status}`);
+        )}&option=${encodeURIComponent(optionKey)}&layer=${encodeURIComponent(layerName)}&page=1&limit=5000`;
+        console.log("Fetching from URL:", firstUrl);
+        const firstRes = await fetch(firstUrl);
+        const firstPayload = await firstRes.json();
+        console.log("API response:", firstPayload);
+        if (!firstRes.ok) throw new Error(firstPayload?.error || `HTTP ${firstRes.status}`);
 
-        const rows = payload?.data || [];
+        const total = firstPayload?.total || 0;
+        const allRows = firstPayload?.data || [];
+        console.log("Total records:", total, "First page rows:", allRows.length);
+
+        // Calculate how many more pages we need
+        const pageSize = 5000;
+        const totalPages = Math.ceil(total / pageSize);
+
+        // Fetch remaining pages
+        for (let i = 2; i <= totalPages; i++) {
+          console.log(`Fetching page ${i} of ${totalPages}`);
+          const url = `/api/road-networks/${cityKey}/specialized-details?network=${encodeURIComponent(
+            "drainage"
+          )}&option=${encodeURIComponent(optionKey)}&layer=${encodeURIComponent(layerName)}&page=${i}&limit=${pageSize}`;
+          const res = await fetch(url);
+          const payload = await res.json();
+          if (res.ok && payload?.data) {
+            allRows.push(...payload.data);
+            console.log(`Page ${i}: received ${payload.data.length} rows, total so far: ${allRows.length}`);
+          }
+        }
+
+        console.log("Total rows loaded:", allRows.length);
         setTableDataset({
           kind: "specialized",
           title: `${specCfg.label || "Drainage Network"} (${optLabel})`,
           networkId: "drainage",
           option: optionKey,
           layerName,
-          columns: payload?.columns || null,
+          columns: firstPayload?.columns || null,
           columnOrder,
           columnLabelMap,
         });
-        setSpecializedAllRows(rows);
-        setTableRows(rows);
-        setGlobalTableMetrics({ total_roads: payload?.total || rows.length, total_length_km: 0 });
+        setSpecializedAllRows(allRows);
+        setTableRows(allRows);
+        console.log("DrainFilter: Set tableRows to", allRows.length, "rows");
+        setGlobalTableMetrics({ total_roads: total, total_length_km: 0 });
         setCurrentPage(1);
         setShouldFetchTable(true);
         setIsTableMinimized(false);
+        console.log("DrainFilter: Data load complete");
       } catch (err) {
         console.error("Drainage table load error:", err);
       } finally {

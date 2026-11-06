@@ -50,6 +50,7 @@ const MapToolbar = ({
   onApplyRoadFilter, // ⭐ ADDED — this will send filter to MapContainer
   onZoomToFilter, // ⭐ ADDED — this will trigger zoom to filtered features
   onClassificationChange, // ⭐ NEW: Switch active layer (category, condition, etc.)
+  onShowTable, // ⭐ NEW: Show table when classification options are clicked
   showRoadNetworkPanel, // ⭐ ADDED
   onToggleRoadNetworkPanel, // ⭐ ADDED
   baseMap,
@@ -646,7 +647,9 @@ const MapToolbar = ({
       return;
     }
     onClassificationChange?.(hasZones && selectedZone?.zone_no ? "zone" : null);
-    onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
+    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
+    onApplyRoadFilter?.(filter);
+    onShowTable?.(filter); // Show table when classification option is clicked
     try {
       const cityLower = city.toLowerCase();
 
@@ -672,7 +675,9 @@ const MapToolbar = ({
   const loadCategories = async () => {
     if (restrictedMode) return applyRestrictedSummaryLoad("byCategory", "Road Category", "category");
     onClassificationChange?.("category");
-    onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
+    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
+    onApplyRoadFilter?.(filter);
+    onShowTable?.(filter); // Show table when classification option is clicked
     try {
       const cityLower = city.toLowerCase();
       if (hasZones && selectedZone?.zone_no) {
@@ -704,7 +709,9 @@ const MapToolbar = ({
   const loadCondition = async () => {
     if (restrictedMode) return applyRestrictedSummaryLoad("byCondition", "Road Condition", "condition");
     onClassificationChange?.("condition");
-    onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
+    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
+    onApplyRoadFilter?.(filter);
+    onShowTable?.(filter); // Show table when classification option is clicked
     try {
       const cityLower = city.toLowerCase();
       if (hasZones && selectedZone?.zone_no) {
@@ -736,7 +743,9 @@ const MapToolbar = ({
   const loadMaterial = async () => {
     if (restrictedMode) return applyRestrictedSummaryLoad("byMaterial", "Road Material", "material");
     onClassificationChange?.("material");
-    onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
+    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
+    onApplyRoadFilter?.(filter);
+    onShowTable?.(filter); // Show table when classification option is clicked
     try {
       const cityLower = city.toLowerCase();
       if (hasZones && selectedZone?.zone_no) {
@@ -768,7 +777,9 @@ const MapToolbar = ({
   const loadOwnership = async () => {
     if (restrictedMode) return applyRestrictedSummaryLoad("byOwnership", "Road Ownership", "ownership");
     onClassificationChange?.("ownership");
-    onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
+    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
+    onApplyRoadFilter?.(filter);
+    onShowTable?.(filter); // Show table when classification option is clicked
     try {
       const cityLower = city.toLowerCase();
       if (hasZones && selectedZone?.zone_no) {
@@ -800,7 +811,9 @@ const MapToolbar = ({
   const loadCus = async () => {
     if (restrictedMode) return applyRestrictedSummaryLoad("byCus", "Road CUS Class", "cus");
     onClassificationChange?.("cus");
-    onApplyRoadFilter?.(hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "");
+    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
+    onApplyRoadFilter?.(filter);
+    onShowTable?.(filter); // Show table when classification option is clicked
     try {
       const cityLower = city.toLowerCase();
       if (hasZones && selectedZone?.zone_no) {

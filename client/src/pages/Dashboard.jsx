@@ -148,8 +148,9 @@ const RangeSlider = ({ col, min, max, value, onChange }) => {
   );
 };
 
-const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, city, baseFilter, columnFilters, onRangePreview, datasetKind, localRows }) => {
+const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, city, baseFilter, columnFilters, onRangePreview, datasetKind, localRows, networkId }) => {
   const isSpecialized = datasetKind === "specialized";
+  const isDrainage = isSpecialized && networkId === "drainage";
   const isNumericCol = !isSpecialized && NUMERIC_COLS.includes(column.key);
   const [selected, setSelected] = useState(currentFilters || []);
   const [distinctValues, setDistinctValues] = useState([]);
@@ -180,12 +181,28 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
     if (isSpecialized) {
       const rows = Array.isArray(localRows) ? localRows : [];
       const uniq = new Set();
-      for (const row of rows) {
-        if (!row || typeof row !== "object") continue;
-        const v = row[column.key];
-        if (v === null || v === undefined || v === "") continue;
-        uniq.add(String(v));
+
+      // For drainage: if ward_no is being filtered and zone_no is selected, filter wards by zone
+      if (isDrainage && column.key === "ward_no" && columnFilters?.zone_no && columnFilters.zone_no.length > 0) {
+        const selectedZones = new Set(columnFilters.zone_no.map(String));
+        for (const row of rows) {
+          if (!row || typeof row !== "object") continue;
+          const zoneNo = String(row?.zone_no || "");
+          if (!selectedZones.has(zoneNo)) continue; // Skip rows not in selected zones
+          const v = row[column.key];
+          if (v === null || v === undefined || v === "") continue;
+          uniq.add(String(v));
+        }
+      } else {
+        // Normal behavior for all other cases
+        for (const row of rows) {
+          if (!row || typeof row !== "object") continue;
+          const v = row[column.key];
+          if (v === null || v === undefined || v === "") continue;
+          uniq.add(String(v));
+        }
       }
+
       const values = sortDistinctValues(Array.from(uniq));
       if (active) {
         setDistinctValues(values);
@@ -499,7 +516,7 @@ const DashboardPage = () => {
           : [];
         if (wards.length) setFieldTaskWardList(wards);
       })
-      .catch(() => {});
+      .catch(() => { });
     return () => {
       cancelled = true;
     };
@@ -510,14 +527,14 @@ const DashboardPage = () => {
   // that transition.
   const fieldTaskDefaultFilter = isFieldTaskMode
     ? (() => {
-        const zoneNum = urlZone ? Number(urlZone) : NaN;
-        const parts = [];
-        if (Number.isFinite(zoneNum)) parts.push(`zone_no=${zoneNum}`);
-        const wardNums = fieldTaskWardList.map(Number).filter(Number.isFinite);
-        if (wardNums.length === 1) parts.push(`ward_no=${wardNums[0]}`);
-        else if (wardNums.length > 1) parts.push(`ward_no IN (${wardNums.join(",")})`);
-        return parts.length ? parts.join(" AND ") : null;
-      })()
+      const zoneNum = urlZone ? Number(urlZone) : NaN;
+      const parts = [];
+      if (Number.isFinite(zoneNum)) parts.push(`zone_no=${zoneNum}`);
+      const wardNums = fieldTaskWardList.map(Number).filter(Number.isFinite);
+      if (wardNums.length === 1) parts.push(`ward_no=${wardNums[0]}`);
+      else if (wardNums.length > 1) parts.push(`ward_no IN (${wardNums.join(",")})`);
+      return parts.length ? parts.join(" AND ") : null;
+    })()
     : null;
   useEffect(() => {
     if (!isFieldTaskMode || !fieldTaskDefaultFilter) return;
@@ -722,6 +739,7 @@ const DashboardPage = () => {
     network: {}, // Roads OFF by default per user request
     amenities: {},
     others: {},
+    utility: {},
     lclu: {},
     roadClassifications: {},
     specializedOptions: {}, // e.g. { sewage: 'diameter' }
@@ -780,6 +798,11 @@ const DashboardPage = () => {
   });
   const [tableRows, setTableRows] = useState([]);
   const [globalTableMetrics, setGlobalTableMetrics] = useState({ total_roads: 0, total_length_km: 0 });
+
+  // Debug logging for tableRows changes
+  useEffect(() => {
+    console.log("Dashboard: tableRows updated to", tableRows.length, "rows");
+  }, [tableRows]);
   const [liveTableMetrics, setLiveTableMetrics] = useState(null);
   const liveMetricsRef = useRef({ requestId: 0, controller: null });
   const liveMetricsTimerRef = useRef(null);
@@ -1061,9 +1084,14 @@ const DashboardPage = () => {
   const applySpecializedFilters = useCallback((rows, filters) => {
     const src = Array.isArray(rows) ? rows : [];
     const entries = Object.entries(filters || {}).filter(([, v]) => Array.isArray(v) && v.length > 0);
+    console.log("applySpecializedFilters called:", {
+      totalRows: src.length,
+      filters: filters,
+      activeEntries: entries
+    });
     if (entries.length === 0) return src;
 
-    return src.filter((row) => {
+    const filtered = src.filter((row) => {
       if (!row || typeof row !== "object") return false;
       for (const [colKey, vals] of entries) {
         const cell = row[colKey];
@@ -1072,6 +1100,8 @@ const DashboardPage = () => {
       }
       return true;
     });
+    console.log("Filtered result:", filtered.length, "rows");
+    return filtered;
   }, []);
 
   // BBOX-aware DSS table fetch — reruns whenever the active module or the
@@ -1269,12 +1299,21 @@ const DashboardPage = () => {
 
   const handleColumnFilterChange = (key, selectedValues) => {
     if (tableDataset.kind === "specialized") {
+      console.log("handleColumnFilterChange (specialized):", { key, selectedValues });
       const newFilters = { ...specializedColumnFilters };
+
+      // For drainage: clear ward filter when zone filter changes
+      if (tableDataset.networkId === "drainage" && key === "zone_no") {
+        delete newFilters.ward_no;
+      }
+
       if (Array.isArray(selectedValues) && selectedValues.length > 0) {
         newFilters[key] = selectedValues.map(String);
       } else {
         delete newFilters[key];
       }
+      console.log("New filters:", newFilters);
+      console.log("specializedAllRows length:", specializedAllRows.length);
       setSpecializedColumnFilters(newFilters);
       const nextRows = applySpecializedFilters(specializedAllRows, newFilters);
       setTableRows(nextRows);
@@ -1284,6 +1323,20 @@ const DashboardPage = () => {
       setFilterPosition(null);
       setShouldFetchTable(true);
       setIsTableMinimized(false);
+
+      // For drainage: zoom to filtered data on map using zone/ward filter
+      if (tableDataset.networkId === "drainage" && Object.keys(newFilters).length > 0) {
+        const cqlParts = Object.entries(newFilters).map(([colKey, vals]) => {
+          return `${colKey} IN (${vals.map(v => `'${String(v).replace(/'/g, "''")}'`).join(",")})`;
+        });
+        const cql = cqlParts.join(" AND ");
+        console.log("Setting CQL filter for drainage map zoom:", cql);
+        setZoomFilter(cql);
+      } else if (tableDataset.networkId === "drainage" && Object.keys(newFilters).length === 0) {
+        // Clear zoom filter when filters are cleared
+        setZoomFilter("");
+      }
+
       return;
     }
 
@@ -1466,7 +1519,7 @@ const DashboardPage = () => {
 
       beginLoading("specializedTable", specCfg.label || formatGenericColumnLabel(networkId));
       try {
-        const pageLimit = getIsLowBandwidth() ? 500 : 2000;
+        const pageLimit = getIsLowBandwidth() ? 500 : 5000;
         const url = `/api/road-networks/${cityKey}/specialized-details?network=${encodeURIComponent(
           networkId
         )}&option=${encodeURIComponent(optionKey)}&layer=${encodeURIComponent(layerName)}&page=1&limit=${pageLimit}`;
@@ -1590,6 +1643,28 @@ const DashboardPage = () => {
                 [id]: defaultOpt,
               };
             }
+          }
+        }
+      }
+
+      if (group === "utility") {
+        if (option) {
+          next.specializedOptions = {
+            ...(prev.specializedOptions || {}),
+            [id]: option,
+          };
+        } else if (!checked && (prev.specializedOptions?.[id] !== undefined)) {
+          const updatedOptions = { ...(prev.specializedOptions || {}) };
+          delete updatedOptions[id];
+          next.specializedOptions = updatedOptions;
+        } else if (checked && !prev.specializedOptions?.[id]) {
+          const cfg = cityConfig[city.toLowerCase()]?.utilities?.[id];
+          if (cfg && cfg.options) {
+            const defaultOpt = Object.keys(cfg.options)[0];
+            next.specializedOptions = {
+              ...(prev.specializedOptions || {}),
+              [id]: defaultOpt,
+            };
           }
         }
       }
@@ -1801,6 +1876,9 @@ const DashboardPage = () => {
     row?.roadId ??
     row?.roadid ??
     row?.ROAD_ID ??
+    row?.gis_id ??
+    row?.gisId ??
+    row?.gid ??
     null;
 
   // Stage 1 chainage candidate guidance — Road 2/candidate ids may not be
@@ -1838,30 +1916,35 @@ const DashboardPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chainageCandidateContext, city, tableRows, buildSelectionFilter]);
 
-  // Display-only reordering: Road 2 first (Road 1 already gets the
-  // existing selected-row highlight via selectedRoadId, set by
-  // openChainageForRoadId itself — no separate tint/reorder needed for
-  // it), then candidates, then everything else in its existing order.
+  // Display-only reordering: Selected road first, then chainage candidates,
+  // then everything else in its existing order.
   // Never mutates tableRows/baseFilter/roadFilter/zoomFilter/columnFilters.
   const orderedTableRows = useMemo(() => {
-    if (!chainageCandidateContext.active) return tableRows;
-    const { road2Id, candidateRoadIds } = chainageCandidateContext;
-    const candidateSet = new Set((candidateRoadIds || []).map(String));
     const byId = new Map();
     tableRows.forEach((r) => byId.set(String(getRowSelectionId(r)), r));
     chainageCandidateTableRows.forEach((r) => {
       const id = String(getRowSelectionId(r));
       if (!byId.has(id)) byId.set(id, r);
     });
+
     const priority = (id) => {
-      if (road2Id && id === String(road2Id)) return 0;
-      if (candidateSet.has(id)) return 1;
+      // Selected road (not in chainage mode) goes first
+      if (!chainageCandidateContext.active && selectedRoadId && String(selectedRoadId) === String(id)) {
+        return 0;
+      }
+      // Chainage mode: Road 2 first
+      if (chainageCandidateContext.active) {
+        const { road2Id, candidateRoadIds } = chainageCandidateContext;
+        const candidateSet = new Set((candidateRoadIds || []).map(String));
+        if (road2Id && id === String(road2Id)) return 0;
+        if (candidateSet.has(id)) return 1;
+      }
       return 2;
     };
     return Array.from(byId.values()).sort(
       (a, b) => priority(String(getRowSelectionId(a))) - priority(String(getRowSelectionId(b)))
     );
-  }, [tableRows, chainageCandidateTableRows, chainageCandidateContext]);
+  }, [tableRows, chainageCandidateTableRows, chainageCandidateContext, selectedRoadId]);
 
   // Pagination calculations — sourced from orderedTableRows so candidate
   // rows merged/reordered above actually surface on page 1 instead of
@@ -1869,7 +1952,17 @@ const DashboardPage = () => {
   const indexOfLastRecord = currentPage * recordsPerPage;
   const indexOfFirstRecord = indexOfLastRecord - recordsPerPage;
   const currentRecords = orderedTableRows.slice(indexOfFirstRecord, indexOfLastRecord);
-  const totalPages = Math.ceil(orderedTableRows.length / recordsPerPage);
+  const totalPages = Math.ceil(((liveTableMetrics?.total_roads ?? globalTableMetrics.total_roads) || orderedTableRows.length) / recordsPerPage);
+
+  console.log("Dashboard pagination:", {
+    orderedTableRowsLength: orderedTableRows.length,
+    currentPage,
+    recordsPerPage,
+    indexOfFirstRecord,
+    indexOfLastRecord,
+    currentRecordsLength: currentRecords.length,
+    totalPages
+  });
 
   // Field-task mode's multi-road patch selection: fetches roads adjacent to
   // every currently-selected road and narrows the table's own filter down
@@ -2207,17 +2300,24 @@ const DashboardPage = () => {
     setIsTableMinimized(false);
   };
 
-  // ⭐ NEW: Robust pagination and missing road sync
+  // ⭐ NEW: Robust pagination and missing road sync + move selected road to top
   useEffect(() => {
     // Only run if we actually have data and an active single-road selection
     if (tableRows.length === 0 || !selectedRoadId || isMultiSelectMode) return;
 
     const idx = tableRows.findIndex(r => String(r.road_id) === String(selectedRoadId));
     if (idx >= 0) {
-      const expectedPage = Math.floor(idx / recordsPerPage) + 1;
-      if (currentPage !== expectedPage) {
-        console.log("[Auto-Pagination] Jumping to page:", expectedPage);
-        setCurrentPage(expectedPage);
+      // Road exists in table - move it to the top if not already there
+      if (idx !== 0) {
+        setTableRows(prev => {
+          const newRows = [...prev];
+          const [selectedRow] = newRows.splice(idx, 1);
+          return [selectedRow, ...newRows];
+        });
+      }
+      // Always stay on page 1 when a road is selected (since it's at the top)
+      if (currentPage !== 1) {
+        setCurrentPage(1);
       }
     } else {
       // Road is selected but not in current 1000 rows. Fetch and prepend!
@@ -2229,7 +2329,16 @@ const DashboardPage = () => {
           if (data && data.data && data.data.length > 0) {
             const fetchedRoad = data.data[0];
             setTableRows(prev => {
-              if (prev.some(r => String(r.road_id) === String(fetchedRoad.road_id))) return prev;
+              if (prev.some(r => String(r.road_id) === String(fetchedRoad.road_id))) {
+                // Already exists, move to top
+                const newRows = [...prev];
+                const existingIdx = newRows.findIndex(r => String(r.road_id) === String(fetchedRoad.road_id));
+                if (existingIdx > 0) {
+                  const [selectedRow] = newRows.splice(existingIdx, 1);
+                  return [selectedRow, ...newRows];
+                }
+                return newRows;
+              }
               return [fetchedRoad, ...prev];
             });
             setCurrentPage(1);
@@ -2832,6 +2941,17 @@ const DashboardPage = () => {
       Object.keys(columnFilters || {}).length > 0 ||
       tableRows.length > 0);
 
+  console.log("Dashboard showRoadTable check:", {
+    isDssMode,
+    patchTableActive,
+    shouldFetchTable,
+    tableDatasetKind: tableDataset.kind,
+    baseFilter,
+    columnFiltersCount: Object.keys(columnFilters || {}).length,
+    tableRowsLength: tableRows.length,
+    showRoadTable
+  });
+
   // Field-task/redirected sessions have no toolbar/menu route back to the
   // road table once its own close button is used — on a phone that left
   // the user stuck looking at a bare map with no way back. Restores the
@@ -2956,6 +3076,9 @@ const DashboardPage = () => {
           activeDssModule={isDssMode ? activeDssModule : null}
           activeDssLayer={activeDssModuleConfig?.layer || null}
           dssLegendGroups={isDssMode ? dssLegendGroups : null}
+          specializedAllRows={specializedAllRows} // Add this
+          tableDataset={tableDataset} // Add this
+          specializedColumnFilters={specializedColumnFilters} // Add this for legend filtering
         />
 
         {/* ⭐ TOOLBAR — updated */}
@@ -3007,6 +3130,16 @@ const DashboardPage = () => {
           }}
           onZoomToFilter={handleZoomToFilter} // ⭐ ADDED: Pass zoom handler
           onClassificationChange={handleClassificationChange} // ⭐ ADDED: Pass classification handler
+          onShowTable={(filter) => {
+            setShouldFetchTable(true);
+            if (filter) {
+              setBaseFilter(filter);
+            } else {
+              setBaseFilter("INCLUDE"); // Show all roads in table
+            }
+            setIsTableMinimized(false);
+            setCurrentPage(1);
+          }} // ⭐ NEW: Show table when classification options are clicked
           onClear={() => {
             console.log("Clearing road selection");
             setSelectedRoad("");
@@ -3065,22 +3198,22 @@ const DashboardPage = () => {
 
         {showChartPanel && (
           <div style={chartPanelMinimized ? { display: "none" } : undefined}>
-          <ChartPanel
-            city={city}
-            isOpen={!chartPanelMinimized}
-            tableOpen={tableRows.length > 0 && !isTableMinimized}
-            onClose={() => {
-              setShowChartPanel(false);
-              setChartPanelMinimized(false);
-            }}
-            onMinimize={() => setChartPanelMinimized(true)}
-            panelSide="left"
-            onChartClick={handleChartPanelChartClick}
-            onFilterChange={handleChartPanelFilterChange}
-            onClassificationChange={handleClassificationChange}
-            layerVisibility={layerVisibility}
-            onAmenityToggle={handleChartPanelAmenityToggle}
-          />
+            <ChartPanel
+              city={city}
+              isOpen={!chartPanelMinimized}
+              tableOpen={tableRows.length > 0 && !isTableMinimized}
+              onClose={() => {
+                setShowChartPanel(false);
+                setChartPanelMinimized(false);
+              }}
+              onMinimize={() => setChartPanelMinimized(true)}
+              panelSide="left"
+              onChartClick={handleChartPanelChartClick}
+              onFilterChange={handleChartPanelFilterChange}
+              onClassificationChange={handleClassificationChange}
+              layerVisibility={layerVisibility}
+              onAmenityToggle={handleChartPanelAmenityToggle}
+            />
           </div>
         )}
       </div>
@@ -3107,7 +3240,7 @@ const DashboardPage = () => {
               <span className="pagination-entries-text">
                 Showing {indexOfFirstRecord + 1} to{" "}
                 {Math.min(indexOfLastRecord, tableRows.length)} of{" "}
-                {tableRows.length} entries
+                {(liveTableMetrics?.total_roads ?? globalTableMetrics.total_roads) || tableRows.length} entries
               </span>
               <div className="road-count-badge" style={{
                 background: "rgba(74, 144, 226, 0.1)",
@@ -3120,16 +3253,24 @@ const DashboardPage = () => {
                 display: "flex",
                 gap: "10px"
               }}>
-                <span title="Total number of currently filtered roads">
-                  <i className="fas fa-road road-count-badge__icon" style={{ marginRight: "4px", color: "#4a90e2" }}></i>
-                  {(liveTableMetrics?.total_roads ?? globalTableMetrics.total_roads) || tableRows.length} Roads
+                <span title={`Total number of currently filtered ${tableDataset.kind === "specialized" && tableDataset.networkId === "drainage" ? "drains" : "roads"}`}>
+                  <i className={`fas ${tableDataset.kind === "specialized" && tableDataset.networkId === "drainage" ? "fa-faucet" : "fa-road"} road-count-badge__icon`} style={{ marginRight: "4px", color: "black" }}></i>
+                  {(liveTableMetrics?.total_roads ?? globalTableMetrics.total_roads) || tableRows.length} {tableDataset.kind === "specialized" && tableDataset.networkId === "drainage" ? "Drains" : "Roads"}
                 </span>
                 <span style={{ color: "rgba(0,0,0,0.2)" }}>|</span>
-                <span title="Total length of currently filtered roads">
-                  <i className="fas fa-ruler-horizontal road-count-badge__icon" style={{ marginRight: "4px", color: "#4a90e2" }}></i>
-                  {((liveTableMetrics?.total_length_km ?? globalTableMetrics.total_length_km) > 0
-                    ? Number(liveTableMetrics?.total_length_km ?? globalTableMetrics.total_length_km).toFixed(2)
-                    : tableRows.reduce((sum, r) => sum + (Number(r.length_km) || 0), 0).toFixed(2))} km
+                <span title={`Total length of currently filtered ${tableDataset.kind === "specialized" && tableDataset.networkId === "drainage" ? "drains" : "roads"}`}>
+                  <i className="fas fa-ruler-horizontal road-count-badge__icon" style={{ marginRight: "4px", color: "black" }}></i>
+                  {(() => {
+                    if (tableDataset.kind === "specialized" && tableDataset.networkId === "drainage") {
+                      // For drainage, calculate length from 'length' column (in meters, convert to km)
+                      const totalLengthMeters = tableRows.reduce((sum, r) => sum + (Number(r?.length) || 0), 0);
+                      return (totalLengthMeters / 1000).toFixed(2);
+                    }
+                    // For roads, use existing logic
+                    return ((liveTableMetrics?.total_length_km ?? globalTableMetrics.total_length_km) > 0
+                      ? Number(liveTableMetrics?.total_length_km ?? globalTableMetrics.total_length_km).toFixed(2)
+                      : tableRows.reduce((sum, r) => sum + (Number(r.length_km) || 0), 0).toFixed(2));
+                  })()} km
                 </span>
               </div>
               {/* Active Filter Badge + Clear All */}
@@ -3303,35 +3444,35 @@ const DashboardPage = () => {
                               setFilterPosition(null);
                             } else {
                               const rect = e.currentTarget.getBoundingClientRect();
-                            const viewportHeight = window.innerHeight;
-                            const spaceBelow = viewportHeight - rect.bottom;
-                            const spaceAbove = rect.top;
-                            const dropdownHeight = 300;
-                            const dropdownWidth = 220;
+                              const viewportHeight = window.innerHeight;
+                              const spaceBelow = viewportHeight - rect.bottom;
+                              const spaceAbove = rect.top;
+                              const dropdownHeight = 300;
+                              const dropdownWidth = 220;
 
-                            // Horizontal: anchor left unless it would overflow right edge
-                            const spaceRight = window.innerWidth - rect.left;
-                            const left = spaceRight < dropdownWidth
-                              ? rect.right - dropdownWidth
-                              : rect.left;
+                              // Horizontal: anchor left unless it would overflow right edge
+                              const spaceRight = window.innerWidth - rect.left;
+                              const left = spaceRight < dropdownWidth
+                                ? rect.right - dropdownWidth
+                                : rect.left;
 
-                            const isNumeric = NUMERIC_COLS.includes(col.key);
-                            let pos = { left: Math.max(0, left) };
+                              const isNumeric = NUMERIC_COLS.includes(col.key);
+                              let pos = { left: Math.max(0, left) };
 
-                            // Vertical: place above if more space there
-                            if (spaceBelow < dropdownHeight && spaceAbove > spaceBelow) {
-                              pos.bottom = viewportHeight - rect.top;
-                              pos.maxHeight = isNumeric ? 280 : Math.min(250, spaceAbove - 20);
-                            } else {
-                              pos.top = rect.bottom;
-                              pos.maxHeight = isNumeric ? 280 : Math.min(250, spaceBelow - 20);
+                              // Vertical: place above if more space there
+                              if (spaceBelow < dropdownHeight && spaceAbove > spaceBelow) {
+                                pos.bottom = viewportHeight - rect.top;
+                                pos.maxHeight = isNumeric ? 280 : Math.min(250, spaceAbove - 20);
+                              } else {
+                                pos.top = rect.bottom;
+                                pos.maxHeight = isNumeric ? 280 : Math.min(250, spaceBelow - 20);
+                              }
+
+                              setFilterPosition(pos);
+                              setActiveFilterColumn(col.key);
                             }
-
-                            setFilterPosition(pos);
-                            setActiveFilterColumn(col.key);
-                          }
-                        }}
-                      >
+                          }}
+                        >
                           {col.label}
                           {col.filterable && (
                             <span className={`filter-icon ${activeFilters[col.key] ? 'active' : ''}`}>
@@ -3370,7 +3511,7 @@ const DashboardPage = () => {
                         // aren't covered by that existing highlight, so they
                         // get their own classes here.
                         chainageCandidateContext.active &&
-                        String(getRowSelectionId(row)) === String(chainageCandidateContext.road2Id)
+                          String(getRowSelectionId(row)) === String(chainageCandidateContext.road2Id)
                           ? "chainage-road2-row"
                           : chainageCandidateContext.active &&
                             chainageCandidateContext.candidateRoadIds.includes(String(getRowSelectionId(row)))
@@ -3717,6 +3858,7 @@ const DashboardPage = () => {
           onRangePreview={tableDataset.kind === "specialized" ? null : requestLiveMetrics}
           datasetKind={tableDataset.kind}
           localRows={tableDataset.kind === "specialized" ? specializedAllRows : null}
+          networkId={tableDataset.networkId}
         />
       )}
       {/*
