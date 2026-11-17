@@ -73,14 +73,17 @@ const resolveCityKey = (rawCity) => {
     return raw || "lucknow";
 };
 
-const fetchWfsCount = async (layerName, signal) => {
+const fetchWfsCount = async (layerName, signal, cqlFilter = null) => {
     if (!layerName) return 0;
     const parts = String(layerName).split(":");
     const workspace = parts.length > 1 ? parts[0] : null;
     const base = workspace ? `${GEOSERVER_BASE}/${workspace}/wfs` : `${GEOSERVER_BASE}/wfs`;
-    const url = `${base}?service=WFS&version=1.1.0&request=GetFeature&typeName=${encodeURIComponent(
+    let url = `${base}?service=WFS&version=1.1.0&request=GetFeature&typeName=${encodeURIComponent(
         layerName
     )}&resultType=hits`;
+    if (cqlFilter) {
+        url += `&CQL_FILTER=${encodeURIComponent(cqlFilter)}`;
+    }
     const res = await fetch(url, { signal });
     if (!res.ok) {
         throw new Error("WFS count failed");
@@ -228,7 +231,7 @@ const doughnutOptions = {
 
 
 
-function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters = DEFAULT_FILTERS, onFilterChange, onClassificationChange, onChartClick, panelSide = "right", tableOpen = false, layerVisibility = {}, onAmenityToggle = null }) {
+function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters = DEFAULT_FILTERS, onFilterChange, onClassificationChange, onChartClick, panelSide = "right", tableOpen = false, layerVisibility = {}, onAmenityToggle = null, selectedZone: parentSelectedZone = "", selectedWard: parentSelectedWard = "" }) {
     const [activeFilter, setActiveFilter] = useState(null);
 
     const [metrics, setMetrics] = useState({ total_roads: "--", total_length_km: "--", });
@@ -238,6 +241,11 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters =
     const [wards, setWards] = useState([]);
     const [legendColors, setLegendColors] = useState({});
     const [activeSection, setActiveSection] = useState("charts");
+
+    // Clear classification layers when switching away from charts section
+    const handleClearClassification = () => {
+        onClassificationChange?.(null);
+    };
     const [amenitiesData, setAmenitiesData] = useState([]);
     const [amenitiesLoading, setAmenitiesLoading] = useState(false);
     const [amenitiesError, setAmenitiesError] = useState("");
@@ -246,8 +254,10 @@ function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters =
 
 
 
-    const [selectedZone, setSelectedZone] = useState("");
-    const [selectedWard, setSelectedWard] = useState("");
+    // ⭐ NEW: Use parent state if provided; otherwise manage local state for dropdowns
+    const selectedZoneState = parentSelectedZone || "";
+    const selectedWardState = parentSelectedWard || "";
+
     // Whether the zones fetch below has resolved at least once for the
     // current city — without this, `zones.length === 0` is indistinguishable
     // from "still loading" during the fetch, which would flash the
@@ -312,21 +322,21 @@ const wardDropdownRef = useRef(null);//new
 
     const buildFilter = () => {
         const parts = [];
-        if (selectedZone) {
-            parts.push(`zone_no='${selectedZone}'`);
+        if (selectedZoneState) {
+            parts.push(`zone_no='${selectedZoneState}'`);
         }
-        if (selectedWard) {
-            parts.push(`ward_no='${selectedWard}'`);
+        if (selectedWardState) {
+            parts.push(`ward_no='${selectedWardState}'`);
         }
         return parts.join(" AND ");
     };
     const buildMapFilter = () => {
         const parts = [];
-        if (selectedZone) {
-            parts.push(`zone_no=${formatCqlValue(selectedZone)}`);
+        if (selectedZoneState) {
+            parts.push(`zone_no=${formatCqlValue(selectedZoneState)}`);
         }
-        if (selectedWard) {
-            parts.push(`ward_no=${formatCqlValue(selectedWard)}`);
+        if (selectedWardState) {
+            parts.push(`ward_no=${formatCqlValue(selectedWardState)}`);
         }
         if (activeFilter && selectedChartValue) {
             parts.push(`${activeFilter}=${formatCqlValue(selectedChartValue)}`);
@@ -451,25 +461,25 @@ const wardDropdownRef = useRef(null);//new
             return;
         }
 
-        if (!selectedZone) {
+        if (!selectedZoneState) {
             setWards([]);
-            setSelectedWard("");
+            parentSelectedWard = "";
             return;
         }
 
-        const cacheKey = `${cityKey}|${selectedZone}`;
+        const cacheKey = `${cityKey}|${selectedZoneState}`;
         if (wardsCacheRef.current.has(cacheKey)) {
             setWards(wardsCacheRef.current.get(cacheKey));
             return;
         }
 
-        fetch(`${baseApi}/${cityKey}/wards?zone=${selectedZone}`)
+        fetch(`${baseApi}/${cityKey}/wards?zone=${selectedZoneState}`)
             .then(r => r.json())
             .then((data) => {
                 wardsCacheRef.current.set(cacheKey, data);
                 setWards(data);
             });
-    }, [selectedZone, cityKey, zonesLoaded, hasZones]);
+    }, [selectedZoneState, cityKey, zonesLoaded, hasZones]);
 
 
     useEffect(() => {
@@ -498,7 +508,7 @@ const wardDropdownRef = useRef(null);//new
             });
 
         return () => controller.abort();
-    }, [isOpen, selectedZone, selectedWard, cityKey]);
+    }, [isOpen, selectedZoneState, selectedWardState, cityKey]);
 
 
 
@@ -623,7 +633,7 @@ const wardDropdownRef = useRef(null);//new
         run();
         return () => controller.abort();
 
-    }, [isOpen, activeFilter, selectedZone, selectedWard, legendColors, cityKey, chartMetric]);
+    }, [isOpen, activeFilter, selectedZoneState, selectedWardState, legendColors, cityKey, chartMetric]);
 
 
     useEffect(() => {
@@ -736,8 +746,9 @@ const wardDropdownRef = useRef(null);//new
 
         setActiveFilter(null);
         setSelectedChartValue("");
-        setSelectedZone("");
-        setSelectedWard("");
+        // ⭐ NEW: Use parent state directly instead of local state setters
+        setShowZoneDropdown(false);
+        setShowWardDropdown(false);
         setWards([]);
         setChartData(null);
         setMetrics({
@@ -752,13 +763,13 @@ const wardDropdownRef = useRef(null);//new
 
 
     useEffect(() => {
-        if (!selectedZone) {
-            setSelectedWard("");
+        if (!selectedZoneState) {
+            parentSelectedWard = "";
             return;
         }
 
-        setSelectedWard("");
-    }, [selectedZone]);
+        parentSelectedWard = "";
+    }, [selectedZoneState]);
 
 
     useEffect(() => {
@@ -769,7 +780,7 @@ const wardDropdownRef = useRef(null);//new
 
         const cql = buildMapFilter();
         onFilterChangeRef.current?.(cql || "");
-    }, [isOpen, selectedZone, selectedWard, activeFilter, selectedChartValue]);
+    }, [isOpen, selectedZoneState, selectedWardState, activeFilter, selectedChartValue]);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -790,7 +801,15 @@ const wardDropdownRef = useRef(null);//new
 
         const fetchAmenities = async () => {
             try {
-                const cacheKey = cityKey;
+                // Build CQL filter based on selected zone and ward
+                const cqlParts = [];
+                if (selectedZoneState) cqlParts.push(`zone_no='${selectedZoneState}'`);
+                if (selectedWardState) cqlParts.push(`ward_no='${selectedWardState}'`);
+                const cqlFilter = cqlParts.length > 0 ? cqlParts.join(' AND ') : null;
+                
+                // Use a cache key that includes the filter
+                const cacheKey = `${cityKey}_${selectedZoneState || 'all'}_${selectedWardState || 'all'}`;
+                
                 if (amenitiesCacheRef.current.has(cacheKey)) {
                     setAmenitiesData(amenitiesCacheRef.current.get(cacheKey));
                     return;
@@ -801,7 +820,7 @@ const wardDropdownRef = useRef(null);//new
                     amenityTables.map(async (name) => {
                         const layerName = amenityLayers[name];
                         if (!layerName) return { name, count: 0 };
-                        const count = await fetchWfsCount(layerName, controller.signal);
+                        const count = await fetchWfsCount(layerName, controller.signal, cqlFilter);
                         return { name, count };
                     })
                 );
@@ -821,7 +840,7 @@ const wardDropdownRef = useRef(null);//new
 
         return () => controller.abort();
 
-    }, [isOpen, activeSection, cityKey, amenityTables]);
+    }, [isOpen, activeSection, cityKey, amenityTables, selectedZoneState, selectedWardState]);
 
 
     const formatAmenityName = (name) => {
@@ -995,22 +1014,22 @@ const wardDropdownRef = useRef(null);//new
                             setShowWardDropdown(false);
                         }}
                     >
-                        <span>{selectedZone ? (zones.find(z => String(z.zone_no) === String(selectedZone))?.name || "") : "All Zones"}</span>
+                        <span>{selectedZoneState ? `Z${zones.find(z => String(z.zone_no) === String(selectedZoneState))?.zone_no}-${zones.find(z => String(z.zone_no) === String(selectedZoneState))?.name || ""}` : "All Zones"}</span>
                         <i className={`fas fa-chevron-${showZoneDropdown ? 'up' : 'down'}`}></i>
                     </div>
                     {showZoneDropdown && (
                         <div className="custom-select-options custom-scroll">
-                            <div className="option-item" onClick={() => { setSelectedZone(""); setShowZoneDropdown(false); }}>All Zones</div>
+                            <div className="option-item" onClick={() => { parentSelectedZone = ""; setShowZoneDropdown(false); }}>All Zones</div>
                             {zones.map(z => (
                                 <div
                                     key={z.zone_no}
-                                    className={`option-item ${String(selectedZone) === String(z.zone_no) ? 'selected' : ''}`}
+                                    className={`option-item ${String(selectedZoneState) === String(z.zone_no) ? 'selected' : ''}`}
                                     onClick={() => {
-                                        setSelectedZone(z.zone_no);
+                                        parentSelectedZone = z.zone_no;
                                         setShowZoneDropdown(false);
                                     }}
                                 >
-                                    {z.name || ""}
+                                    Z{z.zone_no}-{z.name || ""}
                                 </div>
                             ))}
                         </div>
@@ -1025,29 +1044,29 @@ const wardDropdownRef = useRef(null);//new
                 <div ref={wardDropdownRef} style={{ flex: 1, position: 'relative' }}>
                     <div
 
-                        className={`custom-select-trigger ${hasZones && !selectedZone ? 'disabled' : ''}`}
+                        className={`custom-select-trigger ${hasZones && !selectedZoneState ? 'disabled' : ''}`}
                         onClick={() => {
-                            if (hasZones && !selectedZone) return;
+                            if (hasZones && !selectedZoneState) return;
                             setShowWardDropdown(!showWardDropdown);
                             setShowZoneDropdown(false);
                         }}
                     >
-                        <span>{selectedWard ? (wards.find(w => String(w.ward_no) === String(selectedWard))?.name || "") : "All Wards"}</span>
+                        <span>{selectedWardState ? `W${wards.find(w => String(w.ward_no) === String(selectedWardState))?.ward_no}-${wards.find(w => String(w.ward_no) === String(selectedWardState))?.name || ""}` : "All Wards"}</span>
                         <i className={`fas fa-chevron-${showWardDropdown ? 'up' : 'down'}`}></i>
                     </div>
                     {showWardDropdown && (
                         <div className="custom-select-options custom-scroll">
-                            <div className="option-item" onClick={() => { setSelectedWard(""); setShowWardDropdown(false); }}>All Wards</div>
+                            <div className="option-item" onClick={() => { parentSelectedWard = ""; setShowWardDropdown(false); }}>All Wards</div>
                             {wards.map(w => (
                                 <div
                                     key={w.ward_no}
-                                    className={`option-item ${String(selectedWard) === String(w.ward_no) ? 'selected' : ''}`}
+                                    className={`option-item ${String(selectedWardState) === String(w.ward_no) ? 'selected' : ''}`}
                                     onClick={() => {
-                                        setSelectedWard(w.ward_no);
+                                        parentSelectedWard = w.ward_no;
                                         setShowWardDropdown(false);
                                     }}
                                 >
-                                    {w.name || ""}
+                                    W{w.ward_no}-{w.name || ""}
                                 </div>
                             ))}
                         </div>
@@ -1102,7 +1121,10 @@ const wardDropdownRef = useRef(null);//new
 
                 <button
                     className={`tab-btn ${activeSection === "overview" ? "active" : ""}`}
-                    onClick={() => setActiveSection("overview")}
+                    onClick={() => {
+                        setActiveSection("overview");
+                        handleClearClassification();
+                    }}
                 >
                     Overview
                 </button>
@@ -1115,7 +1137,10 @@ const wardDropdownRef = useRef(null);//new
 
                 <button
                     className={`tab-btn ${activeSection === "amenities" ? "active" : ""}`}
-                    onClick={() => setActiveSection("amenities")}
+                    onClick={() => {
+                        setActiveSection("amenities");
+                        handleClearClassification();
+                    }}
                 >
                     Amenities
                 </button>
