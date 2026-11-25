@@ -1,3 +1,8 @@
+// DSS table-data handlers — the GeoJSON/summary endpoints below are live
+// because the DSS TABLE reads from the DB (product requirement). The DSS
+// map layer + legend colors come from GeoServer. Refresh/counts/health
+// handlers here are unreachable — their routes in roadNetwork.js stay
+// commented out.
 import { pool } from '../config/db.js';
 import { citySchemaMap, getCityUtmEpsg, getCityOwnershipConfig } from '../config/cityConfig.js';
 

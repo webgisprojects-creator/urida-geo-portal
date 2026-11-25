@@ -8,6 +8,8 @@ import React, {
 } from "react";
 import styles from "./HomePage.Module.css";
 import Footer from "../../components/Footer";
+import cmGridConfig from "../../assets/configs/cmGridConfig.json";
+import { isStreetViewAvailable, streetViewUnavailableMessage } from "../../utils/streetViewAvailability";
 import "ol/ol.css";
 
 import Map from "ol/Map";
@@ -146,19 +148,19 @@ const BOUNDARY_WFS = {
 const CITY_BOUNDARY_COLORS = {
   agra: "#e74c3c",
   aligarh: "#8e44ad",
-  ayodhya: "#f39c12",
-  bareilly: "#16a085",
+  ayodhya: "#127bf3",
+  bareilly: "#a9cac4",
   firozabad: "#d35400",
   ghaziabad: "#2c3e50",
-  gorakhpur: "#27ae60",
+  gorakhpur: "#cfc42a",
   jhansi: "#c0392b",
   kanpur: "#2980b9",
   lucknow: "#9b59b6",
-  mathura: "#1abc9c",
+  mathura: "#3aabdf",
   meerut: "#34495e",
   moradabad: "#e67e22",
   prayagraj: "#7f8c8d",
-  saharanpur: "#2ecc71",
+  saharanpur: "#cc7a2e",
   shahjahanpur: "#c2185b",
   varanasi: "#6c5ce7",
 };
@@ -176,6 +178,11 @@ const normalizeWfsName = (raw) => {
   const lower = (raw || "").toLowerCase();
   return WFS_NAME_MAP[lower] || lower;
 };
+
+/** Read the city name off an All_Boundaries feature — GeoServer exposes
+    the property as lowercase "name"; "Name" returns undefined. */
+const getBoundaryCityKey = (feature) =>
+  normalizeWfsName(feature?.get?.("name") || feature?.get?.("Name"));
 
 const CITY_OVERLAY_OFFSET = {
   agra: [60, -40],
@@ -253,98 +260,13 @@ const ABOVE10M_VECTOR_STYLE = new Style({
   }),
 });
 
-/** CM-Grid & GPR (fill with your real layer names per city/phase) */
+/** CM-Grid & GPR configuration loaded from cmGridConfig.json
+ * To update phase availability for each city, edit:
+ * client/src/assets/configs/cmGridConfig.json
+ */
 const CM_GRID_WORKSPACE = "All_CM_Grid";
 
-const CM_GRID_WMS = {
-  agra: {
-    Phase1: { ws: "Phase_1", layer: "Agra_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Agra_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Agra_Phase_3" },
-  },
-  aligarh: {
-    Phase1: { ws: "Phase_1", layer: "Aligarh_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Aligarh_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Aligarh_Phase_3" },
-  },
-  ayodhya: {
-    Phase1: { ws: "Phase_1", layer: "Ayodhya_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Ayodhya_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Ayodhya_Phase_3" },
-  },
-  bareilly: {
-    Phase1: { ws: "Phase_1", layer: "Bareilly_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Bareilly_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Bareilly_Phase_3" },
-  },
-  firozabad: {
-    Phase1: { ws: "Phase_1", layer: "Firozabad_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Firozabad_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Firozabad_Phase_3" },
-  },
-  ghaziabad: {
-    Phase1: { ws: "Phase_1", layer: "Ghaziabad_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Ghaziabad_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Ghaziabad_Phase_3" },
-  },
-  gorakhpur: {
-    Phase1: { ws: "Phase_1", layer: "Gorakhpur_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Gorakhpur_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Gorakhpur_Phase_3" },
-  },
-  jhansi: {
-    Phase1: { ws: "Phase_1", layer: "Jhansi_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Jhansi_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Jhansi_Phase_3" },
-  },
-  kanpur: {
-    Phase1: { ws: "Phase_1", layer: "Kanpur_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Kanpur_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Kanpur_Phase_3" },
-  },
-  lucknow: {
-    Phase1: { ws: "Phase_1", layer: "Lucknow_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Lucknow_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Lucknow_Phase_3" },
-    GPR: { ws: "GPR_Layer", layer: "GPR_Data" },
-  },
-  mathura: {
-    Phase1: { ws: "Phase_1", layer: "Mathura_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Mathura_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Mathura_Phase_3" },
-  },
-  meerut: {
-    Phase1: { ws: "Phase_1", layer: "Meerut_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Meerut_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Meerut_Phase_3" },
-  },
-  moradabad: {
-    Phase1: { ws: "Phase_1", layer: "Moradabad_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Moradabad_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Moradabad_Phase_3" },
-  },
-  prayagraj: {
-    Phase1: { ws: "Phase_1", layer: "Prayagraj_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Prayagraj_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Prayagraj_Phase_3" },
-  },
-  saharanpur: {
-    Phase1: { ws: "Phase_1", layer: "Saharanpur_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Saharanpur_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Saharanpur_Phase_3" },
-  },
-  shahjahanpur: {
-    Phase1: { ws: "Phase_1", layer: "Shahjahanpur_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Shahjahanpur_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Shahjahanpur_Phase_3" },
-  },
-  varanasi: {
-    Phase1: { ws: "Phase_1", layer: "Varanasi_Phase_1" },
-    Phase2: { ws: "Phase_2", layer: "Varanasi_Phase_2" },
-    Phase3: { ws: "Phase_3", layer: "Varanasi_Phase_3" },
-  },
-  // add others as needed
-};
+const CM_GRID_WMS = cmGridConfig.CM_GRID_WMS;
 
 const resolveCmGridEntry = (entry) => {
   if (!entry) return null;
@@ -371,117 +293,10 @@ const CM_GRID_MENU_OPTIONS = [
   { value: "Phase3", label: "Phase 3", unavailableLabel: "Phase 3" },
 ];
 
-// === City card data (same as old home.js) ===
-const cityCardData = {
-  default: [
-    { title: "Total Road Count", content: "Total: 337881" },
-    { title: "Total Road Length", content: "41348.63 km" },
-    { title: "Total Above 10m Road Count", content: "10496" },
-    { title: "Total Above 10m Road Length", content: "5174.21 km" },
-  ],
-  Agra: [
-    { title: "Road Count", content: "Total: 18167" },
-    { title: "Road Length", content: "2591.49 km" },
-    { title: "Above 10m Road Count", content: "771" },
-    { title: "Above 10m Road Length", content: "314.2 km" },
-  ],
-  Aligarh: [
-    { title: "Road Count", content: "Total: 14690" },
-    { title: "Road Length", content: "1980.01 km" },
-    { title: "Above 10m Road Count", content: "388" },
-    { title: "Above 10m Road Length", content: "199.05 km" },
-  ],
-  Ayodhya: [
-    { title: "Road Count", content: "Total: 10549" },
-    { title: "Road Length", content: "1178.98 km" },
-    { title: "Above 10m Road Count", content: "278" },
-    { title: "Above 10m Road Length", content: "149.21 km" },
-  ],
-  Bareilly: [
-    { title: "Road Count", content: "Total: 15800" },
-    { title: "Road Length", content: "1621.63 km" },
-    { title: "Above 10m Road Count", content: "453" },
-    { title: "Above 10m Road Length", content: "160 km" },
-  ],
-  Firozabad: [
-    { title: "Road Count", content: "Total: 6053" },
-    { title: "Road Length", content: "809.04 km" },
-    { title: "Above 10m Road Count", content: "92" },
-    { title: "Above 10m Road Length", content: "54.28 km" },
-  ],
-  Ghaziabad: [
-    { title: "Road Count", content: "Total: 19128" },
-    { title: "Road Length", content: "2774.13 km" },
-    { title: "Above 10m Road Count", content: "767" },
-    { title: "Above 10m Road Length", content: "387.18 km" },
-  ],
-  Gorakhpur: [
-    { title: "Road Count", content: "Total: 16121" },
-    { title: "Road Length", content: "2136.17 km" },
-    { title: "Above 10m Road Count", content: "585" },
-    { title: "Above 10m Road Length", content: "286.14 km" },
-  ],
-  Jhansi: [
-    { title: "Road Count", content: "Total: 10845" },
-    { title: "Road Length", content: "1810.17 km" },
-    { title: "Above 10m Road Count", content: "298" },
-    { title: "Above 10m Road Length", content: "154.98 km" },
-  ],
-  Kanpur: [
-    { title: "Road Count", content: "Total: 23017" },
-    { title: "Road Length", content: "3776.6 km" },
-    { title: "Above 10m Road Count", content: "347" },
-    { title: "Above 10m Road Length", content: "302.96 km" },
-  ],
-  Lucknow: [
-    { title: "Road Count", content: "Total: 82354" },
-    { title: "Road Length", content: "9480.73 km" },
-    { title: "Above 10m Road Count", content: "2872" },
-    { title: "Above 10m Road Length", content: "1404.53 km" },
-  ],
-  Prayagraj: [
-    { title: "Road Count", content: "Total:16046" },
-    { title: "Road Length", content: "3089.39 km" },
-    { title: "Above 10m Road Count", content: "1026" },
-    { title: "Above 10m Road Length", content: "557.35 km" },
-  ],
-  Mathura: [
-    { title: "Road Count", content: "Total: 12970" },
-    { title: "Road Length", content: "712.39 km" },
-    { title: "Above 10m Road Count", content: "285" },
-    { title: "Above 10m Road Length", content: "207.37 km" },
-  ],
-  Meerut: [
-    { title: "Road Count", content: "Total: 19282" },
-    { title: "Road Length", content: "2947.2 km" },
-    { title: "Above 10m Road Count", content: "637" },
-    { title: "Above 10m Road Length", content: "353.49 km" },
-  ],
-  Moradabad: [
-    { title: "Road Count", content: "Total: 8331" },
-    { title: "Road Length", content: "1129.45 km" },
-    { title: "Above 10m Road Count", content: "545" },
-    { title: "Above 10m Road Length", content: "205.4 km" },
-  ],
-  Saharanpur: [
-    { title: "Road Count", content: "Total: 9811" },
-    { title: "Road Length", content: "1399.36 km" },
-    { title: "Above 10m Road Count", content: "310" },
-    { title: "Above 10m Road Length", content: "143.23 km" },
-  ],
-  Shahjahanpur: [
-    { title: "Road Count", content: "Total: 6558" },
-    { title: "Road Length", content: "623.98 km" },
-    { title: "Above 10m Road Count ", content: "182" },
-    { title: "Above 10m Road Length", content: "115.47 km" },
-  ],
-  Varanasi: [
-    { title: "Road Count", content: "Total: 30226" },
-    { title: "Road Length", content: "2272.63 km" },
-    { title: "Above 10m Road Count", content: "701" },
-    { title: "Above 10m Road Length", content: "276.51 km" },
-  ],
-};
+
+// Fallback used only while homeSummary is still loading — cards are
+// populated dynamically from the API/cache, not from hardcoded data.
+const cityCardData = { default: [] };
 
 /* ====================== COMPONENT ====================== */
 
@@ -513,13 +328,13 @@ export default function HomePage() {
   const homeSummaryRef = useRef(null);
   const buildOverlayHtmlRef = useRef(null);
   const selectedCityRef = useRef(""); // tracked in map handlers to suppress hover when a city is selected
+  const roadPopupOpenRef = useRef(false); // tracks when a road popup is explicitly opened via click
   const baseLayerSourcesRef = useRef({}); // style key -> XYZ source, for swapping the mask boundary below
   const baseLayerBoundaryRef = useRef(null);
 
   const [selectedCity, setSelectedCity] = useState("");
   const [selectedPhases, setSelectedPhases] = useState([]);
   const [phaseMenuOpen, setPhaseMenuOpen] = useState(false);
-  const [cmGridNotice, setCmGridNotice] = useState(null);
   // const [cityData] = useState(null);
   // const [isLoading] = useState(false);
   // const [error] = useState(null);
@@ -585,18 +400,23 @@ export default function HomePage() {
   const phaseOptions = useMemo(() => {
     if (!selectedCity) return CM_GRID_MENU_OPTIONS;
     const cityLayers = CM_GRID_WMS[selectedCity] || {};
-    const options = CM_GRID_MENU_OPTIONS.map((option) => ({
-      ...option,
-      available: option.kind === "header" || Boolean(resolveCmGridEntry(cityLayers[option.value])),
-    }));
+    const options = CM_GRID_MENU_OPTIONS
+      .map((option) => ({
+        ...option,
+        available: option.kind === "header" || Boolean(resolveCmGridEntry(cityLayers[option.value])),
+      }))
+      .filter((option) => option.kind === "header" || option.available);
 
     if (cityLayers.GPR) {
-      options.push({
-        value: "GPR",
-        label: "GPR Layer",
-        unavailableLabel: "GPR layer",
-        available: Boolean(resolveCmGridEntry(cityLayers.GPR)),
-      });
+      const gprAvailable = Boolean(resolveCmGridEntry(cityLayers.GPR));
+      if (gprAvailable) {
+        options.push({
+          value: "GPR",
+          label: "GPR Layer",
+          unavailableLabel: "GPR layer",
+          available: true,
+        });
+      }
     }
 
     return options;
@@ -981,10 +801,10 @@ export default function HomePage() {
       title: "UP Nagar Nigam Boundary",
       source: upBoundarySource,
       style: (feature) => {
-        const name = normalizeWfsName(feature.get("Name"));
+        const name = getBoundaryCityKey(feature);
         const color = CITY_BOUNDARY_COLORS[name] || "#2f6fd6";
         return new Style({
-          fill: new Fill({ color: color + "18" }), // ~10% fill — needed for interior hit detection
+          fill: new Fill({ color: "transparent" }), // Transparent fill - only boundary line visible
           stroke: new Stroke({ color, width: 2.5 }),
         });
       },
@@ -1030,7 +850,7 @@ export default function HomePage() {
       const hoverEl = document.createElement("div");
       hoverEl.className = "city-overlay";
       hoverEl.style.cssText =
-        "display:none;pointer-events:none;min-width:200px;max-width:260px;max-height:70vh;overflow-y:auto;";
+  "display:none;pointer-events:none;width:320px;max-width:calc(100vw - 40px);box-sizing:border-box;max-height:70vh;overflow-y:auto;";
 
       const hoverOl = new Overlay({
         element: hoverEl,
@@ -1080,6 +900,9 @@ export default function HomePage() {
 
       map.on("pointermove", (evt) => {
         if (evt.dragging) return;
+
+        // If a road popup is explicitly open via click, don't hide it on pointermove
+        if (roadPopupOpenRef.current) return;
 
         // ⛔ Suppress city boundary hover popup when a city is already selected
         if (selectedCityRef.current) {
@@ -1209,7 +1032,7 @@ export default function HomePage() {
           evt.pixel,
           (feature, layer) => {
             if (layer !== mapRef.current.upBoundaryLayer) return;
-            cityName = normalizeWfsName(feature.get("Name"));
+            cityName = getBoundaryCityKey(feature);
             return true;
           },
           { layerFilter: (l) => l === mapRef.current.upBoundaryLayer },
@@ -1260,12 +1083,29 @@ export default function HomePage() {
     map.on("singleclick", async (evt) => {
       let clickedCity = null;
 
+      // If a road popup is open and user clicks elsewhere, close it
+      if (roadPopupOpenRef.current) {
+        roadPopupOpenRef.current = false;
+        if (mapRef.current.hoverEl) {
+          mapRef.current.hoverEl.style.display = "none";
+        }
+        if (mapRef.current.hoverOverlay) {
+          mapRef.current.hoverOverlay.setPosition(undefined);
+        }
+        if (mapRef.current.highlightLayer) {
+          mapRef.current.highlightLayer.getSource().clear();
+        }
+        if (mapRef.current.above10mRef?.current)
+          mapRef.current.above10mRef.current.setOpacity(1);
+        getCmGridLayers().forEach((layer) => layer.setOpacity(1));
+      }
+
       if (!selectedCityRef.current) {
         map.forEachFeatureAtPixel(
           evt.pixel,
           (feature, layer) => {
             if (layer !== mapRef.current.upBoundaryLayer) return;
-            clickedCity = normalizeWfsName(feature.get("Name"));
+            clickedCity = getBoundaryCityKey(feature);
             return true;
           },
           { layerFilter: (l) => l === mapRef.current.upBoundaryLayer },
@@ -1310,7 +1150,11 @@ export default function HomePage() {
 
         const props = clickedAbove10mFeature.getProperties?.() || {};
         const [lng, lat] = toLonLat(evt.coordinate);
-        const streetViewUrl = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`;
+        const currentCity = selectedCityRef.current;
+        const streetViewAvailable = isStreetViewAvailable(currentCity);
+        const streetViewUrl = streetViewAvailable
+          ? `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`
+          : null;
         const escapeHtml = (value) =>
           String(value ?? "")
             .replace(/&/g, "&amp;")
@@ -1327,20 +1171,22 @@ export default function HomePage() {
             typeof value === "number" && key.includes("length")
               ? `${value.toFixed(3)} km`
               : value;
-          return `<div style="display:grid; grid-template-columns: 92px minmax(0,1fr); gap:10px; margin-bottom:6px; align-items:start;">
-            <span style="color:#64748b; font-size:11px; font-weight:600;">${formatLabel(key)}</span>
-            <span style="color:#0f172a; font-size:12px; font-weight:700; word-break:break-word;">${escapeHtml(display)}</span>
+          return `<div style="display:grid; grid-template-columns: 92px minmax(0,1fr); gap:10px; margin-bottom:6px; align-items:start; min-width:0;">
+            <span style="color:#64748b; font-size:11px; font-weight:600; min-width:0;">${formatLabel(key)}</span>
+            <span style="color:#0f172a; font-size:12px; font-weight:700; word-break:break-all; overflow-wrap:break-word; min-width:0;">${escapeHtml(display)}</span>
           </div>`;
         };
         const title = props.road_name || "Road";
-        const html = `<div style="min-width:260px; max-width:340px; padding:14px; background:#fff; border-radius:10px; box-shadow:0 10px 30px rgba(15,23,42,0.25); pointer-events:auto; position:relative;">
+        
+const html = `<div style="min-width:0; width:100%; max-width:100%; box-sizing:border-box; padding:14px; background:#fff; border-radius:10px; box-shadow:0 10px 30px rgba(15,23,42,0.25); pointer-events:auto; position:relative;">
+
           <button onclick="document.dispatchEvent(new CustomEvent('closeRoadPopup'))" style="position:absolute; right:8px; top:8px; background:#e2e8f0; border:none; border-radius:50%; width:26px; height:26px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#475569; font-size:14px;">
             <i class="fas fa-times"></i>
           </button>
           <h4 style="margin:0 28px 10px 0; border-bottom:2px solid #2563eb; padding-bottom:8px; color:#1e3a8a; font-size:15px;">
             <i class="fas fa-road" style="margin-right:6px;"></i>${escapeHtml(title)}
           </h4>
-          <div style="display:flex; flex-direction:column; gap:0; max-height:260px; overflow-y:auto; padding-right:2px;">
+          <div style="display:flex; flex-direction:column; gap:0; max-height:260px; overflow-y:auto; overflow-x:hidden; padding-right:2px;">
             ${[
               "road_id",
               "zone_name",
@@ -1355,14 +1201,20 @@ export default function HomePage() {
               "yoc",
             ].map(renderRoadRow).join("")}
           </div>
-          <a href="${streetViewUrl}" target="_blank" rel="noopener noreferrer" style="display:block; margin-top:10px; padding:7px 10px; background:#0f172a; color:#fff; border-radius:5px; text-decoration:none; font-size:12px; text-align:center; font-weight:700;">
+          ${streetViewAvailable
+            ? `<a href="${streetViewUrl}" target="_blank" rel="noopener noreferrer" style="display:block; margin-top:10px; padding:7px 10px; background:#0f172a; color:#fff; border-radius:5px; text-decoration:none; font-size:12px; text-align:center; font-weight:700;">
             Open Street View
-          </a>
+          </a>`
+            : `<div style="margin-top:10px; padding:7px 10px; background:#f1f5f9; color:#64748b; border-radius:5px; font-size:11px; text-align:center; font-weight:500;">
+            ${escapeHtml(streetViewUnavailableMessage(currentCity))}
+          </div>`
+          }
         </div>`;
 
         if (mapRef.current.hoverEl) {
           mapRef.current.hoverEl.innerHTML = html;
           mapRef.current.hoverEl.style.display = "";
+          roadPopupOpenRef.current = true; // Mark that a road popup is open
           // OL's Overlay has no setOptions()/setAutoPan() - autoPan can only
           // be set at construction (this overlay was built with
           // autoPan:false). A call to the non-existent setOptions() here
@@ -1663,6 +1515,9 @@ export default function HomePage() {
 
     // ✅ Custom event listener for closing the road popup from inside the HTML string
     const handleCloseRoadPopup = () => {
+      // Reset the flag so pointermove can work again
+      roadPopupOpenRef.current = false;
+
       // 1. Clear highlight layer
       if (mapRef.current.highlightLayer) {
         mapRef.current.highlightLayer.getSource().clear();
@@ -2226,7 +2081,14 @@ export default function HomePage() {
       if (target && target.closest && target.closest(".city-overlay-close")) {
         setShowCityOverlays(false);
       } else {
-        handleCitySelect(city);
+        // Only handle city select if this wasn't a drag operation
+        // Check the wasDragging flag set during pointerup
+        const wasDragging = element.dataset.wasDragging === "true";
+        // Reset the flag after checking
+        element.dataset.wasDragging = "false";
+        if (!wasDragging) {
+          handleCitySelect(city);
+        }
       }
     };
     const handlePointerDown = (event) => {
@@ -2236,6 +2098,9 @@ export default function HomePage() {
       const startY = event.clientY;
       const [baseX, baseY] = overlay.getOffset() || [0, 0];
       element.classList.add("dragging");
+      element.dataset.startX = `${startX}`;
+      element.dataset.startY = `${startY}`;
+      element.dataset.wasDragging = "false";
 
       const handlePointerMove = (moveEvent) => {
         const dx = moveEvent.clientX - startX;
@@ -2246,8 +2111,19 @@ export default function HomePage() {
         element.dataset.offsetY = `${nextOffset[1]}`;
       };
 
-      const handlePointerUp = () => {
+      const handlePointerUp = (upEvent) => {
+        const endX = parseFloat(element.dataset.startX || startX);
+        const endY = parseFloat(element.dataset.startY || startY);
+        const moveDistance = Math.hypot(upEvent.clientX - endX, upEvent.clientY - endY);
+        
+        // Mark as dragged if movement exceeded threshold
+        if (moveDistance >= 5) {
+          element.dataset.wasDragging = "true";
+        }
+        
+        // Always remove dragging class
         element.classList.remove("dragging");
+        
         window.removeEventListener("pointermove", handlePointerMove);
         window.removeEventListener("pointerup", handlePointerUp);
       };
@@ -2418,7 +2294,7 @@ export default function HomePage() {
           if (source && entry) {
             const features = source.getFeatures();
             const feat = features.find(
-              (f) => normalizeWfsName(f.get("Name")) === city,
+              (f) => getBoundaryCityKey(f) === city,
             );
             if (feat) {
               const extent = feat.getGeometry().getExtent();
@@ -2575,7 +2451,69 @@ export default function HomePage() {
 
   // CM-Grid / GPR WMS
   const addCmGridLayer = (city, phases) => {
-    removeLayer(cmGridRef);
+    // If the layer group already exists, just update it instead of recreating
+    const existingGroup = cmGridRef.current;
+    const map = mapRef.current?.instance || mapRef.current?.map || mapRef.current;
+    
+    if (existingGroup) {
+      // Get existing layers
+      const existingLayers = existingGroup.getLayers().getArray();
+      
+      // Create new layers for the selected phases
+      const newLayers = (Array.isArray(phases) ? phases : [phases])
+        .map((phase, index) => {
+          const entry = resolveCmGridEntry(CM_GRID_WMS[city]?.[phase]);
+          if (!entry) return null;
+          
+          // Check if this phase layer already exists
+          const existingLayer = existingLayers.find(
+            (l) => l.get("title") === `${city.toUpperCase()} ${phase}`
+          );
+          
+          if (existingLayer) {
+            // Reuse existing layer
+            existingLayer.setZIndex(600 + index);
+            existingLayer.setVisible(true);
+            return existingLayer;
+          }
+          
+          // Create new layer
+          return new TileLayer({
+            title: `${city.toUpperCase()} ${phase}`,
+            opacity: 1,
+            zIndex: 600 + index,
+            source: new TileWMS({ url: `${entry.baseUrl}/${entry.workspace}/wms`, params: { LAYERS: entry.layerName, FORMAT: "image/png", VERSION: "1.3.0", TRANSPARENT: true, TILED: true, FORMAT_OPTIONS: "antiAlias:false", ...(entry.style ? { STYLES: entry.style } : {}) }, serverType: "geoserver", crossOrigin: "anonymous", wrapX: false }),
+            visible: true,
+            imageSmoothing: false,
+          });
+        })
+        .filter(Boolean);
+      
+      if (newLayers.length === 0) {
+        removeLayer(cmGridRef);
+        return;
+      }
+      
+      // Hide layers that are not in the selected phases
+      existingLayers.forEach((layer) => {
+        const phaseTitle = layer.get("title");
+        const isSelected = newLayers.some((l) => l.get("title") === phaseTitle);
+        if (!isSelected) {
+          layer.setVisible(false);
+        }
+      });
+      
+      // Add new layers that didn't exist before
+      newLayers.forEach((layer) => {
+        if (!existingLayers.includes(layer)) {
+          existingGroup.getLayers().push(layer);
+        }
+      });
+      
+      return;
+    }
+    
+    // Create new layer group if it doesn't exist
     const layers = (Array.isArray(phases) ? phases : [phases])
       .map((phase, index) => {
         const entry = resolveCmGridEntry(CM_GRID_WMS[city]?.[phase]);
@@ -2593,7 +2531,6 @@ export default function HomePage() {
     if (layers.length === 0) return;
     const group = new LayerGroup({ layers, visible: true, zIndex: 600 });
     setLayerVisibility((prev) => ({ ...prev, cmGrid: true }));
-    const map = mapRef.current?.instance || mapRef.current?.map || mapRef.current;
     if (map && typeof map.addLayer === "function") map.addLayer(group);
     cmGridRef.current = group;
   };
@@ -2657,33 +2594,12 @@ export default function HomePage() {
     addAbove10mLayer(city);
   };
 
-  const showCmGridUnavailableNotice = useCallback((option) => {
-    const cityName = getCityDisplayName(selectedCity);
-    const phaseName = option?.unavailableLabel || option?.label || "This data";
-    setCmGridNotice({
-      feature: "CM-Grid data",
-      message: `${phaseName} data is not available for ${cityName}. You can continue using the available CM-Grid phases or other map tools.`,
-      noticeId: `${selectedCity}|${option?.value || "missing"}|${Date.now()}`,
-    });
-  }, [getCityDisplayName, selectedCity]);
-
-  useEffect(() => {
-    if (!cmGridNotice) return undefined;
-    const timer = setTimeout(() => setCmGridNotice(null), 5000);
-    return () => clearTimeout(timer);
-  }, [cmGridNotice]);
-
   const handlePhaseChange = (phase, option) => {
     if (!phase || option?.kind === "header") return;
-    if (option?.available === false) {
-      showCmGridUnavailableNotice(option);
-      return;
-    }
     const next = selectedPhases.includes(phase)
       ? selectedPhases.filter((value) => value !== phase)
       : [...selectedPhases, phase];
     setSelectedPhases(next);
-    setCmGridNotice(null);
     if (next.length > 0) addCmGridLayer(selectedCity, next);
     else removeLayer(cmGridRef);
   };
@@ -2761,10 +2677,14 @@ export default function HomePage() {
       selectedCity &&
       ABOVE10M_LAYER[selectedCity]
     ) {
+      const above10mSource = homeSummary?.perCity?.[selectedCity];
+      const above10mCount =
+        above10mSource?.above10m_count ?? above10mSource?.above10mCount;
       arr.push({
         layerName: `${ABOVE10M_WS}:${ABOVE10M_LAYER[selectedCity]}`,
         label: "Roads > 10m ROW",
         baseUrl: GEOSERVER_BASE,
+        featureCount: above10mCount,
       });
     }
     if (layerVisibility.cmGrid && selectedCity) {
@@ -2780,7 +2700,7 @@ export default function HomePage() {
       });
     }
     return arr;
-  }, [layerVisibility, phaseOptions, selectedCity, selectedPhases]);
+  }, [layerVisibility, phaseOptions, selectedCity, selectedPhases, homeSummary]);
 
   /* ----------------- RENDER ----------------- */
 
@@ -2915,14 +2835,12 @@ export default function HomePage() {
                     <div className="phase-menu__list" role="listbox">
                       {phaseOptions.map((option) => {
                         const isSelected = selectedPhases.includes(option.value);
-                        const isDisabled = option.available === false;
                         if (option.kind === "header") {
                           return <div key={option.label} className="phase-menu__option phase-menu__option--header">{option.label}</div>;
                         }
                         return (
-                          <button key={option.value} type="button" className={["phase-menu__option", isSelected ? "phase-menu__option--selected" : "", isDisabled ? "phase-menu__option--disabled" : ""].filter(Boolean).join(" ")} role="menuitemcheckbox" aria-checked={isSelected} aria-disabled={isDisabled} onClick={() => handlePhaseChange(option.value, option)}>
-                            <span className="phase-menu__option-main"><input type="checkbox" className="phase-menu__checkbox" checked={isSelected} readOnly tabIndex={-1} disabled={isDisabled} /><span>{option.label}</span></span>
-                            {isDisabled && <span className="phase-menu__option-note">Not available</span>}
+                          <button key={option.value} type="button" className={["phase-menu__option", isSelected ? "phase-menu__option--selected" : ""].filter(Boolean).join(" ")} role="menuitemcheckbox" aria-checked={isSelected} onClick={() => handlePhaseChange(option.value, option)}>
+                            <span className="phase-menu__option-main"><input type="checkbox" className="phase-menu__checkbox" checked={isSelected} readOnly tabIndex={-1} /><span>{option.label}</span></span>
                           </button>
                         );
                       })}
@@ -2953,27 +2871,6 @@ export default function HomePage() {
           .join(" ")
           .trim()}
       />
-
-      {cmGridNotice && (
-        <div className="feature-progress-notice" role="status" aria-live="polite">
-          <div className="feature-progress-notice__content">
-            <div className="feature-progress-notice__title">
-              {cmGridNotice.feature}
-            </div>
-            <div className="feature-progress-notice__message">
-              {cmGridNotice.message}
-            </div>
-          </div>
-          <button
-            type="button"
-            className="feature-progress-notice__close"
-            onClick={() => setCmGridNotice(null)}
-            aria-label="Close message"
-          >
-            x
-          </button>
-        </div>
-      )}
 
       {basemapNotice && (
         <div className="feature-progress-notice" role="status" aria-live="polite">

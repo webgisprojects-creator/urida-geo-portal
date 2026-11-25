@@ -39,7 +39,7 @@ import graveyardIcon from "../assets/Amenities_Icons/graveyard.png";
 import hospitalIcon from "../assets/Amenities_Icons/hospital.png";
 import stadiumIcon from "../assets/Amenities_Icons/stadium.webp";
 import educationIcon from "../assets/Amenities_Icons/education.png";
-import religiousIcon from "../assets/Amenities_Icons/religious.png";
+import religiousIcon from "../assets/Amenities_Icons/religious.webp";
 import toiletIcon from "../assets/Amenities_Icons/Community Toilet.png";
 import chargingIcon from "../assets/Amenities_Icons/charging.png";
 import govIcon from "../assets/Amenities_Icons/Central.png";
@@ -48,17 +48,22 @@ import fuelIcon from "../assets/Amenities_Icons/fuel.png";
 import landmarkIcon from "../assets/Amenities_Icons/landmark.png";
 import postOfficeIcon from "../assets/Amenities_Icons/post-office.png";
 import stateGovIcon from "../assets/Amenities_Icons/State.png";
-import mosqueIcon from "../assets/Amenities_Icons/Mosque.png";
+// import mosqueIcon from "../assets/Amenities_Icons/Mosque.png";
 import locationIcon from "../assets/Amenities_Icons/location.png";
 import metroIcon from "../assets/Amenities_Icons/metro.webp";
 import manhole from "../assets/Amenities_Icons/manhole.jpg";
-import railwayStationIcon from "../assets/Amenities_Icons/railway_station.svg";
+import railwayStationIcon from "../assets/Amenities_Icons/railway_station.png";
 import defaultIcon from "../assets/Amenities_Icons/place.png";
+import lcluBusStopIcon from "../assets/LCLU_Icons/Bus_Stop_Points.png";
+import lcluFireStationIcon from "../assets/LCLU_Icons/Fire Station.png";
+import lcluCommunicationIcon from "../assets/LCLU_Icons/communication_point.png";
+import lcluCommunityToiletIcon from "../assets/LCLU_Icons/community_toilet.png";
 import Draw, { createBox, createRegularPolygon } from "ol/interaction/Draw";
 import Polygon from "ol/geom/Polygon";
 import WKT from "ol/format/WKT";
 
 import { cityConfig } from "../assets/configs/cityConfig";
+import { resolveDssModule, dssLegendKeyFromRule, DSS_MODULE_ORDER } from "../assets/configs/dssLayerConfig";
 import MapLegend from "./MapLegend";
 import Overlay from "ol/Overlay";
 import { drawWatermark } from "../utils/gisExport"; //chainage
@@ -387,62 +392,38 @@ const OTHER_ICON_MAP = {
   community_toilet: toiletIcon,
   e_charging: chargingIcon,
   car_charging: chargingIcon,
-  mosque: mosqueIcon,
-  temple: religiousIcon,
+  // mosque: mosqueIcon,
+  // temple: religiousIcon,
   manhole: manhole,
 };
+
+const LCLU_ICON_MAP = {
+  bus_stop_point: lcluBusStopIcon,
+  bus_stop_points: lcluBusStopIcon,
+  communication_point: lcluCommunicationIcon,
+  community_toilet: lcluCommunityToiletIcon,
+  fire_station: lcluFireStationIcon,
+};
+// LCLU config keys carry a per-city prefix (Kanpur_LCLU_Bus_Stop_Point,
+// Jhansi_LCLU_ULU, ...) — reduce them to the stable type suffix before
+// looking up the icon. Layers without a mapped icon (ULU polygons,
+// Bridge_Culvert lines) keep their GeoServer-rendered WMS symbol.
+const getLcluIcon = (id) => {
+  const suffix = String(id || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .split("lclu_")
+    .pop();
+  return LCLU_ICON_MAP[suffix] || null;
+};
+// Uniform icon sizing: every amenity/other icon renders at the ATM bank's
+// footprint (48px source image x 0.95 scale multiplier) instead of the old
+// per-icon scales/imgSizes, so all map icons are the same size.
 const ICON_IMG_SIZE = 48;
-const ICON_IMG_SIZE_MAP = {
-  railway_station: 96,
-  state_gov: 28,
-  central_gov: 36,
-  cental_gov: 36,
-  centeral_gov: 36,
-};
-const getIconImgSize = (id) => ICON_IMG_SIZE_MAP[id] || ICON_IMG_SIZE;
+const getIconImgSize = () => ICON_IMG_SIZE;
 
-
-const AMENITY_ICON_SCALE = {
-  atm_bank: 0.95,
-  bus_stop: 0.9,
-  bus_stand: 0.9,
-  graveyard: 0.85,
-  hospital: 0.9,
-  hotel: 0.9,
-  park: 0.9,
-  petrol_pump: 0.9,
-  stadium: 0.8,
-  metro: 0.9,
-  railway_station: 3,
-};
-
-const OTHER_ICON_SCALE = {
-  education: 0.85,
-  religious: 0.8,
-  post_office: 0.85,
-  state_gov: 0.5,
-  central_gov: 0.6,
-  cental_gov: 0.6,
-  centeral_gov: 0.6,
-  landmark: 0.8,
-  communication: 0.85,
-  community_toilet: 0.85,
-  e_charging: 0.85,
-  car_charging: 0.85,
-  mosque: 0.78,
-  temple: 0.78,
-  manhole: 0.45,
-};
-
-const getAmenityIconScale = (id) => AMENITY_ICON_SCALE[id] ?? 0.9;
-const getOtherIconScale = (id, resolution) => {
-  if (id !== "manhole") return OTHER_ICON_SCALE[id] ?? 0.9;
-  const zoom = resolution ? Math.log2(156543.03392804097 / resolution) : 0;
-  if (zoom >= 17) return 0.25;
-  if (zoom >= 15) return 0.35;
-  if (zoom >= 13) return 0.5;
-  return 0.6;
-};
+const getAmenityIconScale = () => 0.55;
+const getOtherIconScale = () => 0.55;
 
 
 const AMENITY_STYLE_CACHE = new Map();
@@ -654,11 +635,14 @@ const extractLegendColor = (legend) => {
   );
 };
 
+// Global /wms endpoint (not the workspace-scoped Ward_Boundary_New one)
+// so the same helper resolves legend colors for layers in ANY workspace
+// (Amenities:, Road_Network:, DSS layers, ...).
 const fetchLegendColor = async (layerName) => {
   if (!layerName) return null;
   try {
     const response = await fetch(
-      `${WARD_ZONE_WMS}?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=application/json&LAYER=${encodeURIComponent(
+      `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=application/json&LAYER=${encodeURIComponent(
         layerName
       )}`
     );
@@ -667,6 +651,42 @@ const fetchLegendColor = async (layerName) => {
     return extractLegendColor(json);
   } catch {
     return null;
+  }
+};
+
+// Per-rule colors from a layer's GeoServer style, keyed by normalized
+// rule name/title — used by the DSS vector overlays, which need a
+// different color per class (illuminated / non-illuminated / ...).
+const normalizeRuleToken = (v) => String(v || "").replace(/[^A-Z0-9]/gi, "").toUpperCase();
+const fetchLegendRuleColors = async (layerName) => {
+  if (!layerName) return {};
+  try {
+    const response = await fetch(
+      `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=application/json&LAYER=${encodeURIComponent(
+        layerName
+      )}`
+    );
+    if (!response.ok) return {};
+    const json = await response.json();
+    const rules = json?.Legend?.[0]?.rules || [];
+    const out = {};
+    rules.forEach((rule) => {
+      const symbolizers = Array.isArray(rule?.symbolizers) ? rule.symbolizers : [];
+      for (const sym of symbolizers) {
+        const color =
+          sym?.Polygon?.fill || sym?.Polygon?.stroke ||
+          sym?.Line?.stroke ||
+          sym?.Point?.graphics?.[0]?.mark?.fill ||
+          sym?.Point?.fill;
+        if (color) {
+          out[normalizeRuleToken(rule?.title) || normalizeRuleToken(rule?.name)] = color;
+          break;
+        }
+      }
+    });
+    return out;
+  } catch {
+    return {};
   }
 };
 
@@ -738,28 +758,99 @@ const fetchJsonWithTimeout = async (url, timeoutMs, outerSignal) => {
   }
 };
 
-const getRandomRoadColor = () => {
-  const hue = Math.floor(Math.random() * 360);
-  return `hsl(${hue}, 85%, 50%)`;
+// Random per-filter highlight color removed — the filtered-roads overlay
+// now uses the road layer's own GeoServer style color (fetchLegendColor).
+// const getRandomRoadColor = () => {
+//   const hue = Math.floor(Math.random() * 360);
+//   return `hsl(${hue}, 85%, 50%)`;
+// };
+
+// Hard-coded per-amenity palette — replaced by GeoServer layer styles
+// (GetLegendGraphic). Kept commented for reference only:
+// const AMENITY_COLOR_MAP = {
+//   atm_bank: "#2563eb",
+//   bus_stop: "#f97316",
+//   bus_stand: "#f97316",
+//   graveyard: "#64748b",
+//   hospital: "#ef4444",
+//   hotel: "#a855f7",
+//   petrol_pump: "#eab308",
+//   stadium: "#22c55e",
+//   metro: "#0ea5e9",
+//   railway_station: "#1d4ed8",
+//   park: "#10b981",
+// };
+
+// Colors resolved from each layer's GeoServer style, keyed by the
+// config id (atm_bank, hospital, education, manhole, ...). Populated
+// async after layer creation by the color-sync effect; until then the
+// neutral fallback renders so nothing is invisible.
+const GEOSERVER_LAYER_COLORS = {};
+const LAYER_COLOR_FALLBACK = "#64748b";
+
+// Analysis-tab overlays: sidebar/legend id -> the amenity layer whose
+// GeoServer style color the "Roads Near X" roads borrow. Shared by the
+// overlay styler, the legend rows, and the color-sync restyle so all
+// three always paint the same color.
+const ANALYSIS_OPTIONS = {
+  bankRoad: { label: "Roads Near Banks", amenityKey: "atm_bank", analysisKey: "Road_atm_bank" },
+  hospitalRoad: { label: "Roads Near Hospitals", amenityKey: "hospital", analysisKey: "Road_hospital" },
+  educationRoad: { label: "Roads Near Education", amenityKey: "education", analysisKey: "Road_edu" },
+  hotelRoad: { label: "Roads Near Hotels", amenityKey: "hotel", analysisKey: "Road_hotel" },
+  parkRoad: { label: "Roads Near Parks", amenityKey: "park", analysisKey: "Road_park" },
 };
 
-const AMENITY_COLOR_MAP = {
-  atm_bank: "#2563eb",
-  bus_stop: "#f97316",
-  bus_stand: "#f97316",
-  graveyard: "#64748b",
-  hospital: "#ef4444",
-  hotel: "#a855f7",
-  petrol_pump: "#eab308",
-  stadium: "#22c55e",
-  metro: "#0ea5e9",
-  railway_station: "#1d4ed8",
-  park: "#10b981",
+// Identity key shared by analysis GeoJSON features and the table rows
+// they produce (both carry gis_id/road_id from the road table) — used to
+// hide overlay features the active column filter has removed.
+const analysisFeatureKey = (feature) =>
+  String(
+    feature?.get?.("gis_id") ??
+    feature?.get?.("road_id") ??
+    feature?.getId?.() ??
+    ""
+  );
+const analysisRowKey = (row) => String(row?.gis_id ?? row?.road_id ?? "");
+
+// Re-derives an analysis overlay's style from the layer's stored color +
+// visible-id set, so GeoServer recolors and table-filter hides compose
+// instead of clobbering each other (a null-returning style function is
+// how OpenLayers hides a feature).
+const applyAnalysisLayerStyle = (layer) => {
+  if (!layer?.setStyle) return;
+  const color = layer.get("analysisColor") || LAYER_COLOR_FALLBACK;
+  const keys = layer.get("visibleKeys");
+  const style = new Style({ stroke: new Stroke({ color, width: 3 }) });
+  layer.setStyle(
+    keys instanceof Set
+      ? (feature) => (keys.has(analysisFeatureKey(feature)) ? style : null)
+      : style
+  );
+};
+
+// "#rrggbb"/"#rgb"/rgb()/rgba() -> css color with the given alpha for
+// polygon fills; unparseable values come back unchanged.
+const colorWithAlpha = (color, alpha) => {
+  const c = String(color || "");
+  const hex = c.replace("#", "");
+  if (/^[0-9a-fA-F]{6}$/.test(hex) || /^[0-9a-fA-F]{3}$/.test(hex)) {
+    const full = hex.length === 3 ? hex.split("").map((x) => x + x).join("") : hex;
+    const num = parseInt(full, 16);
+    return `rgba(${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}, ${alpha})`;
+  }
+  const rgb = c.match(/rgba?\(([^)]+)\)/);
+  if (rgb) {
+    const [r, g, b] = rgb[1].split(",").map((s) => Number(s.trim()));
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  return color;
 };
 
 const adjustColor = (hex, amt) => {
-  const c = hex.replace("#", "");
-  const num = parseInt(c, 16);
+  const c = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(c) && !/^[0-9a-fA-F]{3}$/.test(c)) return hex; // non-hex (rgb()/named) — return as-is
+  const full = c.length === 3 ? c.split("").map((x) => x + x).join("") : c;
+  const num = parseInt(full, 16);
   const r = Math.min(255, Math.max(0, (num >> 16) + amt));
   const g = Math.min(255, Math.max(0, ((num >> 8) & 0x00ff) + amt));
   const b = Math.min(255, Math.max(0, (num & 0x0000ff) + amt));
@@ -767,7 +858,9 @@ const adjustColor = (hex, amt) => {
 };
 
 const getAmenityColor = (id, isDark) => {
-  const base = AMENITY_COLOR_MAP[id] || "#ef4444";
+  // Color comes from the layer's GeoServer style (GEOSERVER_LAYER_COLORS
+  // is filled by the color-sync effect); fallback only until it lands.
+  const base = GEOSERVER_LAYER_COLORS[id] || LAYER_COLOR_FALLBACK;
   return isDark ? adjustColor(base, 35) : base;
 };
 
@@ -831,21 +924,17 @@ const createAmenityStyle = (id, isDark = false) => (feature, resolution) => {
     return cached;
   }
 
-  const isPark = id === "park";
-  let strokeColor, fillColor;
-
-  if (isPark) {
-    strokeColor = isDark ? "rgba(50, 255, 50, 1)" : "rgba(16, 185, 129, 1)";
-    fillColor = isDark ? "rgba(50, 255, 50, 0.4)" : "rgba(16, 185, 129, 0.25)";
-  } else {
-    // Default: Red (Light Map) vs Yellow/Gold (Dark Map)
-    strokeColor = isDark ? "rgba(255, 215, 0, 1)" : "rgba(255, 0, 0, 1)";
-    fillColor = isDark ? "rgba(255, 215, 0, 0.4)" : "rgba(255, 0, 0, 0.2)";
-  }
+  // Non-point geometry colors come from the layer's GeoServer style.
+  // Old hard-coded values kept commented for reference:
+  //   park: light "rgba(16, 185, 129, 1)"/0.25 fill, dark "rgba(50, 255, 50, 1)"/0.4 fill
+  //   others: light "rgba(255, 0, 0, 1)"/0.2 fill, dark "rgba(255, 215, 0, 1)"/0.4 fill
+  const geoColor = getAmenityColor(id, isDark);
+  const strokeColor = geoColor;
+  const fillColor = colorWithAlpha(geoColor, isDark ? 0.4 : 0.25);
 
   let style = null;
   if (type === "Point" || type === "MultiPoint") {
-    const iconSrc = AMENITY_ICON_MAP[id] || defaultIcon;
+    const iconSrc = AMENITY_ICON_MAP[id] || getLcluIcon(id) || defaultIcon;
     const iconSize = getIconImgSize(id);
     const pinStyle = new Style({
       image: new Icon({
@@ -932,9 +1021,12 @@ const createOtherStyle = (id, isDark = false) => (feature, resolution) => {
     return cached;
   }
 
-  // Default: Blue (Light Map) vs Cyan (Dark Map)
-  const strokeColor = isDark ? "rgba(0, 255, 255, 1)" : "rgba(0, 0, 255, 1)";
-  const fillColor = isDark ? "rgba(0, 255, 255, 0.4)" : "rgba(0, 0, 255, 0.2)";
+  // Non-point geometry colors come from the layer's GeoServer style.
+  // Old hard-coded values kept commented for reference:
+  //   light "rgba(0, 0, 255, 1)"/0.2 fill, dark "rgba(0, 255, 255, 1)"/0.4 fill
+  const geoColor = getAmenityColor(id, isDark);
+  const strokeColor = geoColor;
+  const fillColor = colorWithAlpha(geoColor, isDark ? 0.4 : 0.2);
 
   let style = null;
   if (type === "Point" || type === "MultiPoint") {
@@ -1052,6 +1144,8 @@ const MapContainer = forwardRef(({
   onSpatialQueryResults, // ⭐ NEW
   onRoadFilterChange, // ⭐ NEW
   onAnalysisDataLoaded, // ⭐ NEW
+  onLayerColorsLoaded, // GeoServer layer-color snapshot for the Sidebar icons
+  analysisFilteredRows = null, // {analysisId: rows[]} — filtered set for map + legend
   onRoadSelected,
   onPopupClosed,
   onPatchTableOpen, //chainage
@@ -1067,10 +1161,13 @@ const MapContainer = forwardRef(({
   onMapLoadingChange, // ⭐ NEW: Callback for map layer loading state
   activeDssModule = null, // DSS foundation patch: e.g. "streetLight" | null
   activeDssLayer = null, // resolved GeoServer layer name, e.g. Road_Network:MV_Lucknow_Street_Light
+  dssCqlFilter = null, // CQL mirror of the DSS table's column filters — applied to the DSS WMS layer
   dssLegendGroups = null, // [{id, title, rows:[{label,color,count}]}] from live GeoServer WFS rows (Dashboard-owned)
   specializedAllRows = [], // Specialized network table data for legend filtering
   tableDataset = { kind: "roads" }, // Table dataset metadata for legend filtering
   specializedColumnFilters = {}, // Column filters for specialized networks (e.g., drainage zone filter)
+  selectedZone = "",
+  selectedWard = "",
 }, ref) => {
   const mapElement = useRef(null);
   const mapRef = useRef(null);
@@ -1081,8 +1178,12 @@ const MapContainer = forwardRef(({
   // (fetchLegendColor, below), so MapLegend can show the same color it
   // sees on the map instead of independently re-fetching (and potentially
   // mismatching) its own swatch color.
-  const [zoneBoundaryColor, setZoneBoundaryColor] = useState("#e11d48");
-  const [wardBoundaryColor, setWardBoundaryColor] = useState("#16a34a");
+  // Hard-coded defaults removed — colors come from the layers'
+  // GeoServer styles via fetchLegendColor (syncBoundaryColors below).
+  // const [zoneBoundaryColor, setZoneBoundaryColor] = useState("#e11d48");
+  // const [wardBoundaryColor, setWardBoundaryColor] = useState("#16a34a");
+  const [zoneBoundaryColor, setZoneBoundaryColor] = useState(null);
+  const [wardBoundaryColor, setWardBoundaryColor] = useState(null);
   const [roadPanelPos, setRoadPanelPos] = useState({ top: null, left: null }); //chainage
   // Dragged panel positions live in this same component instance across a
   // city switch (the `city` prop changes, but MapContainer itself doesn't
@@ -1100,15 +1201,25 @@ const MapContainer = forwardRef(({
   const [amenityLegendCounts, setAmenityLegendCounts] = useState({});
   const [otherLegendCounts, setOtherLegendCounts] = useState({});
   const [utilityLegendCounts, setUtilityLegendCounts] = useState({});
+  const [lcluLegendCounts, setLcluLegendCounts] = useState({});
+  // { analysisId: {label, color, count} } — rows for the legend's
+  // "Road Analysis" section; populated when each overlay's features land.
+  const [analysisLegend, setAnalysisLegend] = useState({});
+  // Latest filtered-rows prop for async layer-creation closures.
+  const analysisFilteredRowsRef = useRef(analysisFilteredRows);
+  analysisFilteredRowsRef.current = analysisFilteredRows;
   const amenityLegendCountsRef = useRef({});
   const otherLegendCountsRef = useRef({});
   const utilityLegendCountsRef = useRef({});
+  const lcluLegendCountsRef = useRef({});
   const amenityWfsCountsRef = useRef({});
   const otherWfsCountsRef = useRef({});
   const utilityWfsCountsRef = useRef({});
+  const lcluWfsCountsRef = useRef({});
   const amenityWfsCountSourceRef = useRef({});
   const otherWfsCountSourceRef = useRef({});
   const utilityWfsCountSourceRef = useRef({});
+  const lcluWfsCountSourceRef = useRef({});
   const osmAmenityCountsRef = useRef({});
   const osmAmenityLayersRef = useRef({});
   const osmAmenityFetchAbortRef = useRef(null);
@@ -1212,6 +1323,11 @@ const MapContainer = forwardRef(({
   const analysisLayersRef = useRef({});
   const dssLayersRef = useRef({});
   const dssWmsLayerRef = useRef(null); // single active DSS WMS layer (foundation patch — GeoServer contract)
+  const dssGeomColumnRef = useRef({ layer: null, column: null }); // DescribeFeatureType result for DSS spatial queries
+  // Per-class colors for the legacy DSS GeoJSON vector styles + legend,
+  // fetched from each module's GeoServer layer style (GetLegendGraphic):
+  // { streetLight: { illuminated: "#..", ... }, underdeveloped: {...}, encroachment: {...} }
+  const [dssRuleColors, setDssRuleColors] = useState({});
   const selectedRoadLayerRef = useRef(null);
   const candidateRoadLayerRef = useRef(null); //chainage
   const filteredRoadLayerRef = useRef(null);
@@ -1228,18 +1344,23 @@ const MapContainer = forwardRef(({
   const otherWfsCacheRef = useRef(new Map());
   const utilityWfsCacheRef = useRef(new Map());
   const utilityWfsCountCacheRef = useRef(new Map());
+  const lcluWfsCacheRef = useRef(new Map());
+  const lcluWfsCountCacheRef = useRef(new Map());
   const amenityFetchAbortRef = useRef(null);
   const otherFetchAbortRef = useRef(null);
   const utilityFetchAbortRef = useRef(null);
+  const lcluFetchAbortRef = useRef(null);
   const roadWfsAbortRef = useRef(null);
   const autoZoomDetailsAbortRef = useRef(null);
   const amenityMoveTimerRef = useRef(null);
   const otherMoveTimerRef = useRef(null);
   const utilityMoveTimerRef = useRef(null);
+  const lcluMoveTimerRef = useRef(null);
   const roadMoveTimerRef = useRef(null);
   const amenityExtentKeyRef = useRef("");
   const otherExtentKeyRef = useRef("");
   const utilityExtentKeyRef = useRef("");
+  const lcluExtentKeyRef = useRef("");
   const roadWfsExtentKeyRef = useRef("");
   const lastSpatialExtentRef = useRef(null);
   const boundaryFeatureCacheRef = useRef(new Map());
@@ -1253,6 +1374,13 @@ const MapContainer = forwardRef(({
   const roadOpacityRef = useRef(new Map());
   const selectedRoadGeomRef = useRef(null);
   const [selectedRoadToken, setSelectedRoadToken] = useState(0);
+  // Bumped whenever clickedGeometriesCacheRef is populated asynchronously
+  // (zoom-filter details fetch, or the highlight effect's own missing-
+  // geometry WFS fetch). The highlight effect subscribes to it so the
+  // orange selected-road layer re-renders once geometries actually arrive —
+  // without it, a cold-cache selection never highlights, and the zoom
+  // effect's layer cleanup can leave a warm-cache highlight removed.
+  const [highlightGeomVersion, setHighlightGeomVersion] = useState(0);
   const [isMobileView, setIsMobileView] = useState(window.innerWidth <= 768);
   const [isLocating, setIsLocating] = useState(false);
   const roadLayerRef = useRef(null); //chainage
@@ -2016,7 +2144,82 @@ const MapContainer = forwardRef(({
         utilityLegendCountsRef.current = merged;
         setUtilityLegendCounts(merged);
       }
+    } else if (prefix === "LcluWFS") {
+      const prevSource = lcluWfsCountSourceRef.current[id];
+      if (source === "features" && prevSource === "hits") return;
+      if (lcluWfsCountsRef.current[id] === count && prevSource === source) return;
+      lcluWfsCountSourceRef.current = {
+        ...lcluWfsCountSourceRef.current,
+        [id]: source,
+      };
+      const next = { ...lcluWfsCountsRef.current, [id]: count };
+      lcluWfsCountsRef.current = next;
+      if (haveCountsChanged(lcluLegendCountsRef.current, next)) {
+        lcluLegendCountsRef.current = next;
+        setLcluLegendCounts(next);
+      }
     }
+  };
+
+  // Kept in a ref so the once-registered moveend handler and the WFS
+  // helpers always see the latest Zone/Ward selection regardless of which
+  // render's closure they were created in.
+  const amenityZwFilterRef = useRef({ zone: "", ward: "" });
+  amenityZwFilterRef.current = {
+    zone: String(selectedZone || ""),
+    ward: String(selectedWard || ""),
+  };
+
+  const formatZwCqlValue = (value) => {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+    if (/^\d+(\.\d+)?$/.test(raw)) return raw;
+    return `'${raw.replace(/'/g, "''")}'`;
+  };
+
+  // Zone/ward attribute names differ across cities' amenity feature
+  // types — most expose lowercase zone_no/ward_no, but some (e.g.
+  // Ayodhya) were imported with quoted UPPERCASE columns (ZONE_NO), and a
+  // CQL on the wrong case returns a GeoServer ExceptionReport with ZERO
+  // features instead of an HTTP error. Probe one feature per layer and
+  // reuse its real property names; result cached per layerName.
+  const zwAttrCacheRef = useRef({});
+  const resolveZwAttrs = (layerName, abortSignal) => {
+    if (!layerName) return Promise.resolve(null);
+    if (layerName in zwAttrCacheRef.current) {
+      return Promise.resolve(zwAttrCacheRef.current[layerName]);
+    }
+    const url =
+      `${AMENITIES_WFS}?service=WFS&version=1.1.0&request=GetFeature` +
+      `&typeName=${encodeURIComponent(layerName)}&outputFormat=application/json&maxFeatures=1`;
+    return fetch(url, { signal: abortSignal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        const props = json?.features?.[0]?.properties || {};
+        const keys = Object.keys(props);
+        const spec = {
+          zoneAttr: keys.find((k) => /^zone[_\s]?no$/i.test(k)) || null,
+          wardAttr: keys.find((k) => /^ward[_\s]?no$/i.test(k)) || null,
+        };
+        zwAttrCacheRef.current[layerName] = spec;
+        return spec;
+      })
+      .catch(() => {
+        zwAttrCacheRef.current[layerName] = null;
+        return null;
+      });
+  };
+
+  const buildAmenityZwCql = (attrs) => {
+    const { zone, ward } = amenityZwFilterRef.current;
+    const parts = [];
+    const zoneVal = formatZwCqlValue(zone);
+    const wardVal = formatZwCqlValue(ward);
+    // Only filter on attributes the layer actually exposes — a layer
+    // without the column stays unfiltered for that dimension.
+    if (zoneVal && attrs?.zoneAttr) parts.push(`${attrs.zoneAttr}=${zoneVal}`);
+    if (wardVal && attrs?.wardAttr) parts.push(`${attrs.wardAttr}=${wardVal}`);
+    return parts.join(" AND ");
   };
 
   const applyWfsData = (layer, data, projection, id, prefix) => {
@@ -2066,34 +2269,51 @@ const MapContainer = forwardRef(({
     prefix,
   }) => {
     if (!layerName || !projection || !extent) return;
-    const cacheKey = `${layerName}|${projection.getCode()}|${extentKey}|hits`;
-    if (cacheTtlMs > 0) {
-      const cached = cacheRef.current.get(cacheKey);
-      if (cached && Date.now() - cached.ts < cacheTtlMs) {
-        updateWfsCounts(id, prefix, cached.count, "hits");
-        return;
+    (prefix === "AmenityWFS" ? resolveZwAttrs(layerName, abortSignal) : Promise.resolve(null)).then((attrs) => {
+      if (abortSignal?.aborted) return;
+      const zwCql = prefix === "AmenityWFS" ? buildAmenityZwCql(attrs) : "";
+      const cacheKey = `${layerName}|${projection.getCode()}|${extentKey}|${zwCql}|hits`;
+      if (cacheTtlMs > 0) {
+        const cached = cacheRef.current.get(cacheKey);
+        if (cached && Date.now() - cached.ts < cacheTtlMs) {
+          updateWfsCounts(id, prefix, cached.count, "hits");
+          return;
+        }
       }
-    }
-    const url =
-      `${AMENITIES_WFS}?service=WFS&version=1.1.0&request=GetFeature` +
-      `&typeName=${encodeURIComponent(layerName)}` +
-      `&resultType=hits` +
-      `&srsName=${encodeURIComponent(projection.getCode())}` +
-      `&bbox=${extent.join(",")},${encodeURIComponent(projection.getCode())}`;
-    fetch(url, { signal: abortSignal })
-      .then((res) => res.text())
-      .then((text) => {
+      const buildUrl = (withCql) =>
+        `${AMENITIES_WFS}?service=WFS&version=1.1.0&request=GetFeature` +
+        `&typeName=${encodeURIComponent(layerName)}` +
+        `&resultType=hits` +
+        `&srsName=${encodeURIComponent(projection.getCode())}` +
+        `&bbox=${extent.join(",")},${encodeURIComponent(projection.getCode())}` +
+        (withCql && zwCql ? `&CQL_FILTER=${encodeURIComponent(zwCql)}` : "");
+      const handleCount = (text, withCql) => {
         if (abortSignal?.aborted) return;
+        // GeoServer answers a bad CQL (e.g. wrong-case attribute) with an
+        // HTTP-200 ows:ExceptionReport, not an error status — detect it in
+        // the body and retry unfiltered rather than reporting 0.
+        if (withCql && /ExceptionReport|ServiceException/i.test(String(text))) return doFetch(false);
         const count = extractWfsCount(text);
         if (!Number.isFinite(count)) return;
         if (cacheTtlMs > 0) {
           cacheRef.current.set(cacheKey, { ts: Date.now(), count });
         }
         updateWfsCounts(id, prefix, count, "hits");
-      })
-      .catch(() => {
-        if (abortSignal?.aborted) return;
-      });
+      };
+      const doFetch = (withCql) =>
+        fetch(buildUrl(withCql), { signal: abortSignal })
+          .then((res) => {
+            // Amenity layers in some cities don't expose zone_no/ward_no —
+            // retry once unfiltered so a bad CQL doesn't kill the count.
+            if (!res.ok && withCql) return doFetch(false);
+            return res.text();
+          })
+          .then((text) => handleCount(text, withCql))
+          .catch(() => {
+            if (abortSignal?.aborted) return;
+          });
+      doFetch(true);
+    });
   };
 
   const fetchWfsLayerData = ({
@@ -2110,25 +2330,32 @@ const MapContainer = forwardRef(({
     prefix,
   }) => {
     if (!layerName || !projection || !extent) return;
-    const cacheKey = `${layerName}|${projection.getCode()}|${extentKey}|${maxFeatures}`;
-    if (cacheTtlMs > 0) {
-      const cached = cacheRef.current.get(cacheKey);
-      if (cached && Date.now() - cached.ts < cacheTtlMs) {
-        applyWfsData(layer, cached.data, projection, id, prefix);
-        return;
+    (prefix === "AmenityWFS" ? resolveZwAttrs(layerName, abortSignal) : Promise.resolve(null)).then((attrs) => {
+      if (abortSignal?.aborted) return;
+      const zwCql = prefix === "AmenityWFS" ? buildAmenityZwCql(attrs) : "";
+      const cacheKey = `${layerName}|${projection.getCode()}|${extentKey}|${zwCql}|${maxFeatures}`;
+      if (cacheTtlMs > 0) {
+        const cached = cacheRef.current.get(cacheKey);
+        if (cached && Date.now() - cached.ts < cacheTtlMs) {
+          applyWfsData(layer, cached.data, projection, id, prefix);
+          return;
+        }
       }
-    }
-    const url =
-      `${AMENITIES_WFS}?service=WFS&version=1.1.0&request=GetFeature` +
-      `&typeName=${encodeURIComponent(layerName)}` +
-      `&outputFormat=application/json` +
-      `&srsName=${encodeURIComponent(projection.getCode())}` +
-      `&bbox=${extent.join(",")},${encodeURIComponent(projection.getCode())}` +
-      `&maxFeatures=${maxFeatures}`;
-    console.log(`[WFS] Fetching: ${url}`);
-    fetch(url, { signal: abortSignal })
+      const buildUrl = (withCql) =>
+        `${AMENITIES_WFS}?service=WFS&version=1.1.0&request=GetFeature` +
+        `&typeName=${encodeURIComponent(layerName)}` +
+        `&outputFormat=application/json` +
+        `&srsName=${encodeURIComponent(projection.getCode())}` +
+        `&bbox=${extent.join(",")},${encodeURIComponent(projection.getCode())}` +
+        `&maxFeatures=${maxFeatures}` +
+        (withCql && zwCql ? `&CQL_FILTER=${encodeURIComponent(zwCql)}` : "");
+      const doFetch = (withCql) =>
+        fetch(buildUrl(withCql), { signal: abortSignal })
       .then((res) => {
         console.log(`[WFS] Response status: ${res.status}, content-type: ${res.headers.get('content-type')}`);
+        // Amenity layers in some cities don't expose zone_no/ward_no —
+        // retry once unfiltered so a bad CQL doesn't kill the layer.
+        if (!res.ok && withCql) return doFetch(false);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const contentType = res.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
@@ -2136,6 +2363,10 @@ const MapContainer = forwardRef(({
         } else {
           // Parse XML as fallback
           return res.text().then(text => {
+            // GeoServer answers a bad CQL with an HTTP-200
+            // ows:ExceptionReport body, not an error status — detect it
+            // and retry unfiltered rather than rendering nothing.
+            if (withCql && /ExceptionReport|ServiceException/i.test(text)) return doFetch(false);
             console.log(`[WFS] Parsing XML response, length: ${text.length}`);
             // Simple XML to GeoJSON conversion for WFS 1.1.0
             const parser = new DOMParser();
@@ -2173,7 +2404,9 @@ const MapContainer = forwardRef(({
         }
       })
       .then((data) => {
-        if (abortSignal?.aborted) return;
+        // Guard covers the outer link of a CQL fallback retry: the inner
+        // doFetch(false) already applied features and resolves undefined.
+        if (abortSignal?.aborted || !data) return;
         if (cacheTtlMs > 0) {
           cacheRef.current.set(cacheKey, { ts: Date.now(), data });
         }
@@ -2188,6 +2421,8 @@ const MapContainer = forwardRef(({
           dedupeKey: `${city}|wfs|${layerName || id}`,
         });
       });
+      doFetch(true);
+    });
   };
 
   const applyOsmAmenityData = (elements, projection, amenityIds) => {
@@ -3102,33 +3337,54 @@ const MapContainer = forwardRef(({
     });
     roadClassLayersRef.current = roadClassLayers;
 
+    const isDark = baseMap === "satellite" || baseMap === "toner";
     const lcluLayers = {};
     Object.entries(cfg.LCLUClassifications || {}).forEach(([id, layerName]) => {
       const normalizedName = normalizeLayerName(layerName);
       if (!normalizedName) return;
-      lcluLayers[id] = new TileLayer({
-        title: `LCLU: ${id}`,
-        visible: !!layerVisibility?.lclu?.[id],
-        opacity: Number.isFinite(lcluOpacity) ? lcluOpacity : 1,
-        // Routed through GWC + the local tile cache like every other
-        // static/non-CQL-filtered overlay (see makeTileWmsSource) instead
-        // of a raw direct-to-GeoServer TileWMS with a permanent cache-buster
-        // baked into its initial params — the visibility-toggle effect
-        // already calls updateParams({_t: Date.now()}) itself whenever this
-        // layer's LAYERS param actually changes, so a static initial
-        // construction doesn't lose any freshness.
-        source: makeTileWmsSource({
-          layerName: normalizedName,
-          workspace: getWorkspaceFromLayerName(normalizedName, "Road_Network"),
-          cacheable: true,
-        }),
-      });
-      lcluLayers[id].setZIndex(55);
+      if (getLcluIcon(id)) {
+        // Point layer with a dedicated icon — render client-side exactly
+        // like the amenity layers (WFS features + pin/badge/icon style) so
+        // toggling it shows icon markers instead of GeoServer's generic
+        // point symbol, and so the legend can report a live feature count.
+        const source = new VectorSource(manualVectorSourceOptions());
+        lcluLayers[id] = new VectorLayer({
+          title: `LCLU: ${id}`,
+          visible: !!layerVisibility?.lclu?.[id],
+          opacity: Number.isFinite(lcluOpacity) ? lcluOpacity : 1,
+          source,
+          style: createAmenityStyle(id, isDark),
+          declutter: false,
+          renderMode: "image",
+          updateWhileAnimating: false,
+          updateWhileInteracting: false,
+        });
+        lcluLayers[id].set("legendColor", getAmenityColor(id, isDark));
+        lcluLayers[id].setZIndex(39994);
+      } else {
+        lcluLayers[id] = new TileLayer({
+          title: `LCLU: ${id}`,
+          visible: !!layerVisibility?.lclu?.[id],
+          opacity: Number.isFinite(lcluOpacity) ? lcluOpacity : 1,
+          // Routed through GWC + the local tile cache like every other
+          // static/non-CQL-filtered overlay (see makeTileWmsSource) instead
+          // of a raw direct-to-GeoServer TileWMS with a permanent cache-buster
+          // baked into its initial params — the visibility-toggle effect
+          // already calls updateParams({_t: Date.now()}) itself whenever this
+          // layer's LAYERS param actually changes, so a static initial
+          // construction doesn't lose any freshness.
+          source: makeTileWmsSource({
+            layerName: normalizedName,
+            workspace: getWorkspaceFromLayerName(normalizedName, "Road_Network"),
+            cacheable: id !== "Kanpur_LCLU_Bus_Stop_Point",
+          }),
+        });
+        lcluLayers[id].setZIndex(55);
+      }
     });
     lcluLayersRef.current = lcluLayers;
 
     const amenityLayers = {};
-    const isDark = baseMap === "satellite" || baseMap === "toner";
     Object.entries(cfg.amenities || {}).forEach(([id]) => {
       const source = new VectorSource(manualVectorSourceOptions());
       amenityLayers[id] = new VectorLayer({
@@ -3141,8 +3397,8 @@ const MapContainer = forwardRef(({
         updateWhileAnimating: false,
         updateWhileInteracting: false,
       });
-      amenityLayers[id].set("legendColor", isDark ? "rgba(255, 215, 0, 1)" : "rgba(255, 0, 0, 1)");
-      amenityLayers[id].setZIndex(30010);
+      amenityLayers[id].set("legendColor", getAmenityColor(id, isDark)); // GeoServer layer color (was hard-coded red/gold)
+      amenityLayers[id].setZIndex(39990);
     });
     amenityLayersRef.current = amenityLayers;
 
@@ -3159,7 +3415,7 @@ const MapContainer = forwardRef(({
         updateWhileAnimating: false,
         updateWhileInteracting: false,
       });
-      osmAmenityLayers[id].setZIndex(30009);
+      osmAmenityLayers[id].setZIndex(39989);
     });
     osmAmenityLayersRef.current = osmAmenityLayers;
 
@@ -3185,8 +3441,8 @@ const MapContainer = forwardRef(({
         updateWhileAnimating: false,
         updateWhileInteracting: false,
       });
-      otherLayers[id].set("legendColor", isDark ? "rgba(0, 255, 255, 1)" : "rgba(0, 0, 255, 1)");
-      otherLayers[id].setZIndex(30008);
+      otherLayers[id].set("legendColor", getAmenityColor(id, isDark)); // GeoServer layer color (was hard-coded blue/cyan)
+      otherLayers[id].setZIndex(39988);
     });
     otherLayersRef.current = otherLayers;
 
@@ -3203,7 +3459,7 @@ const MapContainer = forwardRef(({
         updateWhileAnimating: false,
         updateWhileInteracting: false,
       });
-      osmOtherLayers[id].setZIndex(30007);
+      osmOtherLayers[id].setZIndex(39987);
     });
     osmOtherLayersRef.current = osmOtherLayers;
 
@@ -3245,7 +3501,7 @@ const MapContainer = forwardRef(({
             crossOrigin: "anonymous",
           }),
         });
-        utilityLayers[id].setZIndex(30006);
+        utilityLayers[id].setZIndex(39986);
       } else {
         const layerName = typeof utilCfg === "string" ? utilCfg : (utilCfg?.layer || "");
         const normalizedName = normalizeLayerName(layerName);
@@ -3262,8 +3518,8 @@ const MapContainer = forwardRef(({
           updateWhileAnimating: false,
           updateWhileInteracting: false,
         });
-        utilityLayers[id].set("legendColor", isDark ? "rgba(255, 165, 0, 1)" : "rgba(255, 140, 0, 1)");
-        utilityLayers[id].setZIndex(30006);
+        utilityLayers[id].set("legendColor", getAmenityColor(id, isDark)); // GeoServer layer color (was hard-coded orange)
+        utilityLayers[id].setZIndex(39986);
       }
     });
     utilityLayersRef.current = utilityLayers;
@@ -3284,7 +3540,7 @@ const MapContainer = forwardRef(({
         updateWhileAnimating: false,
         updateWhileInteracting: false,
       });
-      osmUtilityLayers[id].setZIndex(30005);
+      osmUtilityLayers[id].setZIndex(39985);
     });
     osmUtilityLayersRef.current = osmUtilityLayers;
 
@@ -3297,15 +3553,15 @@ const MapContainer = forwardRef(({
     utilityGroup.setVisible(true);
     utilityGroupRef.current = utilityGroup;
 
-    const streetLayer =
-      cityKey === "lucknow"
-        ? new TileLayer({
+    const streetViewLayerName = cfg.streetView?.layer;
+    const streetLayer = streetViewLayerName
+      ? new TileLayer({
           title: "Street View",
           visible: false,
           source: new TileWMS({
             url: STREET_VIEW_WMS,
             params: {
-              LAYERS: "Street_View:Lucknow_Street_View",
+              LAYERS: streetViewLayerName,
               TILED: true,
             },
             serverType: "geoserver",
@@ -4063,6 +4319,14 @@ const MapContainer = forwardRef(({
         // GetFeatureInfo request still round-trips even when it comes back
         // empty. Roads (and whatever's actively selected for chainage) go
         // first now; amenities/others/specialized stay as fallback checks.
+        // The DSS thematic WMS is the topmost layer in DSS mode — resolve it
+        // ahead of the plain road layers so the click selects the DSS
+        // feature the user actually sees. Its props carry the same road_id
+        // as the road table, so it flows through the same orange-highlight +
+        // selection pipeline a road click does.
+        if (dssWmsLayerRef.current?.getVisible?.()) {
+          candidates.push({ layer: dssWmsLayerRef.current, isRoad: true });
+        }
         if (activeClassLayer) {
           candidates.push({ layer: activeClassLayer, isRoad: true });
         } else if (roadNetworkLayerRef.current && roadNetworkLayerRef.current.getVisible()) {
@@ -4416,7 +4680,16 @@ const MapContainer = forwardRef(({
           "cus_class",
           "row_meter",
           "carriage_w",
-          "length_km"
+          "length_km",
+          // DSS module category fields — rendered only when the clicked
+          // feature actually carries them (i.e. a DSS MV row), so ordinary
+          // road popups are unaffected.
+          "street_light",
+          "road_development_category",
+          "maintenance_category",
+          "encroachment_status",
+          "is_encroached",
+          "encroached"
         ];
         const preferredLower = preferredOrder.map((k) => k.toLowerCase());
         const orderedKeys = compactRoad
@@ -4519,7 +4792,11 @@ const MapContainer = forwardRef(({
         }
         overlay.setPosition(anchorCoordinate);
 
-        if (gisId) {
+        // DSS mode shows the DSS feature's own properties (already in the
+        // popup via displayProps) — enriching from the road-network
+        // /road/:gisId table would mix a different dataset's attributes
+        // into a DSS feature popup.
+        if (gisId && modeRef.current !== "DSS") {
           const detailsCacheKey = String(gisId);
           const cached = roadDetailsCacheRef.current.get(detailsCacheKey);
           if (cached) {
@@ -4635,6 +4912,43 @@ const MapContainer = forwardRef(({
     };
   }, [city]);
 
+  // Fetch per-class colors for the legacy DSS GeoJSON overlays from each
+  // module's GeoServer layer style — replaces the hard-coded status colors.
+  useEffect(() => {
+    let cancelled = false;
+    const modules = ["streetLight", "underdeveloped", "encroachment"];
+    Promise.all(
+      modules.map(async (moduleKey) => {
+        const layerName = resolveDssModule(moduleKey, city)?.layer;
+        if (!layerName) return [moduleKey, {}];
+        const ruleColors = await fetchLegendRuleColors(layerName);
+        const keyColors = {};
+        Object.entries(ruleColors).forEach(([ruleName, color]) => {
+          const key = dssLegendKeyFromRule(moduleKey, ruleName);
+          if (key && color) keyColors[key] = color;
+        });
+        return [moduleKey, keyColors];
+      })
+    ).then((entries) => {
+      if (!cancelled) setDssRuleColors(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [city]);
+
+  // Legend rows for the "Road Analysis" section — count reflects the
+  // filtered table rows when a column filter is active, else the full
+  // fetched feature count.
+  const displayAnalysisLegend = useMemo(() => {
+    const out = {};
+    Object.entries(analysisLegend).forEach(([id, row]) => {
+      const filtered = analysisFilteredRows?.[id];
+      out[id] = filtered ? { ...row, count: filtered.length } : row;
+    });
+    return out;
+  }, [analysisLegend, analysisFilteredRows]);
+
   const dssLegend = useMemo(() => {
     // New GeoServer-WFS-backed DSS path (Dashboard-owned counts, live from
     // the active module's current-BBOX rows) takes priority whenever it has
@@ -4647,15 +4961,25 @@ const MapContainer = forwardRef(({
 
     const groups = [];
 
+    // Swatch colors come from the modules' GeoServer styles via
+    // dssRuleColors (fetched above); the old hard-coded palette is kept
+    // commented for reference:
+    //   streetLight: "#10b981"/"#ef4444"/"#f59e0b"
+    //   underdeveloped: "#10b981"/"#f59e0b"/"#ef4444"
+    //   encroachment: "#7c3aed"/"#334155"
+    const sl = dssRuleColors.streetLight || {};
+    const ud = dssRuleColors.underdeveloped || {};
+    const en = dssRuleColors.encroachment || {};
+
     if (streetLightVisible) {
       const c = streetLightCounts || {};
       groups.push({
         id: "streetLight",
         title: "Street Light",
         rows: [
-          { label: "Illuminated", color: "#10b981", count: c.illuminated },
-          { label: "Non-Illuminated", color: "#ef4444", count: c.nonIlluminated },
-          { label: "Others", color: "#f59e0b", count: c.others },
+          { label: "Illuminated", color: sl.illuminated, count: c.illuminated },
+          { label: "Non-Illuminated", color: sl.nonIlluminated, count: c.nonIlluminated },
+          { label: "Others", color: sl.others, count: c.others },
         ],
       });
     }
@@ -4666,9 +4990,9 @@ const MapContainer = forwardRef(({
         id: "underdeveloped",
         title: "Underdeveloped Zones",
         rows: [
-          { label: "Developed", color: "#10b981", count: c.developed },
-          { label: "Underdeveloped", color: "#f59e0b", count: c.underdeveloped },
-          { label: "Non-Developed", color: "#ef4444", count: c.nonDeveloped },
+          { label: "Developed", color: ud.developed, count: c.developed },
+          { label: "Underdeveloped", color: ud.underdeveloped, count: c.underdeveloped },
+          { label: "Non-Developed", color: ud.nonDeveloped, count: c.nonDeveloped },
         ],
       });
     }
@@ -4679,8 +5003,8 @@ const MapContainer = forwardRef(({
         id: "encroachment",
         title: "Encroachment",
         rows: [
-          { label: "Encroached Roads", color: "#7c3aed", count: t.encroachedRoads },
-          { label: "Total Roads", color: "#334155", count: t.totalRoads },
+          { label: "Encroached Roads", color: en.encroached, count: t.encroachedRoads },
+          { label: "Total Roads", color: en.total, count: t.totalRoads },
         ],
       });
     }
@@ -4688,6 +5012,7 @@ const MapContainer = forwardRef(({
     return groups;
   }, [
     dssLegendGroups,
+    dssRuleColors,
     streetLightVisible,
     streetLightCounts,
     underdevelopedVisible,
@@ -4883,7 +5208,7 @@ const MapContainer = forwardRef(({
     Object.entries(amenityLayersRef.current || {}).forEach(([id, layer]) => {
       if (layer && typeof layer.setStyle === "function") {
         layer.setStyle(createAmenityStyle(id, isDark));
-        layer.set("legendColor", isDark ? "rgba(255, 215, 0, 1)" : "rgba(255, 0, 0, 1)");
+        layer.set("legendColor", getAmenityColor(id, isDark)); // GeoServer layer color (was hard-coded red/gold)
       }
     });
     Object.entries(osmAmenityLayersRef.current || {}).forEach(([id, layer]) => {
@@ -4894,7 +5219,7 @@ const MapContainer = forwardRef(({
     Object.entries(otherLayersRef.current || {}).forEach(([id, layer]) => {
       if (layer && typeof layer.setStyle === "function") {
         layer.setStyle(createOtherStyle(id, isDark));
-        layer.set("legendColor", isDark ? "rgba(0, 255, 255, 1)" : "rgba(0, 0, 255, 1)");
+        layer.set("legendColor", getAmenityColor(id, isDark)); // GeoServer layer color (was hard-coded blue/cyan)
       }
     });
     Object.entries(osmOtherLayersRef.current || {}).forEach(([id, layer]) => {
@@ -4902,8 +5227,111 @@ const MapContainer = forwardRef(({
         layer.setStyle(createOtherStyle(id, isDark));
       }
     });
+    Object.entries(lcluLayersRef.current || {}).forEach(([id, layer]) => {
+      if (layer && typeof layer.setStyle === "function") {
+        layer.setStyle(createAmenityStyle(id, isDark));
+        layer.set("legendColor", getAmenityColor(id, isDark));
+      }
+    });
     mapRef.current?.renderSync?.();
   }, [baseMap]);
+
+  // Pull every vector layer's color from its GeoServer style
+  // (GetLegendGraphic) — pins, badges, polygon/line strokes, and legend
+  // swatches all read GEOSERVER_LAYER_COLORS via getAmenityColor. Hard-
+  // coded palettes were removed; once a color lands, cached pin/badge
+  // SVGs and style objects are dropped and the affected layers are
+  // re-styled so they repaint with the GeoServer color.
+  useEffect(() => {
+    const cfg = cityConfig[(city || "").toLowerCase()] || {};
+    const isDark = baseMap === "satellite" || baseMap === "toner";
+    let cancelled = false;
+
+    Object.keys(GEOSERVER_LAYER_COLORS).forEach((k) => delete GEOSERVER_LAYER_COLORS[k]);
+
+    const layerEntries = [
+      ...Object.entries(cfg.amenities || {}),
+      ...Object.entries(cfg.others || {}),
+      ...Object.entries(cfg.utilities || {})
+        .filter(([, u]) => !(u && typeof u === "object" && u.options)) // option groups are WMS, already GeoServer-styled
+        .map(([id, u]) => [id, typeof u === "string" ? u : u?.layer]),
+      // Only the icon-styled vector LCLU layers need a client-side color —
+      // the WMS-backed ones are already GeoServer-styled server-side.
+      ...Object.entries(cfg.LCLUClassifications || {})
+        .filter(([id]) => getLcluIcon(id)),
+    ];
+
+    const dropCachedStyles = (id) => {
+      PIN_SVG_CACHE.delete(`${id}|light`);
+      PIN_SVG_CACHE.delete(`${id}|dark`);
+      AMENITY_BADGE_SVG_CACHE.delete(`${id}|light`);
+      AMENITY_BADGE_SVG_CACHE.delete(`${id}|dark`);
+      [AMENITY_STYLE_CACHE, OTHER_STYLE_CACHE].forEach((cache) => {
+        for (const k of cache.keys()) if (k.startsWith(`${id}:`)) cache.delete(k);
+      });
+    };
+
+    const restyle = (layers, styleFn) => {
+      Object.entries(layers || {}).forEach(([id, layer]) => {
+        if (!layer || typeof layer.setStyle !== "function") return;
+        if (GEOSERVER_LAYER_COLORS[id]) {
+          dropCachedStyles(id);
+          layer.set("legendColor", getAmenityColor(id, isDark));
+        }
+        layer.setStyle(styleFn(id, isDark));
+      });
+    };
+
+    Promise.all(
+      layerEntries.map(async ([id, layerName]) => {
+        const color = await fetchLegendColor(layerName);
+        if (color) GEOSERVER_LAYER_COLORS[id] = color;
+      })
+    ).then(() => {
+      if (cancelled) return;
+      restyle(amenityLayersRef.current, createAmenityStyle);
+      restyle(osmAmenityLayersRef.current, createAmenityStyle);
+      restyle(otherLayersRef.current, createOtherStyle);
+      restyle(osmOtherLayersRef.current, createOtherStyle);
+      restyle(utilityLayersRef.current, createOtherStyle);
+      restyle(osmUtilityLayersRef.current, createOtherStyle);
+      restyle(lcluLayersRef.current, createAmenityStyle);
+      // Analysis overlays borrow their subject amenity's GeoServer color —
+      // repaint them and their legend swatches once the colors land,
+      // otherwise layers toggled before this fetch kept the fallback gray.
+      Object.entries(analysisLayersRef.current || {}).forEach(([id, layer]) => {
+        layer?.set?.(
+          "analysisColor",
+          GEOSERVER_LAYER_COLORS[ANALYSIS_OPTIONS[id]?.amenityKey] || LAYER_COLOR_FALLBACK
+        );
+        applyAnalysisLayerStyle(layer);
+      });
+      setAnalysisLegend((prev) => {
+        const next = {};
+        Object.entries(prev).forEach(([id, row]) => {
+          // WMS analysis overlays carry their own GeoServer style color —
+          // only fall back to the amenity color while it's still the
+          // unresolved gray.
+          const isWms = analysisLayersRef.current?.[id]?.get?.("analysisKind") === "wms";
+          next[id] = {
+            ...row,
+            color:
+              isWms && row.color !== LAYER_COLOR_FALLBACK
+                ? row.color
+                : GEOSERVER_LAYER_COLORS[ANALYSIS_OPTIONS[id]?.amenityKey] || row.color,
+          };
+        });
+        return next;
+      });
+      // Sidebar's Analysis-tab icons tint with the same GeoServer colors.
+      onLayerColorsLoaded?.({ ...GEOSERVER_LAYER_COLORS });
+      mapRef.current?.renderSync?.();
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [city, baseMap, onLayerColorsLoaded]);
 
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
@@ -5001,6 +5429,7 @@ const MapContainer = forwardRef(({
     const handleMoveEnd = () => {
       if (amenityMoveTimerRef.current) clearTimeout(amenityMoveTimerRef.current);
       if (otherMoveTimerRef.current) clearTimeout(otherMoveTimerRef.current);
+      if (lcluMoveTimerRef.current) clearTimeout(lcluMoveTimerRef.current);
       if (roadMoveTimerRef.current) clearTimeout(roadMoveTimerRef.current);
       const wait = getIsLowBandwidth() ? 650 : 400;
       const hasAmenityVisible = Object.values(amenityLayersRef.current).some((layer) =>
@@ -5012,12 +5441,15 @@ const MapContainer = forwardRef(({
       const hasUtilityVisible = Object.values(utilityLayersRef.current).some((layer) =>
         layer.getVisible()
       );
+      const hasLcluVisible = Object.values(lcluLayersRef.current || {}).some((layer) =>
+        layer?.getVisible?.()
+      );
       const hasRoadVisible =
         !!roadNetworkLayerRef.current?.getVisible?.() ||
         Object.values(roadClassLayersRef.current || {}).some((layer) =>
           layer?.getVisible?.()
         );
-      if (!hasAmenityVisible && !hasOtherVisible && !hasUtilityVisible && !hasRoadVisible) return;
+      if (!hasAmenityVisible && !hasOtherVisible && !hasUtilityVisible && !hasLcluVisible && !hasRoadVisible) return;
 
       if (hasAmenityVisible) {
         amenityMoveTimerRef.current = setTimeout(() => {
@@ -5243,6 +5675,61 @@ const MapContainer = forwardRef(({
         }, wait);
       }
 
+      if (hasLcluVisible) {
+        lcluMoveTimerRef.current = setTimeout(() => {
+          const view = map.getView();
+          const projection = view.getProjection();
+          const extent = view.calculateExtent(map.getSize());
+          const zoom = view.getZoom?.();
+          const extentKey = getExtentKey(extent, zoom);
+          if (extentKey && extentKey === lcluExtentKeyRef.current) return;
+          lcluExtentKeyRef.current = extentKey;
+          const lowBandwidth = getIsLowBandwidth();
+          const cacheTtlMs = lowBandwidth ? 90000 : 30000;
+          const maxFeatures = getAmenityMaxFeatures(zoom, lowBandwidth);
+          if (lcluFetchAbortRef.current) lcluFetchAbortRef.current.abort();
+          const controller = new AbortController();
+          lcluFetchAbortRef.current = controller;
+
+          Object.entries(lcluLayersRef.current).forEach(([id, layer]) => {
+            if (!layer.getVisible()) return;
+            const cfg = cityConfig[(city || "").toLowerCase()] || {};
+            const layerName = cfg.LCLUClassifications?.[id];
+            if (!layerName) return;
+            const layerExtentKey = layer.get("extentKey");
+            if (layerExtentKey === extentKey) return;
+            layer.set("extentKey", extentKey);
+            const isWms = typeof layer.getSource?.()?.updateParams === "function";
+            if (!isWms) {
+              fetchWfsLayerData({
+                layer,
+                layerName,
+                projection,
+                extent,
+                extentKey,
+                maxFeatures,
+                cacheRef: lcluWfsCacheRef,
+                cacheTtlMs,
+                abortSignal: controller.signal,
+                id,
+                prefix: "LcluWFS",
+              });
+            }
+            fetchWfsCount({
+              layerName,
+              projection,
+              extent,
+              extentKey,
+              cacheRef: lcluWfsCountCacheRef,
+              cacheTtlMs,
+              abortSignal: controller.signal,
+              id,
+              prefix: "LcluWFS",
+            });
+          });
+        }, wait);
+      }
+
       if (hasRoadVisible && roadWfsLayerRef.current) {
         roadMoveTimerRef.current = setTimeout(() => {
           const view = map.getView();
@@ -5320,6 +5807,7 @@ const MapContainer = forwardRef(({
       map.un("moveend", handleMoveEnd);
       if (amenityMoveTimerRef.current) clearTimeout(amenityMoveTimerRef.current);
       if (otherMoveTimerRef.current) clearTimeout(otherMoveTimerRef.current);
+      if (lcluMoveTimerRef.current) clearTimeout(lcluMoveTimerRef.current);
       if (roadMoveTimerRef.current) clearTimeout(roadMoveTimerRef.current);
       if (roadWfsAbortRef.current) roadWfsAbortRef.current.abort();
     };
@@ -5607,11 +6095,46 @@ const MapContainer = forwardRef(({
 
       const cfg = cityConfig[city.toLowerCase()];
       const isRoadLayer = cfg && drawMode.layer === cfg.roadLayer;
+      // DSS draw queries target whichever DSS module layer the Query panel
+      // picked (not necessarily the active one) — workspace varies, so use
+      // the global WFS endpoint (workspace-qualified typeNames resolve
+      // fine there).
+      const isDssLayer = DSS_MODULE_ORDER.some(
+        (k) => resolveDssModule(k, city)?.layer === drawMode.layer
+      );
 
       let typeName = drawMode.layer;
-      let baseUrl = isRoadLayer ? `${GEOSERVER_BASE}/Road_Network/wfs` : `${GEOSERVER_BASE}/Amenities/wfs`;
+      let baseUrl = isRoadLayer
+        ? `${GEOSERVER_BASE}/Road_Network/wfs`
+        : isDssLayer
+          ? `${GEOSERVER_BASE}/wfs`
+          : `${GEOSERVER_BASE}/Amenities/wfs`;
 
-      const filterExpr = `INTERSECTS(geom, ${sridWkt})`;
+      // MV-backed DSS layers don't all name their geometry column "geom"
+      // — resolve it once per layer via DescribeFeatureType (cached) so
+      // INTERSECTS targets the right attribute.
+      let geomColumn = "geom";
+      if (isDssLayer) {
+        const cached = dssGeomColumnRef.current;
+        if (cached.layer === drawMode.layer && cached.column) {
+          geomColumn = cached.column;
+        } else {
+          try {
+            const descUrl = `${GEOSERVER_BASE}/wfs?service=WFS&version=1.1.0&request=DescribeFeatureType&typeName=${encodeURIComponent(drawMode.layer)}`;
+            const res = await fetch(descUrl);
+            const xmlText = await res.text();
+            const doc = new DOMParser().parseFromString(xmlText, "text/xml");
+            const gmlEl = Array.from(doc.getElementsByTagNameNS("*", "element"))
+              .find((el) => /^gml:/i.test(el.getAttribute("type") || ""));
+            if (gmlEl?.getAttribute("name")) {
+              geomColumn = gmlEl.getAttribute("name");
+              dssGeomColumnRef.current = { layer: drawMode.layer, column: geomColumn };
+            }
+          } catch { /* fall back to "geom" */ }
+        }
+      }
+
+      const filterExpr = `INTERSECTS(${geomColumn}, ${sridWkt})`;
       const queryUrl = `${baseUrl}?service=WFS&version=1.1.0&request=GetFeature&typeName=${encodeURIComponent(
         typeName
       )}&outputFormat=application/json&CQL_FILTER=${encodeURIComponent(filterExpr)}`;
@@ -5676,7 +6199,7 @@ const MapContainer = forwardRef(({
       }
       drawingActiveRef.current = false;
     };
-  }, [drawMode, city]);
+  }, [drawMode, city, activeDssLayer]);
 
 
 
@@ -5849,9 +6372,11 @@ const MapContainer = forwardRef(({
         `&outputFormat=application/json` +
         `&CQL_FILTER=${encodeURIComponent(filterText)}`;
 
-      fetch(wfsUrl)
-        .then((res) => res.json())
-        .then((data) => {
+      // Color comes from the road layer's own GeoServer style
+      // (GetLegendGraphic) — filtered roads are the same layer's data,
+      // not an arbitrary highlight. Was: a random per-filter HSL color.
+      Promise.all([fetch(wfsUrl).then((res) => res.json()), fetchLegendColor(typeName)])
+        .then(([data, roadColor]) => {
           const features = (data && data.features) ? data.features : [];
           if (features.length === 0) {
             if (filteredRoadLayerRef.current) {
@@ -5867,7 +6392,7 @@ const MapContainer = forwardRef(({
             filteredRoadLayerRef.current = null;
           }
 
-          const color = getRandomRoadColor();
+          const color = roadColor || LAYER_COLOR_FALLBACK;
           filteredRoadColorRef.current = color;
 
           const format = new GeoJSON();
@@ -5950,9 +6475,13 @@ const MapContainer = forwardRef(({
         // If a classification or specialized layer is active, HIDE the base layer
         roadNetworkLayerRef.current.setVisible(false);
       } else {
-        // Otherwise, show it if network.roads is enabled OR if there's a filter
+        // Otherwise, show it if network.roads is enabled OR if there's a
+        // filter — except while a DSS module is on the map: the DSS
+        // thematic layer is the road picture there, and a stray roadFilter
+        // must not force the plain road network (or its labels, below —
+        // they render at zIndex 50000, above the DSS layer) back over it.
         let shouldShow = !!(layerVisibility?.network?.roads);
-        if (roadFilter) shouldShow = true;
+        if (roadFilter && !activeDssModule) shouldShow = true;
         roadNetworkLayerRef.current.setVisible(shouldShow);
       }
     }
@@ -5964,7 +6493,7 @@ const MapContainer = forwardRef(({
         !getIsLowBandwidth() &&
         !isAnyClassLayerVisible &&
         !isAnySpecializedLayerVisible &&
-        (!!roadNetworkLayerRef.current?.getVisible?.() || !!roadFilter);
+        (!!roadNetworkLayerRef.current?.getVisible?.() || (!!roadFilter && !activeDssModule));
       roadLabelsLayerRef.current.setVisible(shouldShowLabels);
     }
 
@@ -6000,7 +6529,7 @@ const MapContainer = forwardRef(({
 
       layer.setVisible(isVisible);
     });
-  }, [roadFilter, layerVisibility]);
+  }, [roadFilter, layerVisibility, activeDssModule]);
 
   useEffect(() => {
     const showSegmented = !!layerVisibility?.network?.segmentedRoads;
@@ -6047,14 +6576,17 @@ const MapContainer = forwardRef(({
     if (osmAmenityFetchAbortRef.current) osmAmenityFetchAbortRef.current.abort();
     if (otherFetchAbortRef.current) otherFetchAbortRef.current.abort();
     if (osmOtherFetchAbortRef.current) osmOtherFetchAbortRef.current.abort();
+    if (lcluFetchAbortRef.current) lcluFetchAbortRef.current.abort();
     const amenityController = new AbortController();
     const osmController = new AbortController();
     const otherController = new AbortController();
     const otherOsmController = new AbortController();
+    const lcluController = new AbortController();
     amenityFetchAbortRef.current = amenityController;
     osmAmenityFetchAbortRef.current = osmController;
     otherFetchAbortRef.current = otherController;
     osmOtherFetchAbortRef.current = otherOsmController;
+    lcluFetchAbortRef.current = lcluController;
     const map = mapRef.current;
     const view = map?.getView?.();
     const projection = view?.getProjection?.();
@@ -6189,19 +6721,68 @@ const MapContainer = forwardRef(({
         }
       }
       layer.setVisible(visible);
+      const source = layer.getSource?.();
+      const isWms = typeof source?.updateParams === "function";
+      if (!visible) {
+        source?.clear?.();
+        if (lcluWfsCountsRef.current[id] !== 0) {
+          const next = { ...lcluWfsCountsRef.current, [id]: 0 };
+          lcluWfsCountsRef.current = next;
+          lcluWfsCountSourceRef.current = {
+            ...lcluWfsCountSourceRef.current,
+            [id]: null,
+          };
+          if (haveCountsChanged(lcluLegendCountsRef.current, next)) {
+            lcluLegendCountsRef.current = next;
+            setLcluLegendCounts(next);
+          }
+        }
+        return;
+      }
       // Opacity is handled by its own dedicated effect below — it must
       // never share a dependency array with this one, which force-
       // refreshes WMS tiles (updateParams({_t: Date.now()})) whenever it
       // reruns. Opacity is a pure client-side canvas property; it doesn't
       // need new tile data, so it must never trigger a network refetch.
-      if (visible) {
-        const source = layer.getSource?.();
-        if (source?.updateParams) {
-          source.updateParams({ _t: Date.now() });
-        } else if (source?.refresh) {
-          source.refresh();
-        }
+      if (isWms) {
+        source.updateParams({ _t: Date.now() });
       }
+      if (!map || !view || !projection || !extent) return;
+      const cfg = cityConfig[(city || "").toLowerCase()] || {};
+      const layerName = cfg.LCLUClassifications?.[id];
+      if (!layerName) return;
+      layer.set("extentKey", extentKey);
+      if (!isWms) {
+        // Icon-styled vector layer — pull the point features into the
+        // source; the GeoServer style's red-square symbols are never
+        // requested at all.
+        fetchWfsLayerData({
+          layer,
+          layerName,
+          projection,
+          extent,
+          extentKey,
+          maxFeatures,
+          cacheRef: lcluWfsCacheRef,
+          cacheTtlMs,
+          abortSignal: lcluController.signal,
+          id,
+          prefix: "LcluWFS",
+        });
+      }
+      // Legend count for every visible LCLU layer — WMS-backed ones
+      // (ULU polygons, Bridge_Culvert lines) included.
+      fetchWfsCount({
+        layerName,
+        projection,
+        extent,
+        extentKey,
+        cacheRef: lcluWfsCountCacheRef,
+        cacheTtlMs,
+        abortSignal: lcluController.signal,
+        id,
+        prefix: "LcluWFS",
+      });
     });
 
     Object.entries(amenityLayersRef.current).forEach(([id, layer]) => {
@@ -6463,7 +7044,7 @@ const MapContainer = forwardRef(({
         abortSignal: otherOsmController.signal,
       });
     }
-  }, [layerVisibility, city, selectedRoadToken]);
+  }, [layerVisibility, city, selectedRoadToken, selectedZone, selectedWard]);
 
   // Deliberately its own tiny effect, isolated from the big visibility-sync
   // effect above (which force-refreshes WMS tiles via updateParams whenever
@@ -6486,27 +7067,129 @@ const MapContainer = forwardRef(({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    const cfg = cityConfig[(city || "").toLowerCase()] || {};
     const vis = layerVisibility?.analysis || {};
-    const keyMap = {
-      bankRoad: "atm_bank",
-      hospitalRoad: "hospital",
-      educationRoad: "education",
-      hotelRoad: "hotel",
-      parkRoad: "park",
-    };
     Object.entries(vis).forEach(([id, enabled]) => {
       const existing = analysisLayersRef.current[id];
       if (enabled && !existing) {
-        const amenityKey = keyMap[id];
+        const opt = ANALYSIS_OPTIONS[id];
+        const amenityKey = opt?.amenityKey;
         if (!amenityKey) return;
-        fetch(`/api/road-networks/${city}/road-analysis/${amenityKey}`)
+
+        // cfg.analysis holds the published GeoServer layer — it is now the
+        // ONLY data source for Analysis-tab roads: cached WMS tiles draw
+        // the map, and a WFS GetFeature on the same layer feeds the data
+        // table, legend count, and the column-filter CQL. The old DB path
+        // (commented out below) hit /api/road-networks/.../road-analysis/
+        // which lazily created and queried a materialized view server-side.
+        const wmsLayerName = normalizeLayerName(cfg.analysis?.[opt.analysisKey] || "");
+        if (!wmsLayerName) return;
+        const ws = getWorkspaceFromLayerName(wmsLayerName, "Road_Network");
+        const wmsLayer = new TileLayer({
+          title: `Road Analysis: ${id}`,
+          visible: true,
+          source: makeTileWmsSource({
+            layerName: wmsLayerName,
+            workspace: ws,
+            cacheable: true,
+          }),
+        });
+        wmsLayer.set("analysisKind", "wms");
+        wmsLayer.set("analysisWorkspace", ws);
+        wmsLayer.setZIndex(65);
+        map.addLayer(wmsLayer);
+        analysisLayersRef.current[id] = wmsLayer;
+        setAnalysisLegend((prev) => ({
+          ...prev,
+          [id]: {
+            label: opt.label,
+            layer: wmsLayerName,
+            color: GEOSERVER_LAYER_COLORS[amenityKey] || LAYER_COLOR_FALLBACK,
+            count: 0,
+          },
+        }));
+        // The MV layer's own GeoServer style color wins once resolved —
+        // the borrowed amenity color is only the interim fallback.
+        fetchLegendColor(wmsLayerName).then((color) => {
+          if (!color) return;
+          setAnalysisLegend((prev) =>
+            prev[id] ? { ...prev, [id]: { ...prev[id], color } } : prev
+          );
+        });
+
+        // ── Old DB/MV-backed fetch — disabled. Analysis roads come from ──
+        // ── the GeoServer layer only now; kept here for reference.      ──
+        // fetch(`/api/road-networks/${city}/road-analysis/${amenityKey}`)
+        //   .then((res) => {
+        //     if (!res.ok) {
+        //       return res.json().then((j) => {
+        //         throw new Error(j?.error || `HTTP ${res.status}`);
+        //       }).catch(() => {
+        //         throw new Error(`HTTP ${res.status}`);
+        //       });
+        //     }
+        //     return res.json();
+        //   })
+        //   .then((geojson) => {
+        //     const features = new GeoJSON().readFeatures(geojson, {
+        //       dataProjection: "EPSG:4326",
+        //       featureProjection: "EPSG:3857",
+        //     });
+        //     const analysisColor = GEOSERVER_LAYER_COLORS[amenityKey] || LAYER_COLOR_FALLBACK;
+        //     const rows = features.map(f => {
+        //       const props = f.getProperties();
+        //       const { geometry, ...rest } = props;
+        //       return rest;
+        //     });
+        //     analysisLayersRef.current[id]?.set?.("analysisRowCount", rows.length);
+        //     if (wmsLayerName) {
+        //       setAnalysisLegend((prev) =>
+        //         prev[id] ? { ...prev, [id]: { ...prev[id], count: features.length } } : prev
+        //       );
+        //     } else {
+        //       const source = new VectorSource({ features });
+        //       const layer = new VectorLayer({
+        //         title: `Road Analysis: ${id}`,
+        //         visible: true,
+        //         source,
+        //       });
+        //       layer.set("analysisColor", analysisColor);
+        //       const fr = analysisFilteredRowsRef.current?.[id];
+        //       layer.set("visibleKeys", fr ? new Set(fr.map(analysisRowKey)) : null);
+        //       applyAnalysisLayerStyle(layer);
+        //       layer.setZIndex(65);
+        //       map.addLayer(layer);
+        //       analysisLayersRef.current[id] = layer;
+        //       setAnalysisLegend((prev) => ({
+        //         ...prev,
+        //         [id]: { label: opt.label, color: analysisColor, count: features.length },
+        //       }));
+        //     }
+        //     if (onAnalysisDataLoaded) {
+        //       onAnalysisDataLoaded(id, rows);
+        //     }
+        //   })
+        //   .catch((err) => {
+        //     showFeatureNotice({
+        //       feature: "Road analysis",
+        //       dedupeKey: `${city}|road-analysis|${id}`,
+        //     });
+        //   });
+
+        // GeoServer WFS GetFeature on the same layer the WMS tiles render —
+        // identical rows to the old MV query, but served by GeoServer.
+        const wfsUrl =
+          `${GEOSERVER_BASE}/${ws}/wfs` +
+          `?service=WFS` +
+          `&version=1.1.0` +
+          `&request=GetFeature` +
+          `&typeName=${encodeURIComponent(wmsLayerName)}` +
+          `&outputFormat=application/json` +
+          `&srsName=EPSG:4326`;
+        fetch(wfsUrl)
           .then((res) => {
             if (!res.ok) {
-              return res.json().then((j) => {
-                throw new Error(j?.error || `HTTP ${res.status}`);
-              }).catch(() => {
-                throw new Error(`HTTP ${res.status}`);
-              });
+              throw new Error(`HTTP ${res.status}`);
             }
             return res.json();
           })
@@ -6516,37 +7199,23 @@ const MapContainer = forwardRef(({
               featureProjection: "EPSG:3857",
             });
 
-            const analysisColorMap = {
-              bankRoad: "#2563eb",
-              hospitalRoad: "#ef4444",
-              educationRoad: "#a855f7",
-              hotelRoad: "#f59e0b",
-              parkRoad: "#10b981",
-            };
+            // Table rows — geometry is drawn by the WMS layer, never
+            // shown in the table.
+            const rows = features.map(f => {
+              const props = f.getProperties();
+              const { geometry, ...rest } = props;
+              return rest;
+            });
+            analysisLayersRef.current[id]?.set?.("analysisRowCount", rows.length);
 
-            const source = new VectorSource({
-              features,
-            });
-            const layer = new VectorLayer({
-              title: `Road Analysis: ${id}`,
-              visible: true,
-              source,
-              style: new Style({
-                stroke: new Stroke({ color: analysisColorMap[id] || "#ff9800", width: 3 }),
-              }),
-            });
-            layer.setZIndex(65);
-            map.addLayer(layer);
-            analysisLayersRef.current[id] = layer;
+            // WMS tile layer already added above — only the row
+            // count lands now.
+            setAnalysisLegend((prev) =>
+              prev[id] ? { ...prev, [id]: { ...prev[id], count: features.length } } : prev
+            );
 
             // ⭐ Pass data to parent for table
             if (onAnalysisDataLoaded) {
-              const rows = features.map(f => {
-                const props = f.getProperties();
-                // Exclude geometry from table data
-                const { geometry, ...rest } = props;
-                return rest;
-              });
               onAnalysisDataLoaded(id, rows);
             }
           })
@@ -6559,6 +7228,11 @@ const MapContainer = forwardRef(({
       } else if (!enabled && existing) {
         map.removeLayer(existing);
         delete analysisLayersRef.current[id];
+        setAnalysisLegend((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
         if (onAnalysisDataLoaded) onAnalysisDataLoaded(id, null);
       }
     });
@@ -6567,9 +7241,48 @@ const MapContainer = forwardRef(({
         const layer = analysisLayersRef.current[id];
         map.removeLayer(layer);
         delete analysisLayersRef.current[id];
+        setAnalysisLegend((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
       }
     });
   }, [layerVisibility.analysis, city]);
+
+  // Table column filters on analysis rows must also hide the non-matching
+  // overlay roads — WMS overlays take a gis_id IN (...) CQL filter, vector
+  // fallbacks use their visible-id set. Null rows mean "no filter info" →
+  // everything visible.
+  useEffect(() => {
+    Object.entries(analysisLayersRef.current || {}).forEach(([id, layer]) => {
+      const rows = analysisFilteredRows?.[id];
+      if (layer?.get?.("analysisKind") === "wms") {
+        const total = Number(layer.get("analysisRowCount")) || 0;
+        let cql = null;
+        if (rows && total > 0 && rows.length < total) {
+          const col = rows.some((r) => r?.gis_id !== undefined && r?.gis_id !== null)
+            ? "gis_id"
+            : "road_id";
+          const values = [...new Set(
+            rows.map((r) => r?.[col]).filter((v) => v !== undefined && v !== null && v !== "")
+          )];
+          cql = values.length
+            ? `${col} IN (${values
+                .map((v) => (/^-?\d+$/.test(String(v)) ? String(v) : `'${String(v).replace(/'/g, "''")}'`))
+                .join(",")})`
+            : "1=0";
+        }
+        applyCqlToTileLayer(layer, cql, layer.get("analysisWorkspace") || "Road_Network");
+      } else {
+        layer?.set?.(
+          "visibleKeys",
+          rows ? new Set(rows.map(analysisRowKey)) : null
+        );
+        applyAnalysisLayerStyle(layer);
+      }
+    });
+  }, [analysisFilteredRows]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -6578,6 +7291,7 @@ const MapContainer = forwardRef(({
       map.removeLayer(layer);
     });
     analysisLayersRef.current = {};
+    setAnalysisLegend({});
   }, [city]);
 
   useEffect(() => {
@@ -6592,10 +7306,14 @@ const MapContainer = forwardRef(({
         (status === "NON_ILLUMINATED" && filters.nonIlluminated) ||
         (!["ILLUMINATED", "NON_ILLUMINATED"].includes(status) && filters.others);
       if (!visible) return null;
+      // Class colors come from the layer's GeoServer style
+      // (dssRuleColors). Old hard-coded values:
+      //   ILLUMINATED "#10b981", NON_ILLUMINATED "#ef4444", others "#f59e0b"
+      const sl = dssRuleColors.streetLight || {};
       const color =
-        status === "ILLUMINATED" ? "#10b981" :
-          status === "NON_ILLUMINATED" ? "#ef4444" :
-            "#f59e0b";
+        status === "ILLUMINATED" ? (sl.illuminated || LAYER_COLOR_FALLBACK) :
+          status === "NON_ILLUMINATED" ? (sl.nonIlluminated || LAYER_COLOR_FALLBACK) :
+            (sl.others || LAYER_COLOR_FALLBACK);
       return new Style({
         stroke: new Stroke({ color, width: 3.5 }),
       });
@@ -6609,10 +7327,14 @@ const MapContainer = forwardRef(({
         (label === "underdeveloped" && filters.underdeveloped) ||
         (label === "non-developed" && filters.nonDeveloped);
       if (!visible) return null;
+      // Class colors come from the layer's GeoServer style
+      // (dssRuleColors). Old hard-coded values:
+      //   developed "#10b981", underdeveloped "#f59e0b", nonDeveloped "#ef4444"
+      const ud = dssRuleColors.underdeveloped || {};
       const color =
-        label === "developed" ? "#10b981" :
-          label === "underdeveloped" ? "#f59e0b" :
-            "#ef4444";
+        label === "developed" ? (ud.developed || LAYER_COLOR_FALLBACK) :
+          label === "underdeveloped" ? (ud.underdeveloped || LAYER_COLOR_FALLBACK) :
+            (ud.nonDeveloped || LAYER_COLOR_FALLBACK);
       return new Style({
         stroke: new Stroke({ color, width: 4 }),
       });
@@ -6654,7 +7376,7 @@ const MapContainer = forwardRef(({
       visible: !!streetLightVisible,
       geojson: streetLightGeojson,
       styleFn: styleStreetLight,
-      zIndex: 140,
+      zIndex: 39980,
     });
 
     syncGeojsonLayer({
@@ -6662,14 +7384,15 @@ const MapContainer = forwardRef(({
       visible: !!underdevelopedVisible,
       geojson: underdevelopedGeojson,
       styleFn: styleUnderdeveloped,
-      zIndex: 141,
+      zIndex: 39981,
     });
 
     const styleEncroachment = (feature) => {
       const zoneNo = String(feature?.get?.("zone_no") || "").trim();
       if (encroachmentZone && zoneNo !== String(encroachmentZone).trim()) return null;
       return new Style({
-        stroke: new Stroke({ color: "#7c3aed", width: 4 }),
+        // Color from the layer's GeoServer style (was hard-coded "#7c3aed")
+        stroke: new Stroke({ color: dssRuleColors.encroachment?.encroached || LAYER_COLOR_FALLBACK, width: 4 }),
       });
     };
 
@@ -6678,7 +7401,7 @@ const MapContainer = forwardRef(({
       visible: !!encroachmentVisible,
       geojson: encroachmentGeojson,
       styleFn: styleEncroachment,
-      zIndex: 142,
+      zIndex: 39982,
     });
   }, [
     streetLightVisible,
@@ -6690,6 +7413,7 @@ const MapContainer = forwardRef(({
     encroachmentVisible,
     encroachmentGeojson,
     encroachmentZone,
+    dssRuleColors,
   ]);
 
   useEffect(() => {
@@ -6718,6 +7442,9 @@ const MapContainer = forwardRef(({
       return;
     }
 
+    // INCLUDE keeps CQL_FILTER always set — updateParams merges keys, so
+    // omitting it would leave a stale filter after clearing.
+    const cqlFilter = dssCqlFilter || "INCLUDE";
     const onMap = dssWmsLayerRef.current && map.getLayers().getArray().includes(dssWmsLayerRef.current);
     if (!onMap) {
       const layer = new TileLayer({
@@ -6730,6 +7457,7 @@ const MapContainer = forwardRef(({
             FORMAT: "image/png",
             TRANSPARENT: true,
             VERSION: "1.1.1",
+            CQL_FILTER: cqlFilter,
           },
           serverType: "geoserver",
           crossOrigin: "anonymous",
@@ -6745,10 +7473,11 @@ const MapContainer = forwardRef(({
     } else {
       dssWmsLayerRef.current.getSource().updateParams({
         LAYERS: activeDssLayer,
+        CQL_FILTER: cqlFilter,
       });
       dssWmsLayerRef.current.setVisible(true);
     }
-  }, [mapReady, city, activeDssModule, activeDssLayer]);
+  }, [mapReady, city, activeDssModule, activeDssLayer, dssCqlFilter]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -6895,12 +7624,14 @@ const MapContainer = forwardRef(({
       if (missingIds.length > 0) {
         console.log("[MapContainer] Fetching missing geometries for:", missingIds);
         const cfg = cityConfig[city.toLowerCase()] || {};
-        const typeName = cfg.roadLayer;
+        // DSS selection: the id came from a DSS feature — its geometry is
+        // on the module's own layer, not the plain road layer.
+        const typeName = mode === "DSS" && activeDssLayer ? activeDssLayer : cfg.roadLayer;
         if (typeName) {
           const idList = missingIds.map(id => `'${String(id).replace(/'/g, "''")}'`).join(",");
           const cql = `road_id IN (${idList})`;
           const wfsUrl =
-            `${GEOSERVER_BASE}/Road_Network/wfs` +
+            `${GEOSERVER_BASE}/wfs` +
             `?service=WFS` +
             `&version=1.1.0` +
             `&request=GetFeature` +
@@ -6918,6 +7649,7 @@ const MapContainer = forwardRef(({
                   dataProjection: "EPSG:4326",
                   featureProjection: projection
                 });
+                let cachedAny = false;
                 features.forEach(feature => {
                   const geom = feature.getGeometry();
                   const props = feature.getProperties();
@@ -6925,12 +7657,21 @@ const MapContainer = forwardRef(({
                   const gisId = props.gis_id;
                   if (roadId && geom) {
                     clickedGeometriesCacheRef.current.set(String(roadId), geom);
+                    cachedAny = true;
                     console.log("[MapContainer] Fetched and cached geometry for road_id:", roadId);
                   }
                   if (gisId && geom) {
                     clickedGeometriesCacheRef.current.set(String(gisId), geom);
+                    cachedAny = true;
                   }
                 });
+                // Re-run this effect now that geometries exist — the render
+                // below skipped drawing on this pass (cache was cold), so
+                // without this bump the selected road never gets its orange
+                // highlight (e.g. table-row click path).
+                if (cachedAny) {
+                  setHighlightGeomVersion((v) => v + 1);
+                }
               }
             })
             .catch(err => console.error("[MapContainer] Failed to fetch geometries:", err));
@@ -6992,7 +7733,7 @@ const MapContainer = forwardRef(({
       refreshRoadWmsLayers();
       if (!drawInteractionRef.current) ensureMapInteractions(map);
     }
-  }, [activeRoadIds, selectedRoadId, baseMap, mode, isMultiSelectMode]);
+  }, [activeRoadIds, selectedRoadId, baseMap, mode, isMultiSelectMode, highlightGeomVersion, activeDssLayer]);
 
   // =====================================================
   // CANDIDATE ROADS (adjacent-but-not-yet-selected) — middle dimming tier
@@ -7143,14 +7884,23 @@ const MapContainer = forwardRef(({
     }
 
     const cfg = cityConfig[city.toLowerCase()] || {};
-    if (!cfg.roadLayer) {
+    // DSS mode: the selected feature's geometry lives on the active DSS
+    // layer — fetch it via WFS GetFeature on that layer (same CQL
+    // filter), not the road-network /details endpoint.
+    const isDssZoom = modeRef.current === "DSS" && !!activeDssLayer;
+    if (!isDssZoom && !cfg.roadLayer) {
       console.warn("⚠️ [AutoZoom] No roadLayer defined in cityConfig");
       return;
     }
-    const apiUrl =
-      `/api/road-networks/${city}/details?filter=${encodeURIComponent(
-        zoomFilter
-      )}&include_geom=true`;
+    const apiUrl = isDssZoom
+      ? `${GEOSERVER_BASE}/wfs?service=WFS&version=1.1.0&request=GetFeature` +
+        `&typeName=${encodeURIComponent(activeDssLayer)}` +
+        `&outputFormat=application/json` +
+        `&CQL_FILTER=${encodeURIComponent(zoomFilter)}` +
+        `&maxFeatures=50`
+      : `/api/road-networks/${city}/details?filter=${encodeURIComponent(
+          zoomFilter
+        )}&include_geom=true`;
 
     // Selecting a new road (especially in a different zone/ward) before the
     // previous selection's fetch resolves used to leave both requests
@@ -7169,15 +7919,26 @@ const MapContainer = forwardRef(({
         return res.json();
       })
       .then((payload) => {
-        const rows = payload.data || [];
+        // WFS (DSS) returns a GeoJSON FeatureCollection; /details returns
+        // { data: [...] } with a `geom` per row. Both normalize to plain
+        // row objects carrying `.geom` for the shared pipeline below.
+        const rows = isDssZoom
+          ? (payload?.features || []).map((f) => ({
+              ...(f?.properties || {}),
+              geom: f?.geometry || null,
+            }))
+          : payload.data || [];
         if (!Array.isArray(rows) || rows.length === 0) {
           console.warn("⚠️ [AutoZoom] No rows found for filter:", zoomFilter);
           return;
         }
 
-        // Determine if this filter is selecting a single road by ID
+        // Determine if this filter is selecting a single road by ID.
+        // Values may be quoted ('91500100009') or bare numerics — the table's
+        // row click emits `road_id=91500100009` unquoted, which used to fail
+        // this check and silently skip the auto-popup + center animation.
         const filterLower = (zoomFilter || "").toLowerCase();
-        const isIdentifierFilter = /\bgis_id\s*=\s*'[^']+'|\broad_id\s*=\s*'[^']+'/.test(
+        const isIdentifierFilter = /\b(?:gis_id|road_id)\s*=\s*(?:'[^']+'|-?\d+(?:\.\d+)?)/.test(
           filterLower
         );
 
@@ -7232,6 +7993,10 @@ const MapContainer = forwardRef(({
             if (gId) clickedGeometriesCacheRef.current.set(String(gId), g);
           }
         });
+        // The previous highlight layer was just removed above — re-run the
+        // centralized highlight effect now that these geometries are cached
+        // so the orange selected-road highlight is actually (re)drawn.
+        setHighlightGeomVersion((v) => v + 1);
 
         // Chainage takes priority over the regular identify popup — the
         // live click handler already skips showPopup for roads in this
@@ -7286,7 +8051,7 @@ const MapContainer = forwardRef(({
     return () => {
       if (autoZoomDetailsAbortRef.current) autoZoomDetailsAbortRef.current.abort();
     };
-  }, [zoomFilter, city, isMobileView, baseMap, location.search, mode]);
+  }, [zoomFilter, city, isMobileView, baseMap, location.search, mode, activeDssLayer]);
 
 
   //chainage
@@ -9433,17 +10198,18 @@ const MapContainer = forwardRef(({
           amenityCounts={amenityLegendCounts}
           otherCounts={otherLegendCounts}
           utilityCounts={utilityLegendCounts}
+          lcluCounts={lcluLegendCounts}
           extent={legendExtent}
           specializedColumnFilters={specializedColumnFilters}
           tableDataset={tableDataset}
           dssLegend={dssLegend}
+          analysisLegend={displayAnalysisLegend}
           zoneBoundaryColor={zoneBoundaryColor}
           wardBoundaryColor={wardBoundaryColor}
           restrictedMode={isFieldTaskMode}
           specializedTableData={specializedAllRows} // Add this
-          tableDataset={tableDataset} // Add this
         />
-        /</div>
+        </div>
 
       {selectedRoad && (  //chainage
         <div
@@ -9779,16 +10545,16 @@ const MapContainer = forwardRef(({
 
                     {rows.map((row, i) => (
                       <tr key={`${roadId}-${row.patch_id}-${row.segment_id}-${i}`}>
-                        <td>{row.patch_id}</td>
-                        <td>{row.segment_id}</td>
-                        <td>{row.zone_name}</td>
-                        <td>{row.road_id}</td>
-                        <td>{row.road_name}</td>
-                        <td>{row.condition}</td>
-                        <td>{row.material}</td>
-                        <td>{row.ownership}</td>
-                        <td>{row.yoc}</td>
-                        <td>{row.cus}</td>
+                        <td title={row.patch_id}>{row.patch_id}</td>
+                        <td title={row.segment_id}>{row.segment_id}</td>
+                        <td title={row.zone_name}>{row.zone_name}</td>
+                        <td title={row.road_id}>{row.road_id}</td>
+                        <td title={row.road_name}>{row.road_name}</td>
+                        <td title={row.condition}>{row.condition}</td>
+                        <td title={row.material}>{row.material}</td>
+                        <td title={row.ownership}>{row.ownership}</td>
+                        <td title={row.yoc}>{row.yoc}</td>
+                        <td title={row.cus}>{row.cus}</td>
                       </tr>
                     ))}
                   </React.Fragment>

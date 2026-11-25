@@ -3,10 +3,11 @@ import { getGeoserverBase } from "../utils/geoserverBase";
 
 const GEOSERVER_BASE = getGeoserverBase();
 
-const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl, style }) => {
+const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl, style, featureCount: featureCountOverride }) => {
     const [legendItems, setLegendItems] = useState(isManual ? items : []);
     const [loading, setLoading] = useState(!isManual);
-    const [featureCount, setFeatureCount] = useState(null);
+    const [fetchedCount, setFetchedCount] = useState(null);
+    const featureCount = featureCountOverride ?? fetchedCount;
 
     const effectiveBaseUrl = baseUrl || GEOSERVER_BASE;
 
@@ -65,12 +66,12 @@ const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl, style }
                             const text = await wfsRes.text();
                             const match = text.match(/numberOfFeatures="(\d+)"/);
                             if (match && match[1]) {
-                                if (isMounted) setFeatureCount(parseInt(match[1], 10));
+                                if (isMounted) setFetchedCount(parseInt(match[1], 10));
                             }
                         }
                     }
                 } catch (countErr) {
-                    if (isMounted) setFeatureCount(null);
+                    if (isMounted) setFetchedCount(null);
                 }
 
                 if (isMounted) setLoading(false);
@@ -117,7 +118,7 @@ const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl, style }
                         <div style={{ width: '20px', height: '20px', backgroundColor: lItem.color || '#ccc', borderRadius: '2px' }}></div>
                     )}
                     <div style={{ fontSize: '12px', fontWeight: 600, color: '#334155' }}>
-                        {label} {featureCount !== null && <span style={{ color: '#64748b', fontSize: '11px', fontWeight: 500 }}>({featureCount})</span>}
+                        {label} {featureCount !== null && featureCount !== undefined && <span style={{ color: '#64748b', fontSize: '11px', fontWeight: 500 }}>({Number(featureCount).toLocaleString()})</span>}
                     </div>
                 </div>
             </div>
@@ -127,7 +128,7 @@ const DynamicLegendItem = ({ layerName, label, isManual, items, baseUrl, style }
     return (
         <div className="dynamic-legend-grid" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
             <div style={{ fontSize: '12px', fontWeight: 600, color: '#1e2b3a', marginBottom: '4px' }}>
-                {label} {featureCount !== null && <span style={{ color: '#64748b', fontSize: '11px', fontWeight: 500 }}>({featureCount})</span>}
+                {label} {featureCount !== null && featureCount !== undefined && <span style={{ color: '#64748b', fontSize: '11px', fontWeight: 500 }}>({Number(featureCount).toLocaleString()})</span>}
             </div>
             {legendItems.map((lItem, idx) => (
                 <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -251,7 +252,7 @@ const HomeMapLegend = ({ layers }) => {
             {!minimized && (
                 <div style={{ padding: "12px", overflowY: "auto", maxHeight: "450px", display: "flex", flexDirection: "column", gap: "12px" }}>
                     {layers.map((layerProps) => (
-                        <DynamicLegendItem key={layerProps.layerName} layerName={layerProps.layerName} label={layerProps.label} isManual={layerProps.isManual} items={layerProps.items} baseUrl={layerProps.baseUrl} style={layerProps.style} />
+                        <DynamicLegendItem key={layerProps.layerName} layerName={layerProps.layerName} label={layerProps.label} isManual={layerProps.isManual} items={layerProps.items} baseUrl={layerProps.baseUrl} style={layerProps.style} featureCount={layerProps.featureCount} />
                     ))}
                 </div>
             )}
