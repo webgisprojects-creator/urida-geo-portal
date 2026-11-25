@@ -231,7 +231,7 @@ const doughnutOptions = {
 
 
 
-function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters = DEFAULT_FILTERS, onFilterChange, onClassificationChange, onChartClick, panelSide = "right", tableOpen = false, layerVisibility = {}, onAmenityToggle = null, selectedZone: parentSelectedZone = "", selectedWard: parentSelectedWard = "" }) {
+function SummaryPanel({ city = "lucknow", isOpen, onClose, onMinimize, filters = DEFAULT_FILTERS, onFilterChange, onClassificationChange, onChartClick, panelSide = "right", tableOpen = false, layerVisibility = {}, onAmenityToggle = null, selectedZone: parentSelectedZone = "", selectedWard: parentSelectedWard = "", onZoneChange = null, onWardChange = null }) {
     const [activeFilter, setActiveFilter] = useState(null);
 
     const [metrics, setMetrics] = useState({ total_roads: "--", total_length_km: "--", });
@@ -323,10 +323,10 @@ const wardDropdownRef = useRef(null);//new
     const buildFilter = () => {
         const parts = [];
         if (selectedZoneState) {
-            parts.push(`zone_no='${selectedZoneState}'`);
+            parts.push(`zone_no=${formatCqlValue(selectedZoneState)}`);
         }
         if (selectedWardState) {
-            parts.push(`ward_no='${selectedWardState}'`);
+            parts.push(`ward_no=${formatCqlValue(selectedWardState)}`);
         }
         return parts.join(" AND ");
     };
@@ -463,7 +463,7 @@ const wardDropdownRef = useRef(null);//new
 
         if (!selectedZoneState) {
             setWards([]);
-            parentSelectedWard = "";
+            onWardChange?.("");
             return;
         }
 
@@ -479,7 +479,7 @@ const wardDropdownRef = useRef(null);//new
                 wardsCacheRef.current.set(cacheKey, data);
                 setWards(data);
             });
-    }, [selectedZoneState, cityKey, zonesLoaded, hasZones]);
+    }, [selectedZoneState, cityKey, zonesLoaded, hasZones, onWardChange]);
 
 
     useEffect(() => {
@@ -764,23 +764,27 @@ const wardDropdownRef = useRef(null);//new
 
     useEffect(() => {
         if (!selectedZoneState) {
-            parentSelectedWard = "";
+            onWardChange?.("");
             return;
         }
 
-        parentSelectedWard = "";
-    }, [selectedZoneState]);
+        onWardChange?.("");
+    }, [selectedZoneState, onWardChange]);
 
 
     useEffect(() => {
-        if (!isOpen) {
+        // On the Amenities tab the zone/ward selection must filter the
+        // amenity counts only — it should not open the zone-filtered
+        // road layer on the map. Switching back to Overview/Charts
+        // re-applies it (activeSection is in the deps).
+        if (!isOpen || activeSection === "amenities") {
             onFilterChangeRef.current?.("");
             return;
         }
 
         const cql = buildMapFilter();
         onFilterChangeRef.current?.(cql || "");
-    }, [isOpen, selectedZoneState, selectedWardState, activeFilter, selectedChartValue]);
+    }, [isOpen, selectedZoneState, selectedWardState, activeFilter, selectedChartValue, activeSection]);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -801,29 +805,32 @@ const wardDropdownRef = useRef(null);//new
 
         const fetchAmenities = async () => {
             try {
-                // Build CQL filter based on selected zone and ward
-                const cqlParts = [];
-                if (selectedZoneState) cqlParts.push(`zone_no='${selectedZoneState}'`);
-                if (selectedWardState) cqlParts.push(`ward_no='${selectedWardState}'`);
-                const cqlFilter = cqlParts.length > 0 ? cqlParts.join(' AND ') : null;
-                
-                // Use a cache key that includes the filter
+                // Use server-side API for amenity counts with zone/ward filtering
+                const params = new URLSearchParams();
+                if (selectedZoneState) params.append('zone', selectedZoneState);
+                if (selectedWardState) params.append('ward', selectedWardState);
+
                 const cacheKey = `${cityKey}_${selectedZoneState || 'all'}_${selectedWardState || 'all'}`;
-                
+
                 if (amenitiesCacheRef.current.has(cacheKey)) {
                     setAmenitiesData(amenitiesCacheRef.current.get(cacheKey));
                     return;
                 }
 
-                const amenityLayers = cityConfig[cityKey]?.amenities || {};
-                const normalized = await Promise.all(
-                    amenityTables.map(async (name) => {
-                        const layerName = amenityLayers[name];
-                        if (!layerName) return { name, count: 0 };
-                        const count = await fetchWfsCount(layerName, controller.signal, cqlFilter);
-                        return { name, count };
-                    })
-                );
+                const res = await fetch(`/api/${cityKey}/amenities?${params}`, {
+                    signal: controller.signal
+                });
+
+                if (!res.ok) {
+                    throw new Error(`Amenities API failed: ${res.status}`);
+                }
+
+                const data = await res.json();
+                const normalized = amenityTables.map((name) => ({
+                    name,
+                    count: data[name] || 0
+                }));
+
                 amenitiesCacheRef.current.set(cacheKey, normalized);
                 setAmenitiesData(normalized);
             } catch (err) {
@@ -1019,13 +1026,13 @@ const wardDropdownRef = useRef(null);//new
                     </div>
                     {showZoneDropdown && (
                         <div className="custom-select-options custom-scroll">
-                            <div className="option-item" onClick={() => { parentSelectedZone = ""; setShowZoneDropdown(false); }}>All Zones</div>
+                            <div className="option-item" onClick={() => { onZoneChange?.(""); setShowZoneDropdown(false); }}>All Zones</div>
                             {zones.map(z => (
                                 <div
                                     key={z.zone_no}
                                     className={`option-item ${String(selectedZoneState) === String(z.zone_no) ? 'selected' : ''}`}
                                     onClick={() => {
-                                        parentSelectedZone = z.zone_no;
+                                        onZoneChange?.(z.zone_no);
                                         setShowZoneDropdown(false);
                                     }}
                                 >
@@ -1056,13 +1063,13 @@ const wardDropdownRef = useRef(null);//new
                     </div>
                     {showWardDropdown && (
                         <div className="custom-select-options custom-scroll">
-                            <div className="option-item" onClick={() => { parentSelectedWard = ""; setShowWardDropdown(false); }}>All Wards</div>
+                            <div className="option-item" onClick={() => { onWardChange?.(""); setShowWardDropdown(false); }}>All Wards</div>
                             {wards.map(w => (
                                 <div
                                     key={w.ward_no}
                                     className={`option-item ${String(selectedWardState) === String(w.ward_no) ? 'selected' : ''}`}
                                     onClick={() => {
-                                        parentSelectedWard = w.ward_no;
+                                        onWardChange?.(w.ward_no);
                                         setShowWardDropdown(false);
                                     }}
                                 >

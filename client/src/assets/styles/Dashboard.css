@@ -141,6 +141,10 @@ body {
   justify-content: space-between;
   gap: 5px;
   cursor: default;
+  /* table-layout: fixed shrinks header cells to their column share — let
+     the label clip while the filter icon stays pinned to the right edge */
+  overflow: hidden;
+  min-width: 0;
 }
 
 .column-header.filterable {
@@ -573,13 +577,11 @@ body {
   border-radius: 999px;
   /* Filled portion up to the thumb, then a dim unfilled remainder — the
      actual "modern slider" signal, not just a static color bar. */
-  background: linear-gradient(
-    90deg,
-    #36d1dc 0%,
-    #5b86e5 var(--fill),
-    rgba(255, 255, 255, 0.16) var(--fill),
-    rgba(255, 255, 255, 0.16) 100%
-  );
+  background: linear-gradient(90deg,
+      #36d1dc 0%,
+      #5b86e5 var(--fill),
+      rgba(255, 255, 255, 0.16) var(--fill),
+      rgba(255, 255, 255, 0.16) 100%);
   outline: none;
   cursor: pointer;
   transition: box-shadow 0.15s ease;
@@ -630,13 +632,11 @@ body {
 .lclu-opacity-control__slider::-moz-range-track {
   height: 5px;
   border-radius: 999px;
-  background: linear-gradient(
-    90deg,
-    #36d1dc 0%,
-    #5b86e5 var(--fill),
-    rgba(255, 255, 255, 0.16) var(--fill),
-    rgba(255, 255, 255, 0.16) 100%
-  );
+  background: linear-gradient(90deg,
+      #36d1dc 0%,
+      #5b86e5 var(--fill),
+      rgba(255, 255, 255, 0.16) var(--fill),
+      rgba(255, 255, 255, 0.16) 100%);
 }
 
 
@@ -1891,8 +1891,9 @@ right-btn {
   border-spacing: 0;
   background: transparent;
   color: #000;
-  min-width: max-content;
-  /* Ensure table expands to fit content */
+  /* Fixed layout keeps the table inside the screen width — the old
+     min-width: max-content let content force a horizontal scrollbar. */
+  table-layout: fixed;
 }
 
 .bottom-table th,
@@ -1902,6 +1903,11 @@ right-btn {
   /* Lighter border */
   font-size: 12px;
   background-clip: padding-box;
+  /* Fit-to-screen: over-long values truncate (with ellipsis) instead of
+     widening the table; the <td title> tooltip shows the full value. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Sticky Header */
@@ -2153,7 +2159,7 @@ right-btn {
   gap: 10px;
   overflow: hidden;
   transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-              min-width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    min-width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ── Widen panel when charts are being displayed ── */
@@ -2166,11 +2172,13 @@ right-btn {
 .summary-panel::-webkit-scrollbar {
   width: 4px;
 }
+
 .summary-panel::-webkit-scrollbar-track {
   background: transparent;
 }
+
 .summary-panel::-webkit-scrollbar-thumb {
-  background: rgba(0,0,0,0.15);
+  background: rgba(0, 0, 0, 0.15);
   border-radius: 2px;
 }
 
@@ -2471,8 +2479,15 @@ right-btn {
 }
 
 @keyframes dropdownSlideIn {
-  from { opacity: 0; transform: translateY(-4px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .option-item {
@@ -2499,7 +2514,8 @@ right-btn {
 .dynamic-chart-layout {
   flex: 1;
   display: flex;
-  flex-direction: row;          /* ← side-by-side */
+  flex-direction: row;
+  /* ← side-by-side */
   min-height: 0;
   gap: 10px;
   overflow: hidden;
@@ -2508,7 +2524,8 @@ right-btn {
 .chart-item {
   flex: 1;
   min-height: 140px;
-  min-width: 0;                 /* prevents flex blowout */
+  min-width: 0;
+  /* prevents flex blowout */
   position: relative;
   background: rgba(255, 255, 255, 0.30);
   border: 1px solid rgba(255, 255, 255, 0.45);
@@ -2872,6 +2889,7 @@ right-btn {
    reserved" and the legal disclaimer, keeping just the compact brand mark)
    is breakpoint-specific, since that's a content decision, not sizing. */
 @media (max-width: 720px) {
+
   .dashboard-footer .footer-left,
   .dashboard-footer .footer-right {
     display: none;
@@ -3242,58 +3260,59 @@ right-btn {
 .nav-glass-panel button:hover {
   background: rgba(0, 0, 0, 0.05) !important;
 }
+
 /* Specialized Network Sub-Options */
 .specialized-network-item {
-    margin-bottom: 8px;
-    display: flex;
-    flex-direction: column;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
 }
 
 .sub-options-selector {
-    display: flex;
-    gap: 4px;
-    margin-top: 6px;
-    margin-left: 24px;
-    padding: 2px;
-    background: rgba(0, 0, 0, 0.05);
-    border-radius: 4px;
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  margin-left: 24px;
+  padding: 2px;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
 }
 
 .sub-options-radio {
-    display: flex;
-    flex-direction: column;
-    margin-top: 6px;
-    margin-left: 24px;
-    padding: 6px 8px;
-    background: rgba(0, 0, 0, 0.05);
-    border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+  margin-left: 24px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 6px;
 }
 
 .sub-options-radio label {
-    margin: 4px 0;
+  margin: 4px 0;
 }
 
 .sub-opt-btn {
-    flex: 1;
-    padding: 4px 8px;
-    font-size: 10px;
-    border: none;
-    border-radius: 3px;
-    background: transparent;
-    color: #4b5563;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    white-space: nowrap;
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 10px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: #4b5563;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
 }
 
 .sub-opt-btn.active {
-    background: #3b82f6;
-    color: white !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  background: #3b82f6;
+  color: white !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 .sub-opt-btn:hover:not(.active) {
-    background: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.1);
 }
 
 
@@ -3305,7 +3324,7 @@ right-btn {
 
 
 .chainage-btn {
-  position:absolute;
+  position: absolute;
   width: 45px;
   height: 45px;
   border-radius: 50%;
@@ -3343,7 +3362,8 @@ right-btn {
      or the Road Net Summary panel's top-right corner, which used to collide. */
   left: 70px;
   top: 190px;
-  width: clamp(220px, 28vw, 300px); /* responsive width */
+  width: clamp(220px, 28vw, 300px);
+  /* responsive width */
   max-width: 90vw;
   z-index: 1000;
   border-radius: 16px;
@@ -3375,6 +3395,7 @@ right-btn {
     transform: translateX(-20px);
     opacity: 0;
   }
+
   to {
     transform: translateX(0);
     opacity: 1;
@@ -3459,13 +3480,16 @@ right-btn {
 
 .road-panel-body {
   padding: 5px 10px;
-  transition: max-height 0.3s ease, opacity 0.2s ease;  /* 🔥 ADD */
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+  /* 🔥 ADD */
   opacity: 1;
 }
+
 .road-panel.minimized .road-panel-body {
   max-height: 0;
   opacity: 0;
 }
+
 /* The bottom road table (.bottom-table, z-index 100001) intentionally sits
    above everything, same as .summary-panel above — rather than fighting
    that stacking order, cap this panel's own height and let its body scroll
@@ -3476,16 +3500,19 @@ right-btn {
   display: flex;
   flex-direction: column;
 }
+
 .road-panel.table-open .road-panel-body {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
 }
+
 @media (max-width: 768px) {
   .road-panel.table-open {
     max-height: calc(100vh - 190px - 260px);
   }
 }
+
 .road-panel.minimized {
   transform: scale(0.98);
 }
@@ -3546,7 +3573,7 @@ right-btn {
 .chainage-selection {
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid rgba(255,255,255,0.35);
+  border-top: 1px solid rgba(255, 255, 255, 0.35);
   /* Start/End (or Junc/End) side by side instead of one full-width row
      each — a two-road panel used to stack 4+ selects vertically, which is
      what was pushing the whole panel down behind the bottom table. */
@@ -3621,11 +3648,9 @@ right-btn {
   letter-spacing: 0.8px;
   border-radius: 8px;
   border: 1px solid rgba(59, 130, 246, 0.6);
-  background: linear-gradient(
-    135deg,
-    rgba(37, 99, 235, 0.9),
-    rgba(30, 64, 175, 0.9)
-  );
+  background: linear-gradient(135deg,
+      rgba(37, 99, 235, 0.9),
+      rgba(30, 64, 175, 0.9));
   color: #ffffff;
   cursor: pointer;
   transition: all 0.25s ease;
@@ -3633,11 +3658,9 @@ right-btn {
 
 /* HOVER */
 .chainage-create-btn:hover {
-  background: linear-gradient(
-    135deg,
-    rgb(59, 255, 118),
-    rgba(13, 185, 28, 0.884)
-  );
+  background: linear-gradient(135deg,
+      rgb(59, 255, 118),
+      rgba(13, 185, 28, 0.884));
   box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
   transform: scale(1.01);
   font-size: 10px;
@@ -3730,6 +3753,7 @@ right-btn {
   display: flex;
   gap: 8px;
 }
+
 /* PATCH BUTTON BASE */
 .patch-btn {
   flex: 1;
@@ -3841,8 +3865,10 @@ right-btn {
 .patch-table-header {
   display: flex;
   align-items: center;
-  justify-content: center;   /* center everything */
-  position: relative;        /* needed for button positioning */
+  justify-content: center;
+  /* center everything */
+  position: relative;
+  /* needed for button positioning */
   padding: 6px 10px;
 }
 
@@ -3950,6 +3976,7 @@ right-btn {
     margin: 0;
   }
 }
+
 /* .patch-table-actions {
   position: relative;
   background: transparent;
@@ -3975,20 +4002,30 @@ right-btn {
   border-collapse: collapse;
   font-size: 12px;
   color: white;
+  /* Fixed layout keeps the table inside the screen — no horizontal
+     scroll; cells truncate below. */
+  table-layout: fixed;
 }
 
 .patch-table-body th {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: rgba(30, 58, 138, 0.95); /* make it solid */
+  background: rgba(30, 58, 138, 0.95);
+  /* make it solid */
   padding: 6px;
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .patch-table-body td {
   padding: 6px;
-  border-bottom: 1px solid rgba(255,255,255,0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .patch-table-body tr:hover {
@@ -4031,7 +4068,7 @@ right-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   transition: all 0.25s ease;
 }
 
@@ -4065,9 +4102,9 @@ right-btn {
   background: linear-gradient(to bottom, #020617, #0f172a);
   border: 1px solid rgba(59, 130, 246, 0.3);
   border-radius: 12px;
-opacity: 0.96;
+  opacity: 0.96;
   padding: 10px;
-  box-shadow: 0 8px 25px rgba(0,0,0,0.6);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.6);
   font-family: system-ui, sans-serif;
 }
 
@@ -4095,7 +4132,7 @@ opacity: 0.96;
   max-height: 260px;
   overflow-y: auto;
   border-radius: 8px;
-  border: 1px solid rgba(59,130,246,0.2);
+  border: 1px solid rgba(59, 130, 246, 0.2);
   opacity: 0.8;
   background: #020617;
 }
@@ -4119,7 +4156,7 @@ opacity: 0.96;
   align-items: center;
   font-size: 13px;
   color: #e5e7eb;
-  border-bottom: 1px solid rgba(255,255,255,0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   transition: all 0.2s ease;
 }
 
@@ -4193,20 +4230,20 @@ opacity: 0.96;
   height: 40px;
   border-radius: 50%;
   background: linear-gradient(135deg, #0f172a, #1e3a8a);
-  border: 1px solid rgba(59,130,246,0.5);
+  border: 1px solid rgba(59, 130, 246, 0.5);
   color: #e0f2fe;
   font-size: 18px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.6);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.6);
   transition: all 0.25s ease;
 }
 
 .chainage-basemap-toggle:hover {
   transform: scale(1.08);
-  box-shadow: 0 8px 22px rgba(59,130,246,0.4);
+  box-shadow: 0 8px 22px rgba(59, 130, 246, 0.4);
 }
 
 
@@ -4216,7 +4253,7 @@ opacity: 0.96;
   right: 0;
   width: 180px;
   background: linear-gradient(to bottom, #020617, #0f172a);
-  border: 1px solid rgba(59,130,246,0.25);
+  border: 1px solid rgba(59, 130, 246, 0.25);
   border-radius: 12px;
   padding: 6px;
   backdrop-filter: blur(10px);
@@ -4224,7 +4261,7 @@ opacity: 0.96;
   transform: translateY(-12px) scale(0.98);
   pointer-events: none;
   transition: all 0.25s ease;
-  box-shadow: 0 12px 28px rgba(0,0,0,0.7);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.7);
 }
 
 /* OPEN STATE */
@@ -4249,18 +4286,16 @@ opacity: 0.96;
 
 /* HOVER */
 .basemap-item:hover {
-  background: rgba(59,130,246,0.15);
+  background: rgba(59, 130, 246, 0.15);
   color: #e0f2fe;
 }
 
 /* ACTIVE */
 .basemap-item.active {
-  background: linear-gradient(
-    to right,
-    rgba(59,130,246,0.35),
-    rgba(37,99,235,0.15)
-  );
-  border: 1px solid rgba(59,130,246,0.5);
+  background: linear-gradient(to right,
+      rgba(59, 130, 246, 0.35),
+      rgba(37, 99, 235, 0.15));
+  border: 1px solid rgba(59, 130, 246, 0.5);
   color: #fff;
   font-weight: 600;
 }
@@ -4310,12 +4345,12 @@ opacity: 0.96;
 }
 
 /* When patch table is visible, keep submit button above table */
-.patch-table-container ~ .chainage-submit-btn {
+.patch-table-container~.chainage-submit-btn {
   bottom: calc(30vh + 32px);
 }
 
 /* When table is minimized, keep button just above minimized header */
-.patch-table-container.minimized ~ .chainage-submit-btn {
+.patch-table-container.minimized~.chainage-submit-btn {
   bottom: 72px;
 }
 
@@ -4374,7 +4409,6 @@ opacity: 0.96;
   }
 
   .patch-table-body table {
-    min-width: 700px;
     font-size: 11px;
   }
 
@@ -4382,7 +4416,8 @@ opacity: 0.96;
   .patch-table-body td {
     padding: 5px;
   }
-   .chainage-submit-btn {
+
+  .chainage-submit-btn {
     left: 34px;
     bottom: 28px;
     padding: 10px 18px;
@@ -4390,11 +4425,11 @@ opacity: 0.96;
     border-radius: 10px;
   }
 
-  .patch-table-container ~ .chainage-submit-btn {
+  .patch-table-container~.chainage-submit-btn {
     bottom: calc(30vh + 38px);
   }
 
-  .patch-table-container.minimized ~ .chainage-submit-btn {
+  .patch-table-container.minimized~.chainage-submit-btn {
     bottom: 74px;
   }
 }
@@ -4404,7 +4439,7 @@ opacity: 0.96;
   .patch-table-container {
     height: 30vh;
     max-height: 30vh;
-    bottom:20px;
+    bottom: 20px;
     border-left: none;
     border-right: none;
   }
@@ -4434,7 +4469,6 @@ opacity: 0.96;
   }
 
   .patch-table-body table {
-    min-width: 650px;
     font-size: 10.5px;
   }
 
@@ -4442,6 +4476,7 @@ opacity: 0.96;
   .patch-table-body td {
     padding: 5px 4px;
   }
+
   .chainage-submit-btn {
     left: 28px;
     bottom: 26px;
@@ -4450,11 +4485,11 @@ opacity: 0.96;
     border-radius: 9px;
   }
 
-  .patch-table-container ~ .chainage-submit-btn {
+  .patch-table-container~.chainage-submit-btn {
     bottom: calc(30vh + 30px);
   }
 
-  .patch-table-container.minimized ~ .chainage-submit-btn {
+  .patch-table-container.minimized~.chainage-submit-btn {
     bottom: 70px;
   }
 }
@@ -4465,7 +4500,7 @@ opacity: 0.96;
 @media (max-width: 380px) {
   .patch-table-container {
     height: 30vh;
-    bottom:20px;
+    bottom: 20px;
     max-height: 30vh;
   }
 
@@ -4475,7 +4510,6 @@ opacity: 0.96;
   }
 
   .patch-table-body table {
-    min-width: 600px;
     font-size: 10px;
   }
 
@@ -4485,7 +4519,7 @@ opacity: 0.96;
     font-size: 11.5px;
   }
 
-  .patch-table-container ~ .chainage-submit-btn {
+  .patch-table-container~.chainage-submit-btn {
     bottom: calc(30vh + 28px);
   }
 }
@@ -4546,7 +4580,7 @@ opacity: 0.96;
 
   .patch-list-panel {
     max-height: 82px;
-    overflow:hidden;
+    overflow: hidden;
   }
 
   .patch-list-body {
@@ -4656,7 +4690,7 @@ opacity: 0.96;
   .patch-list-panel {
     max-height: 78px;
     padding: 6px;
-    overflow:hidden;
+    overflow: hidden;
   }
 
   .patch-list-body {
@@ -5055,6 +5089,7 @@ RESPONSIVE DESIGN
     padding: 9px 15px;
     font-size: 12.5px;
   }
+
   .chainage-submit-btn {
     left: 30px;
     bottom: 26px;
@@ -5063,11 +5098,11 @@ RESPONSIVE DESIGN
     border-radius: 9px;
   }
 
-  .patch-table-container ~ .chainage-submit-btn {
+  .patch-table-container~.chainage-submit-btn {
     bottom: calc(30vh + 36px);
   }
 
-  .patch-table-container.minimized ~ .chainage-submit-btn {
+  .patch-table-container.minimized~.chainage-submit-btn {
     bottom: 72px;
   }
 }
@@ -5181,6 +5216,7 @@ RESPONSIVE DESIGN
     height: 160px;
   }
 }
+
 .road-group-row td {
   background: linear-gradient(135deg, #0f172a, #1d4ed8) !important;
   color: #ffffff !important;
@@ -5224,11 +5260,11 @@ RESPONSIVE DESIGN
     font-size: 13.5px;
   }
 
-  .patch-table-container ~ .chainage-submit-btn {
+  .patch-table-container~.chainage-submit-btn {
     bottom: calc(35vh + 40px);
   }
 
-  .patch-table-container.minimized ~ .chainage-submit-btn {
+  .patch-table-container.minimized~.chainage-submit-btn {
     bottom: 82px;
   }
 
@@ -5279,11 +5315,11 @@ RESPONSIVE DESIGN
     font-size: 14px;
   }
 
-  .patch-table-container ~ .chainage-submit-btn {
+  .patch-table-container~.chainage-submit-btn {
     bottom: calc(35vh + 48px);
   }
 
-  .patch-table-container.minimized ~ .chainage-submit-btn {
+  .patch-table-container.minimized~.chainage-submit-btn {
     bottom: 90px;
   }
 
@@ -5331,7 +5367,7 @@ RESPONSIVE DESIGN
     max-height: calc(28vh - 40px);
   }
 
-  .patch-table-container ~ .chainage-submit-btn {
+  .patch-table-container~.chainage-submit-btn {
     bottom: calc(28vh + 26px);
   }
 
@@ -5370,7 +5406,7 @@ RESPONSIVE DESIGN
     max-height: calc(26vh - 38px);
   }
 
-  .patch-table-container ~ .chainage-submit-btn {
+  .patch-table-container~.chainage-submit-btn {
     bottom: calc(26vh + 18px);
   }
 
@@ -5710,4 +5746,115 @@ VERY SMALL MOBILES: up to 380px
     top: 12px;
     padding: 10px 12px;
   }
+}
+
+
+#ol-map .ol-zoom {
+  top: 10px !important;
+  left: 10px !important;
+  right: auto !important;
+  bottom: auto !important;
+
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+
+  background: linear-gradient(145deg,
+      rgba(54, 209, 214, 0.95),
+      rgba(91, 134, 229, 0.95)) !important;
+
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  border-radius: 14px !important;
+
+  box-shadow: 0 4px 15px rgba(30, 64, 175, 0.25) !important;
+  backdrop-filter: blur(8px);
+}
+
+/* Zoom buttons */
+#ol-map .ol-zoom button {
+  width: 25px !important;
+  height: 25px !important;
+  margin: 0 !important;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background: rgba(255, 255, 255, 0.18) !important;
+  color: #FFFFFF !important;
+
+  border: 1px solid rgba(255, 255, 255, 0.3) !important;
+  border-radius: 9px !important;
+
+  font-size: 22px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+
+
+
+
+/* Hover */
+#ol-map .ol-zoom button:hover {
+  background: rgba(255, 255, 255, 0.35) !important;
+  transform: scale(1.05);
+}
+
+/* Click */
+#ol-map .ol-zoom button:active {
+  transform: scale(0.95);
+}
+
+/* Keyboard focus */
+#ol-map .ol-zoom button:focus-visible {
+  outline: 2px solid #FFFFFF;
+  outline-offset: 2px;
+}
+
+/* Mobile */
+@media (max-width: 720px) {
+  #ol-map .ol-zoom {
+    top: 6px !important;
+    left: 6px !important;
+    padding: 4px;
+  }
+
+  #ol-map .ol-zoom button {
+    width: 32px !important;
+    height: 32px !important;
+    font-size: 19px !important;
+  }
+}
+
+
+
+/* Compact Summary panel when minimized */
+.summary-minimized .summary-panel {
+  width: 260px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: auto !important;
+  padding: 10px 12px !important;
+  gap: 0 !important;
+  resize: none !important;
+}
+
+/* Hide everything except the panel header */
+.summary-minimized .summary-panel > :not(.summary-header) {
+  display: none !important;
+}
+
+/* Change minimize symbol to restore symbol */
+.summary-minimized .summary-minimize {
+  font-size: 0 !important;
+}
+
+.summary-minimized .summary-minimize::after {
+  content: "+";
+  font-size: 16px;
 }

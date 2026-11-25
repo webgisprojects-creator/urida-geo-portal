@@ -47,7 +47,7 @@ const DSS_MODULES = {
     label: "Street Light",
     // Native MV behind GeoServer: {city}.mv_{city}_street_light
     nativeTable: (city) => `${cityLower(city)}.mv_${cityLower(city)}_street_light`,
-    categoryField: "Street_Light",
+    categoryField: "street_light",
     values: ["ILLUMINATED", "NON_ILLUMINATED", "OTHERS"],
     styleName: "Road_Network:MV_Street_Light",
     resolveLayer: (city) => `Road_Network:MV_${cityTitleCase(city)}_Street_Light`,
@@ -196,10 +196,14 @@ export const flattenDssFeatures = (features) =>
 // ---------------------------------------------------------------------
 // Legend + count normalization (map/table/legend must all agree)
 // ---------------------------------------------------------------------
+// Legend swatch colors are fetched live from each module's GeoServer
+// style (GetLegendGraphic) — the old hard-coded palette is kept commented
+// for reference only:
+//   illuminated "#10b981", nonIlluminated "#ef4444", others "#f59e0b"
 export const STREET_LIGHT_LEGEND = [
-  { key: "illuminated", label: "Illuminated", color: "#10b981" },
-  { key: "nonIlluminated", label: "Non-Illuminated", color: "#ef4444" },
-  { key: "others", label: "Others", color: "#f59e0b" },
+  { key: "illuminated", label: "Illuminated", color: null },
+  { key: "nonIlluminated", label: "Non-Illuminated", color: null },
+  { key: "others", label: "Others", color: null },
 ];
 
 // ILLUMINATED must never fall into "others" — match on the exact GeoServer
@@ -211,11 +215,14 @@ export const normalizeStreetLightKey = (rawValue) => {
   return "others";
 };
 
+// Colors come from the module's GeoServer style; old hard-coded palette:
+//   developed "#10b981", underdeveloped "#f59e0b",
+//   nonDeveloped "#ef4444", others "#64748b"
 export const UNDERDEVELOPED_LEGEND = [
-  { key: "developed", label: "Developed", color: "#10b981" },
-  { key: "underdeveloped", label: "Underdeveloped", color: "#f59e0b" },
-  { key: "nonDeveloped", label: "Non-Developed", color: "#ef4444" },
-  { key: "others", label: "Others/NA", color: "#64748b" },
+  { key: "developed", label: "Developed", color: null },
+  { key: "underdeveloped", label: "Underdeveloped", color: null },
+  { key: "nonDeveloped", label: "Non-Developed", color: null },
+  { key: "others", label: "Others/NA", color: null },
 ];
 
 export const normalizeUnderdevelopedKey = (rawValue) => {
@@ -226,15 +233,19 @@ export const normalizeUnderdevelopedKey = (rawValue) => {
   return "others"; // NA / OTHERS / blank
 };
 
+// Colors come from the module's GeoServer style; old hard-coded palette:
+//   encroached "#7c3aed", total "#334155"
 export const ENCROACHMENT_LEGEND = [
-  { key: "encroached", label: "Encroached Roads", color: "#7c3aed" },
-  { key: "total", label: "Total Roads", color: "#334155" },
+  { key: "encroached", label: "Encroached Roads", color: null },
+  { key: "total", label: "Total Roads", color: null },
 ];
 
 // Road Maintenance categories are open-ended ("group by actual value"), so
-// there's no fixed legend list — colors are assigned deterministically by
-// first-seen order out of this safe controlled palette.
-export const ROAD_MAINTENANCE_PALETTE = ["#2563eb", "#059669", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#64748b"];
+// there's no fixed legend list — colors come from the layer's GeoServer
+// style rules, matched to each category by rule name. The old deterministic
+// fallback palette is commented out (was: ["#2563eb", "#059669", "#d97706",
+// "#dc2626", "#7c3aed", "#0891b2", "#64748b"]).
+export const ROAD_MAINTENANCE_PALETTE = [];
 
 export const normalizeRoadMaintenanceKey = (rawValue) => {
   const v = String(rawValue ?? "").trim();
@@ -274,10 +285,10 @@ export const buildDssLegendCounts = (moduleKey, rows) => {
       if (!(key in counts)) { counts[key] = 0; order.push(key); }
       counts[key] += 1;
     });
-    return order.map((key, i) => ({
+    return order.map((key) => ({
       key,
       label: key,
-      color: ROAD_MAINTENANCE_PALETTE[i % ROAD_MAINTENANCE_PALETTE.length],
+      color: null, // GeoServer style rule color (was ROAD_MAINTENANCE_PALETTE[i])
       count: counts[key],
     }));
   }
@@ -285,7 +296,7 @@ export const buildDssLegendCounts = (moduleKey, rows) => {
     const total = list.length;
     const foundField = ENCROACHMENT_FLAG_FIELDS.find((k) => list.some((row) => row && k in row));
     if (!foundField) {
-      return [{ key: "total", label: "Total Roads", color: "#334155", count: total }];
+      return [{ key: "total", label: "Total Roads", color: null, count: total }]; // was "#334155"
     }
     let encroached = 0;
     list.forEach((row) => {
@@ -293,11 +304,75 @@ export const buildDssLegendCounts = (moduleKey, rows) => {
       if (ENCROACHMENT_TRUE_VALUES.has(val)) encroached += 1;
     });
     return [
-      { key: "encroached", label: "Encroached Roads", color: "#7c3aed", count: encroached },
-      { key: "total", label: "Total Roads", color: "#334155", count: total },
+      { key: "encroached", label: "Encroached Roads", color: null, count: encroached }, // was "#7c3aed"
+      { key: "total", label: "Total Roads", color: null, count: total }, // was "#334155"
     ];
   }
   return [];
+};
+
+// Same bucketing as buildDssLegendCounts but fed by server-side GROUP BY
+// counts ([{value, count}] from /dss/:module/counts/:column) instead of the
+// loaded page's rows — the table is server-paginated, so row-based counts
+// only ever reflect the fetched batch. Returns null for modules without a
+// groupable category field (encroachment), letting callers fall back.
+export const buildDssLegendCountsFromGroups = (moduleKey, groups) => {
+  const list = Array.isArray(groups) ? groups : [];
+  const num = (g) => Number(g?.count) || 0;
+  if (moduleKey === "streetLight") {
+    const counts = { illuminated: 0, nonIlluminated: 0, others: 0 };
+    list.forEach((g) => { counts[normalizeStreetLightKey(g?.value)] += num(g); });
+    return STREET_LIGHT_LEGEND.map((item) => ({ ...item, count: counts[item.key] || 0 }));
+  }
+  if (moduleKey === "underdeveloped") {
+    const counts = { developed: 0, underdeveloped: 0, nonDeveloped: 0, others: 0 };
+    list.forEach((g) => { counts[normalizeUnderdevelopedKey(g?.value)] += num(g); });
+    return UNDERDEVELOPED_LEGEND.map((item) => ({ ...item, count: counts[item.key] || 0 }));
+  }
+  if (moduleKey === "roadMaintenance") {
+    // Open-ended categories — one item per group, keeping the server's
+    // count-DESC order (row-based version followed first-seen order).
+    return list.map((g) => {
+      const key = normalizeRoadMaintenanceKey(g?.value);
+      return { key, label: key, color: null, count: num(g) };
+    });
+  }
+  return null;
+};
+
+// Inverse of buildDssLegendCounts' bucketing: maps a GeoServer legend
+// rule name/title back to the legend item key for a module, so legend
+// swatches and any vector styles can share the SAME per-class color
+// pulled from the layer's SLD. Order matters inside underdeveloped —
+// "DEVELOPED" is a substring of "NONDEVELOPED"/"UNDERDEVELOPED", so the
+// longer tokens are checked first.
+export const dssLegendKeyFromRule = (moduleKey, ruleNameOrTitle) => {
+  const raw = String(ruleNameOrTitle || "").trim();
+  if (!raw) return null;
+  const token = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (moduleKey === "streetLight") {
+    if (token.includes("NONILLUMINATED")) return "nonIlluminated";
+    if (token.includes("ILLUMINATED")) return "illuminated";
+    if (token.includes("OTHER") || token === "NA") return "others";
+    return null;
+  }
+  if (moduleKey === "underdeveloped") {
+    if (token.includes("NONDEVELOPED")) return "nonDeveloped";
+    if (token.includes("UNDERDEVELOPED")) return "underdeveloped";
+    if (token.includes("DEVELOPED")) return "developed";
+    if (token.includes("OTHER") || token === "NA") return "others";
+    return null;
+  }
+  if (moduleKey === "roadMaintenance") {
+    // Categories are open-ended raw values — the rule name/title IS the key.
+    return normalizeRoadMaintenanceKey(raw);
+  }
+  if (moduleKey === "encroachment") {
+    if (token.includes("TOTAL")) return "total";
+    if (token.includes("ENCROACH")) return "encroached";
+    return null;
+  }
+  return null;
 };
 
 // ---------------------------------------------------------------------

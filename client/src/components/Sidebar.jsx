@@ -55,12 +55,18 @@ const utilityIconMap = {
     sewage_length: "fa-ruler-horizontal",
 };
 
+// Hard-coded icon colors removed — each icon tints with the GeoServer
+// style color of the amenity layer its "Roads Near X" overlay borrows,
+// via the layerColors prop (amenityKey mirrors ANALYSIS_OPTIONS in
+// MapContainer). Old values kept for reference:
+//   bankRoad "#ebdb05f8", hospitalRoad "#ef4444", educationRoad "#a855f7",
+//   hotelRoad "#f59e0b", parkRoad "#10b981"
 const analysisOptions = [
-    { id: "bankRoad", label: "Roads Near Banks", icon: "fa-university", color: "#2563eb" },
-    { id: "hospitalRoad", label: "Roads Near Hospitals", icon: "fa-hospital", color: "#ef4444" },
-    { id: "educationRoad", label: "Roads Near Education", icon: "fa-book-open", color: "#a855f7" },
-    { id: "hotelRoad", label: "Roads Near Hotels", icon: "fa-hotel", color: "#f59e0b" },
-    { id: "parkRoad", label: "Roads Near Parks", icon: "fa-tree", color: "#10b981" },
+    { id: "bankRoad", label: "Roads Near Banks", icon: "fa-university", amenityKey: "atm_bank" },
+    { id: "hospitalRoad", label: "Roads Near Hospitals", icon: "fa-hospital", amenityKey: "hospital" },
+    { id: "educationRoad", label: "Roads Near Education", icon: "fa-book-open", amenityKey: "education" },
+    { id: "hotelRoad", label: "Roads Near Hotels", icon: "fa-hotel", amenityKey: "hotel" },
+    { id: "parkRoad", label: "Roads Near Parks", icon: "fa-tree", amenityKey: "park" },
 ];
 
 const Sidebar = ({
@@ -74,6 +80,7 @@ const Sidebar = ({
     tableMinimized = false,
     tableHasRows = false,
     drainageController = null,
+    layerColors = {},
     onClose,
 }) => {
     const [activeTab, setActiveTab] = useState("amenities");
@@ -101,6 +108,37 @@ const Sidebar = ({
     const specializedNetworks = useMemo(
         () => Object.keys(cityData.specializedNetworks || {}),
         [cityData]
+    );
+
+    // Drainage lives under the Utility tab in the UI, but it still drives
+    // layerVisibility.network.drainage + the specialized table via
+    // DrainFilter — the group keys are untouched so map layers, legend and
+    // table behavior stay identical to before.
+    const hasDrainage = specializedNetworks.includes("drainage");
+    const renderDrainFilter = () => (
+        <DrainFilter
+            key="drainage"
+            city={city}
+            layerVisibility={layerVisibility}
+            setLayerVisibility={drainageController?.setLayerVisibility}
+            tableDataset={drainageController?.tableDataset}
+            setIsLoading={drainageController?.setIsLoading}
+            setSelectedRoadId={drainageController?.setSelectedRoadId}
+            setSelectedRoadIds={drainageController?.setSelectedRoadIds}
+            setIsMultiSelectMode={drainageController?.setIsMultiSelectMode}
+            setSelectedRoad={drainageController?.setSelectedRoad}
+            setActiveFilterColumn={drainageController?.setActiveFilterColumn}
+            setFilterPosition={drainageController?.setFilterPosition}
+            setColumnFilters={drainageController?.setColumnFilters}
+            setSpecializedColumnFilters={drainageController?.setSpecializedColumnFilters}
+            setSpecializedAllRows={drainageController?.setSpecializedAllRows}
+            setTableRows={drainageController?.setTableRows}
+            setGlobalTableMetrics={drainageController?.setGlobalTableMetrics}
+            setCurrentPage={drainageController?.setCurrentPage}
+            setTableDataset={drainageController?.setTableDataset}
+            setShouldFetchTable={drainageController?.setShouldFetchTable}
+            setIsTableMinimized={drainageController?.setIsTableMinimized}
+        />
     );
 
     const toggleLayer = (group, id, checked, option = null) => {
@@ -263,33 +301,8 @@ const Sidebar = ({
 
                     <form>
                         {specializedNetworks.length > 0 && specializedNetworks.map((key) => {
-                            if (key === "drainage") {
-                                return (
-                                    <DrainFilter
-                                        key="drainage"
-                                        city={city}
-                                        layerVisibility={layerVisibility}
-                                        setLayerVisibility={drainageController?.setLayerVisibility}
-                                        tableDataset={drainageController?.tableDataset}
-                                        setIsLoading={drainageController?.setIsLoading}
-                                        setSelectedRoadId={drainageController?.setSelectedRoadId}
-                                        setSelectedRoadIds={drainageController?.setSelectedRoadIds}
-                                        setIsMultiSelectMode={drainageController?.setIsMultiSelectMode}
-                                        setSelectedRoad={drainageController?.setSelectedRoad}
-                                        setActiveFilterColumn={drainageController?.setActiveFilterColumn}
-                                        setFilterPosition={drainageController?.setFilterPosition}
-                                        setColumnFilters={drainageController?.setColumnFilters}
-                                        setSpecializedColumnFilters={drainageController?.setSpecializedColumnFilters}
-                                        setSpecializedAllRows={drainageController?.setSpecializedAllRows}
-                                        setTableRows={drainageController?.setTableRows}
-                                        setGlobalTableMetrics={drainageController?.setGlobalTableMetrics}
-                                        setCurrentPage={drainageController?.setCurrentPage}
-                                        setTableDataset={drainageController?.setTableDataset}
-                                        setShouldFetchTable={drainageController?.setShouldFetchTable}
-                                        setIsTableMinimized={drainageController?.setIsTableMinimized}
-                                    />
-                                );
-                            }
+                            // Drainage is rendered in the Utility tab instead (see renderDrainFilter)
+                            if (key === "drainage") return null;
                             const specCfg = cityData.specializedNetworks[key];
                             if (!specCfg) return null;
                             const isGroup = specCfg && typeof specCfg === "object" && specCfg.options;
@@ -440,6 +453,7 @@ const Sidebar = ({
             {activeTab === "utility" && (
                 <div className="sidebar-section">
                     <form>
+                        {hasDrainage && renderDrainFilter()}
                         {utilities.length > 0 ? (
                             utilities.map((key) => {
                                 const utilCfg = cityData.utilities[key];
@@ -487,7 +501,7 @@ const Sidebar = ({
                                 );
                             })
                         ) : (
-                            <div className="text">No utility layers available</div>
+                            !hasDrainage && <div className="text">No utility layers available</div>
                         )}
                     </form>
                 </div>
@@ -505,7 +519,11 @@ const Sidebar = ({
                                 />
                                 <i
                                     className={`icon fa-solid ${option.icon}`}
-                                    style={option.color ? { color: option.color } : undefined}
+                                    style={
+                                        layerColors?.[option.amenityKey]
+                                            ? { color: layerColors[option.amenityKey] }
+                                            : undefined
+                                    }
                                 ></i>
                                 <span className="text">{option.label}</span>
                             </label>

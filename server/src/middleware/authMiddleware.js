@@ -452,6 +452,7 @@ export const auditLogger = (req, res, next) => {
 // load.
 const ACTIVE_TOKENS_RETENTION_MS = Number(process.env.ACTIVE_TOKENS_RETENTION_MS || 45 * 24 * 60 * 60 * 1000); // 45 days
 const ACTIVE_TOKENS_SWEEP_INTERVAL_MS = Number(process.env.ACTIVE_TOKENS_SWEEP_INTERVAL_MS || 6 * 60 * 60 * 1000); // 6 hours
+const ACTIVE_TOKENS_EXPIRY_CHECK_INTERVAL_MS = Number(process.env.ACTIVE_TOKENS_EXPIRY_CHECK_INTERVAL_MS || 5 * 60 * 1000); // 5 minutes
 
 export async function runActiveTokensRetentionSweep() {
   try {
@@ -469,6 +470,70 @@ export async function runActiveTokensRetentionSweep() {
   }
 }
 
+// Background task that periodically checks active sessions and updates their
+// status if they've exceeded idle/absolute timeouts. This handles the case
+// where users close their browser without logging out — their sessions would
+// otherwise remain marked as 'active' indefinitely because no further requests
+// trigger the timeout checks in verifyToken/tryVerifyToken.
+export async function runActiveTokensExpiryCheck() {
+  try {
+    await ensureActiveTokensTable();
+    const now = new Date();
+    const absoluteTimeoutCutoff = new Date(now.getTime() - absoluteTimeoutMs);
+    const fieldTaskUserSet = fieldTaskUsernames();
+
+    // Mark sessions as expired if their absolute timeout has passed
+    const absoluteResult = await pool.query(
+      `UPDATE active_tokens
+       SET status = 'session_expired'
+       WHERE status = 'active'
+         AND issued_at < $1`,
+      [absoluteTimeoutCutoff]
+    );
+    if ((absoluteResult.rowCount || 0) > 0) {
+      console.log(`[active_tokens] expiry check marked ${absoluteResult.rowCount} session(s) as session_expired (absolute timeout)`);
+    }
+
+    // For idle timeout, we need to check per-user since field task accounts
+    // have a longer timeout. Fetch all active sessions and check individually.
+    const { rows } = await pool.query(
+      `SELECT token_hash, user_id, last_activity_time
+       FROM active_tokens
+       WHERE status = 'active'`
+    );
+
+    const expiredForIdle = [];
+    for (const row of rows) {
+      const lastActivity = row.last_activity_time ? new Date(row.last_activity_time) : null;
+      if (!lastActivity) continue;
+
+      const userId = String(row.user_id || "").toLowerCase().trim();
+      const userTimeoutMs = fieldTaskUserSet.has(userId) ? fieldTaskIdleTimeoutMs : idleTimeoutMs;
+      const idleCutoff = new Date(now.getTime() - userTimeoutMs);
+
+      if (lastActivity < idleCutoff) {
+        expiredForIdle.push(row.token_hash);
+      }
+    }
+
+    if (expiredForIdle.length > 0) {
+      await pool.query(
+        `UPDATE active_tokens
+         SET status = 'inactivated'
+         WHERE token_hash = ANY($1)`,
+        [expiredForIdle]
+      );
+      console.log(`[active_tokens] expiry check marked ${expiredForIdle.length} session(s) as inactivated (idle timeout)`);
+    }
+  } catch (err) {
+    console.error('active_tokens expiry check failed:', err?.message || err);
+  }
+}
+
 export function startActiveTokensRetentionSchedule() {
   setInterval(runActiveTokensRetentionSweep, ACTIVE_TOKENS_SWEEP_INTERVAL_MS);
+}
+
+export function startActiveTokensExpirySchedule() {
+  setInterval(runActiveTokensExpiryCheck, ACTIVE_TOKENS_EXPIRY_CHECK_INTERVAL_MS);
 }

@@ -11,7 +11,7 @@ import hotelIcon from "../assets/Amenities_Icons/hotel.png";
 import fuelIcon from "../assets/Amenities_Icons/fuel.png";
 import metroIcon from "../assets/Amenities_Icons/metro.webp";
 import educationIcon from "../assets/Amenities_Icons/education.png";
-import religiousIcon from "../assets/Amenities_Icons/religious.png";
+import religiousIcon from "../assets/Amenities_Icons/religious.webp";
 import toiletIcon from "../assets/Amenities_Icons/Community Toilet.png";
 import chargingIcon from "../assets/Amenities_Icons/charging.png";
 import govIcon from "../assets/Amenities_Icons/Central.png";
@@ -21,7 +21,11 @@ import stateGovIcon from "../assets/Amenities_Icons/State.png";
 import mosqueIcon from "../assets/Amenities_Icons/Mosque.png";
 import locationIcon from "../assets/Amenities_Icons/location.png";
 import manhole from "../assets/Amenities_Icons/manhole.jpg";
-import railwayStationIcon from "../assets/Amenities_Icons/railway_station.svg";
+import railwayStationIcon from "../assets/Amenities_Icons/railway_station.png";
+import lcluBusStopIcon from "../assets/LCLU_Icons/Bus_Stop_Points.png";
+import lcluFireStationIcon from "../assets/LCLU_Icons/Fire Station.png";
+import lcluCommunicationIcon from "../assets/LCLU_Icons/communication_point.png";
+import lcluCommunityToiletIcon from "../assets/LCLU_Icons/community_toilet.png";
 import { getGeoserverBase } from "../utils/geoserverBase";
 const GEOSERVER_BASE = getGeoserverBase();
 
@@ -63,6 +67,25 @@ const OTHER_ICON_MAP = {
   car_charging: chargingIcon,
   mosque: mosqueIcon,
   manhole: manhole,
+};
+
+const LCLU_ICON_MAP = {
+  bus_stop_point: lcluBusStopIcon,
+  bus_stop_points: lcluBusStopIcon,
+  communication_point: lcluCommunicationIcon,
+  community_toilet: lcluCommunityToiletIcon,
+  fire_station: lcluFireStationIcon,
+};
+// Same suffix-normalization as MapContainer's getLcluIcon: LCLU config ids
+// carry a per-city prefix (Kanpur_LCLU_Bus_Stop_Point, ...), the icon map
+// is keyed by the stable type suffix.
+const getLcluIcon = (id) => {
+  const suffix = String(id || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .split("lclu_")
+    .pop();
+  return LCLU_ICON_MAP[suffix] || null;
 };
 
 // Component to fetch and render dynamic legend
@@ -132,19 +155,19 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent, specializedTableDat
     if (item.noCounts && specializedTableData && tableDataset?.kind === "specialized") {
       const attributeMap = {};
 
-      // Check if zone filter is applied for drainage
-      const isDrainageWithZoneFilter = tableDataset.networkId === "drainage" &&
-        specializedColumnFilters?.zone_no &&
-        specializedColumnFilters.zone_no.length > 0;
-      const selectedZones = isDrainageWithZoneFilter
-        ? new Set(specializedColumnFilters.zone_no.map(String))
-        : null;
+      // Apply the same column filters the table uses so the legend tracks
+      // exactly what the user sees — same string-equality semantics as
+      // Dashboard's applySpecializedFilters (previously only drainage's
+      // zone_no filter was honored here, and it wasn't in the deps array
+      // below, so the legend never re-ran when filters changed).
+      const filterEntries = Object.entries(specializedColumnFilters || {})
+        .filter(([, v]) => Array.isArray(v) && v.length > 0);
 
       specializedTableData.forEach(row => {
-        // For drainage with zone filter, skip rows not in selected zones
-        if (isDrainageWithZoneFilter) {
-          const rowZone = String(row?.zone_no || "");
-          if (!selectedZones.has(rowZone)) return;
+        for (const [colKey, vals] of filterEntries) {
+          const cell = row?.[colKey];
+          const cellStr = cell === null || cell === undefined ? "" : String(cell);
+          if (!vals.map(String).includes(cellStr)) return;
         }
 
         let value;
@@ -239,7 +262,7 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent, specializedTableDat
 
     fetchCounts();
     return () => { isMounted = false; };
-  }, [city, item.attribute, roadFilter, item.noCounts, extent, specializedTableData, tableDataset]);
+  }, [city, item.attribute, roadFilter, item.noCounts, extent, specializedTableData, tableDataset, specializedColumnFilters]);
 
   if (loading && legendItems.length === 0 && !useImageFallback) return <div style={{ fontSize: '11px', color: '#888' }}>Loading...</div>;
 
@@ -309,7 +332,7 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent, specializedTableDat
   } else {
     // Standard matching: match WMS legend items to counts
     displayItems = legendItems.map(lItem => {
-      const count = counts[lItem.label.toLowerCase()] || 0;
+      const count = counts[String(lItem.label).toLowerCase().trim()] || 0;
       const label = explodeAttributeLabel && /^\d+$/.test(String(lItem.label).trim())
         ? `${explodeAttributeLabel} ${lItem.label.trim()}`
         : lItem.label;
@@ -317,15 +340,46 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent, specializedTableDat
     });
   }
 
+  // Specialized-network legends (drainage, slum, ...) set noCounts to skip
+  // the road summary API, but they DO get counts from the loaded table rows.
+  // When the counted values actually match this legend's labels, show those
+  // counts and drop the categories the table filters removed.
+  const isSpecializedTableItem =
+    item.noCounts &&
+    tableDataset?.kind === "specialized" &&
+    item.id === tableDataset.networkId;
+  const countsMatchLegend =
+    isSpecializedTableItem && displayItems.some((i) => (i.count || 0) > 0);
+  const tableFiltersActive =
+    isSpecializedTableItem &&
+    Object.values(specializedColumnFilters || {}).some(
+      (v) => Array.isArray(v) && v.length > 0
+    );
+  const showCounts = !item.noCounts || countsMatchLegend;
+
   // Filter out zero counts if we have at least some data
   const hasAnyCounts = Object.keys(counts).length > 0 && !item.noCounts;
 
-  const finalItems = hasAnyCounts
-    ? displayItems.filter(i => i.count > 0)
-    : displayItems;
+  let finalItems;
+  if (isSpecializedTableItem) {
+    if (countsMatchLegend) {
+      finalItems = displayItems.filter((i) => i.count > 0);
+    } else if (tableFiltersActive && Object.keys(counts).length === 0) {
+      finalItems = [];
+    } else {
+      finalItems = displayItems;
+    }
+  } else {
+    finalItems = hasAnyCounts
+      ? displayItems.filter(i => i.count > 0)
+      : displayItems;
+  }
 
   if (finalItems.length === 0) {
-    return <div style={{ fontSize: '11px', color: '#888' }}>{item.noCounts ? "No legend available" : "No matching features in area"}</div>;
+    const emptyMsg = isSpecializedTableItem
+      ? (tableDataset?.networkId === "drainage" ? "No matching drains" : "No matching features")
+      : (item.noCounts ? "No legend available" : "No matching features in area");
+    return <div style={{ fontSize: '11px', color: '#888' }}>{emptyMsg}</div>;
   }
 
   return (
@@ -373,9 +427,12 @@ const DynamicLegendItem = ({ item, city, roadFilter, extent, specializedTableDat
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', flex: 1, fontSize: '11px' }}>
               <span>{lItem.label}</span>
-              {!item.noCounts && (
+              {showCounts && (
                 <span style={{ fontWeight: 'bold', marginLeft: '4px' }}>
-                  {lItem.count.toLocaleString()} {lItem.count === 1 ? "road" : "roads"}
+                  {lItem.count.toLocaleString()}
+                  {!item.noCounts && ` ${lItem.count === 1 ? "road" : "roads"}`}
+                  {item.noCounts && tableDataset?.networkId === "drainage" &&
+                    ` ${lItem.count === 1 ? "drain" : "drains"}`}
                 </span>
               )}
             </div>
@@ -500,7 +557,8 @@ const SectionTitle = ({ children }) => (
 
 const MapLegend = ({
   city, mode, hasSelectedChainageRoad, layerVisibility, roadFilter,
-  onApplyFilter, amenityCounts, otherCounts, utilityCounts, extent, dssLegend,
+  onApplyFilter, amenityCounts, otherCounts, utilityCounts, lcluCounts, extent, dssLegend,
+  analysisLegend,
   zoneBoundaryColor, wardBoundaryColor, restrictedMode = false,
   specializedTableData, tableDataset, specializedColumnFilters // Add specializedColumnFilters
 }) => {
@@ -698,7 +756,9 @@ const MapLegend = ({
           const shortKey = prefix && String(key).startsWith(prefix) ? String(key).slice(prefix.length) : key;
           items.push({
             id: key,
-            label: formatAmenityLabel(shortKey),
+            // Sidebar renders these as "LCLU Bus Stop Point" — match that
+            // instead of formatAmenityLabel's "Lclu Bus Stop Point".
+            label: formatAmenityLabel(shortKey).replace(/^Lclu\b/, "LCLU"),
             layer: cfg.LCLUClassifications[key] || "",
             group: "lclu",
           });
@@ -883,7 +943,14 @@ const MapLegend = ({
     return items;
   }, [city, mode, hasSelectedChainageRoad, layerVisibility, roadFilter]);
 
-  if (legendItems.length === 0) return null;
+  // Road-analysis overlays (Analysis tab): {id: {label, color, count}} fed
+  // by MapContainer once each overlay's features load.
+  const analysisRows = Object.entries(analysisLegend || {})
+    .map(([id, row]) => ({ id, ...(row || {}) }))
+    .filter((row) => row.label);
+  const dssGroups = Array.isArray(dssLegend) ? dssLegend.filter(Boolean) : [];
+
+  if (legendItems.length === 0 && analysisRows.length === 0 && dssGroups.length === 0) return null;
 
   const headerTitle = legendItems.length === 1 ? legendItems[0].label : "Legend";
   const hideItemLabel = legendItems.length === 1;
@@ -893,10 +960,10 @@ const MapLegend = ({
   const amenityItems = safeItems.filter((item) => item.group === "amenities");
   const otherItems = safeItems.filter((item) => item.group === "others");
   const utilityItems = safeItems.filter((item) => item.group === "utilities");
+  const lcluItems = safeItems.filter((item) => item.group === "lclu");
   const remainingItems = safeItems.filter(
-    (item) => !item.boundary && item.group !== "chainage" && item.group !== "amenities" && item.group !== "others" && item.group !== "utilities"
+    (item) => !item.boundary && item.group !== "chainage" && item.group !== "amenities" && item.group !== "others" && item.group !== "utilities" && item.group !== "lclu"
   );
-  const dssGroups = Array.isArray(dssLegend) ? dssLegend.filter(Boolean) : [];
 
   return (
     <div
@@ -1090,6 +1157,75 @@ const MapLegend = ({
                 </div>
               </div>
             )}
+            {analysisRows.length > 0 && (
+              <div>
+                <SectionTitle>Road Analysis</SectionTitle>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {analysisRows.map((row) => {
+                    const legendUrl = row.layer
+                      ? `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(
+                        row.layer
+                      )}&LEGEND_OPTIONS=forceLabels:off`
+                      : "";
+                    return (
+                      <div
+                        key={row.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          background: "rgba(255,255,255,0.88)",
+                          borderRadius: "6px",
+                          padding: "4px 6px",
+                          border: "1px solid rgba(0,0,0,0.08)",
+                        }}
+                      >
+                        {legendUrl ? (
+                          <img
+                            src={legendUrl}
+                            alt={row.label}
+                            style={{ width: "20px", height: "20px", objectFit: "contain" }}
+                            onError={(e) => {
+                              const img = e.currentTarget;
+                              if (!img) return;
+                              img.style.display = "none";
+
+                              const parent = img.parentNode;
+                              if (!parent || parent.querySelector('.fallback-color-box')) return;
+
+                              const span = document.createElement('span');
+                              span.className = 'fallback-color-box';
+                              span.style.width = '20px';
+                              span.style.height = '20px';
+                              span.style.backgroundColor = row.color || '#ccc';
+                              span.style.display = 'inline-block';
+                              span.style.borderRadius = '2px';
+                              parent.insertBefore(span, img);
+                            }}
+                          />
+                        ) : (
+                          <span
+                            style={{
+                              width: "20px",
+                              height: "20px",
+                              borderRadius: "2px",
+                              background: row.color || "#94a3b8",
+                              flex: "0 0 auto",
+                            }}
+                          />
+                        )}
+                        <div style={{ display: "flex", justifyContent: "space-between", flex: 1, fontSize: "12px", color: "#1e2b3a" }}>
+                          <span>{row.label}</span>
+                          <span style={{ fontWeight: 600 }}>
+                            {typeof row.count === "number" ? row.count.toLocaleString() : "—"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {amenityItems.length > 0 && (
               <div>
                 <SectionTitle>Amenities</SectionTitle>
@@ -1098,6 +1234,59 @@ const MapLegend = ({
                     if (!item) return null;
                     const icon = AMENITY_ICON_MAP[item.id];
                     const count = typeof amenityCounts?.[item.id] === "number" ? amenityCounts[item.id] : null;
+                    const legendUrl = item.layer
+                      ? `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(
+                        item.layer
+                      )}${item.style ? `&STYLE=${encodeURIComponent(item.style)}` : ""}&LEGEND_OPTIONS=forceLabels:off`
+                      : "";
+                    return (
+                      <div
+                        key={item.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          background: "rgba(255,255,255,0.88)",
+                          borderRadius: "6px",
+                          padding: "4px 6px",
+                          border: "1px solid rgba(0,0,0,0.08)",
+                        }}
+                      >
+                        {icon ? (
+                          <img
+                            src={icon}
+                            alt={item.label}
+                            style={{ width: "16px", height: "16px", objectFit: "contain" }}
+                          />
+                        ) : legendUrl ? (
+                          <img
+                            src={legendUrl}
+                            alt={item.label}
+                            style={{ width: "16px", height: "16px", objectFit: "contain" }}
+                            onError={(e) => {
+                              const img = e.currentTarget;
+                              if (img) img.style.display = "none";
+                            }}
+                          />
+                        ) : null}
+                        <div style={{ display: "flex", justifyContent: "space-between", flex: 1, fontSize: "12px", color: "#1e2b3a" }}>
+                          <span>{item.label}</span>
+                          <span style={{ fontWeight: 600 }}>{count === null ? "—" : count}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {lcluItems.length > 0 && (
+              <div>
+                <SectionTitle>LCLU</SectionTitle>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {lcluItems.map((item) => {
+                    if (!item) return null;
+                    const icon = getLcluIcon(item.id);
+                    const count = typeof lcluCounts?.[item.id] === "number" ? lcluCounts[item.id] : null;
                     const legendUrl = item.layer
                       ? `${GEOSERVER_BASE}/wms?REQUEST=GetLegendGraphic&VERSION=1.0.0&FORMAT=image/png&WIDTH=20&HEIGHT=20&LAYER=${encodeURIComponent(
                         item.layer

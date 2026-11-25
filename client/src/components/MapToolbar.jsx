@@ -1,9 +1,10 @@
 /* Map toolbar UI for base maps, overlays, search, query, and road network tools. */
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import "../assets/styles/Dashboard.css";
 import QueryPanel from "./QueryPanel";
 import { useLocation, useNavigate } from "react-router-dom";
 import { isChainageAvailable, chainageUnavailableMessage } from "../utils/chainageAvailability";
+import { isStreetViewAvailable, streetViewUnavailableMessage } from "../utils/streetViewAvailability";
 import { DSS_MODULE_ORDER, resolveDssModule, DSS_STATUS } from "../assets/configs/dssLayerConfig";
 import dssStreetLightImage from "../assets/images/Street_light.JPG";
 import dssUnderdevelopedImage from "../assets/images/Underdeveloped_zones.JPG";
@@ -34,6 +35,8 @@ const MapToolbar = ({
   onDssRoad,
   isDssMode = false,
   activeDssModule = null,
+  activeDssLayer = null,
+  dssModuleLabel = null,
   onDssModuleSelect,
   dssModuleStatus = null,
   dssCheckingModule = null,
@@ -53,6 +56,8 @@ const MapToolbar = ({
   onShowTable, // ⭐ NEW: Show table when classification options are clicked
   showRoadNetworkPanel, // ⭐ ADDED
   onToggleRoadNetworkPanel, // ⭐ ADDED
+  chartPanelOpen, // Whether the Summary/Data Analysis panel is open
+  onToolSwitch, // Close all other tools + reset map before opening a tool
   baseMap,
   overlayVisibility,
   roadNetworkVisible,
@@ -91,6 +96,16 @@ const MapToolbar = ({
     if (!isDssMode || !activeDssModule) setDssInfoOpen(false);
   }, [isDssMode, activeDssModule]);
 
+  // Switching DSS modules while the search box is open should reload the
+  // dropdown against the newly active module's rows, not keep results from
+  // the previous one.
+  useEffect(() => {
+    if (!isDssMode || !showSearchBox) return;
+    setSearchQuery("");
+    handleSearchClick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDssModule]);
+
   const [showSearchBox, setShowSearchBox] = useState(false);
   const [selectedRoads, setSelectedRoads] = useState({});
   const [roadList, setRoadList] = useState([]);
@@ -107,6 +122,10 @@ const MapToolbar = ({
   const [activeQueryTab, setActiveQueryTab] = useState("attributes");
   const [selectedZone, setSelectedZone] = useState(null);
   const [isAllRoadsSelected, setIsAllRoadsSelected] = useState(false); // ⭐ NEW STATE
+  // Which LEVEL-2 drill-downs have data in the current scope (selected
+  // zone / all roads / no-zone city). null = not yet known → show all.
+  const [availableOptions, setAvailableOptions] = useState(null);
+  const zoneSummaryRef = useRef(null); // {key: "city|scope", data}
   const [contextNode, setContextNode] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const searchTimeoutRef = useRef(null);
@@ -132,7 +151,34 @@ const MapToolbar = ({
     ? `${city.charAt(0).toUpperCase()}${city.slice(1)}`
     : "City";
 
-  const toggleRoadFilter = () => onToggleRoadNetworkPanel((v) => !v);
+  // Exclusive tool switching: close this toolbar's own panels, ask
+  // Dashboard to close every other tool and strip its layers/filters
+  // (onToolSwitch), then open the clicked tool — unless it was already
+  // active, in which case the reset just closed it (toggle behaviour).
+  const closeLocalTools = () => {
+    setShowSearchBox(false);
+    setControlsVisible(false);
+    setActiveTool(null);
+    setDssInfoOpen(false);
+    setSelectedZone(null);
+    setIsAllRoadsSelected(false);
+    setNestedList([]);
+    setNestedTitle("");
+    setAvailableOptions(null);
+    zoneSummaryRef.current = null;
+  };
+
+  // keepDssMode: tools that work inside DSS (Query, Search, Layers) open
+  // without tearing the DSS session down — road-network-only tools leave
+  // the default behavior (onToolSwitch exits DSS mode) untouched.
+  const openExclusive = (wasActive, activate, options) => {
+    closeLocalTools();
+    onToolSwitch?.(options);
+    if (!wasActive) activate?.();
+  };
+
+  const toggleRoadFilter = () =>
+    openExclusive(showRoadNetworkPanel, () => onToggleRoadNetworkPanel(true));
 
   useEffect(() => {
     if (!controlsVisible) {
@@ -205,12 +251,94 @@ const MapToolbar = ({
     }
   };
 
+  // Zone/all-roads scoped summary, cached per (city, scope) so the
+  // availability probe and the level-3 loaders don't refetch the same
+  // payload. NOTE: /summary only understands ?filter= — a ?zone= param is
+  // silently ignored (previously made zone lists citywide).
+  const getScopeSummary = async (scope) => {
+    const key = `${String(city || "").toLowerCase()}|${scope || ""}`;
+    if (zoneSummaryRef.current?.key === key) return zoneSummaryRef.current.data;
+    const url = `/api/road-networks/${String(city || "").toLowerCase()}/summary${scope ? `?filter=${encodeURIComponent(scope)}` : ""
+      }`;
+    const res = await fetch(url);
+    const data = await res.json();
+    zoneSummaryRef.current = { key, data };
+    return data;
+  };
+
+  const summaryHasRows = (arr) =>
+    Array.isArray(arr) && arr.some((r) => (r?.count ?? 0) > 0);
+
+  const currentScopeFilter = () =>
+    restrictedMode
+      ? summaryScopeFilter()
+      : hasZones && selectedZone?.zone_no
+        ? `zone_no='${selectedZone.zone_no}'`
+        : "";
+
+  // Probe the current scope once per selection and hide LEVEL-2 options
+  // the zone/city has no data for (e.g. a zone with no material values
+  // shouldn't offer "Road Material »" just to open an empty list).
+  useEffect(() => {
+    if (!showRoadNetworkPanel) return;
+    if (!restrictedMode && hasZones && !selectedZone && !isAllRoadsSelected) {
+      setAvailableOptions(null);
+      return;
+    }
+    const scope = currentScopeFilter();
+    let cancelled = false;
+    getScopeSummary(scope)
+      .then((data) => {
+        if (cancelled) return;
+        setAvailableOptions({
+          wards: restrictedMode
+            ? (lockedWardList || []).length > 0
+            : summaryHasRows(data?.byWard),
+          category: summaryHasRows(data?.byCategory),
+          condition: summaryHasRows(data?.byCondition),
+          material: summaryHasRows(data?.byMaterial),
+          ownership: summaryHasRows(data?.byOwnership),
+          cus: summaryHasRows(data?.byCus),
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableOptions(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showRoadNetworkPanel, selectedZone, isAllRoadsSelected, city, hasZones]);
+
+  // Shared by loadCategories/loadCondition/loadMaterial/loadOwnership/
+  // loadCus — same shape as applyRestrictedSummaryLoad but scoped to the
+  // selected zone (or the whole city for All Roads / zone-less cities).
+  const applySummaryLoad = async (summaryField, title, classificationKey) => {
+    onClassificationChange?.(classificationKey);
+    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
+    onApplyRoadFilter?.(filter);
+    onShowTable?.(filter); // Show table when classification option is clicked
+    try {
+      const scope = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "";
+      const summary = await getScopeSummary(scope);
+      setNestedTitle(title);
+      const list = Array.isArray(summary?.[summaryField])
+        ? summary[summaryField].filter((r) => (r?.count ?? 0) > 0).map((r) => r.label)
+        : [];
+      setNestedList(sortNestedList(title, list));
+    } catch (err) {
+      setNestedList([]);
+    }
+  };
+
   const closeRoadFilter = () => {
     onToggleRoadNetworkPanel(false);
     setSelectedZone(null);
     setIsAllRoadsSelected(false);
     setNestedList([]);
     setNestedTitle("");
+    setAvailableOptions(null);
+    zoneSummaryRef.current = null;
     if (onApplyRoadFilter) {
       onApplyRoadFilter("");
     }
@@ -308,16 +436,63 @@ const MapToolbar = ({
     return wardNums.length ? `&wards=${wardNums.join(",")}` : "";
   };
 
+  // DSS mode searches the active module's rows (server-paginated
+  // /dss/:module/rows on the module's MV — the DSS table comes from the
+  // DB) instead of the road-network /search endpoint — the dropdown
+  // renders the same way either way.
+  const isDssSearch = isDssMode && !!activeDssModule;
+
+  // DSS mode: the Query panel's layer dropdown lists every DSS module
+  // layer resolvable for this city (Encroachment drops out on cities it
+  // has no confirmed layer for). The user can therefore query a module
+  // even when it isn't the active one — Dashboard switches to it.
+  const dssQueryLayers = useMemo(
+    () =>
+      isDssMode
+        ? DSS_MODULE_ORDER
+            .map((k) => resolveDssModule(k, city))
+            .filter((m) => m?.layer && !m.knownUnavailable)
+            .map((m) => ({ label: `DSS: ${m.label}`, value: m.layer }))
+        : null,
+    [isDssMode, city]
+  );
+
+  const fetchDssSearchRows = async (pageNum, query) => {
+    const params = new URLSearchParams({
+      page: String(pageNum),
+      limit: "50",
+      includeTotal: "0",
+      search: String(query || "").trim().slice(0, 100),
+      filters: "{}",
+    });
+    const res = await fetch(
+      `/api/road-networks/${city.toLowerCase()}/dss/${activeDssModule}/rows?${params}`
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return Array.isArray(data?.data) ? data.data : [];
+  };
+
   const handleSearchClick = async () => {
     setShowSearchBox(true);
     // setIsRoadDropdownOpen(true);
     setPage(1); // Reset page
     setHasMore(true);
 
+    if (isDssMode && !activeDssModule) {
+      setRoadDropdown([]);
+      return;
+    }
+
     try {
-      const res = await fetch(`/api/road-networks/${city.toLowerCase()}/search?page=1&limit=50${wardsQueryParam()}`);
-      const data = await res.json();
-      const roads = Array.isArray(data) ? data : [];
+      let roads;
+      if (isDssSearch) {
+        roads = await fetchDssSearchRows(1, "");
+      } else {
+        const res = await fetch(`/api/road-networks/${city.toLowerCase()}/search?page=1&limit=50${wardsQueryParam()}`);
+        const data = await res.json();
+        roads = Array.isArray(data) ? data : [];
+      }
       setRoadDropdown(roads);
       if (roads.length < 50) setHasMore(false);
       console.log("Road dropdown data:", roads);
@@ -358,15 +533,25 @@ const MapToolbar = ({
     setPage(1);
     setHasMore(true);
 
+    if (isDssMode && !activeDssModule) {
+      setRoadDropdown([]);
+      return;
+    }
+
     try {
-      const response = await fetch(
-        `/api/road-networks/${city.toLowerCase()}/search?q=${encodeURIComponent(
-          query
-        )}&page=1&limit=50${wardsQueryParam()}`
-      );
-      if (!response.ok) throw new Error("Search failed");
-      const data = await response.json();
-      const roads = Array.isArray(data) ? data : [];
+      let roads;
+      if (isDssSearch) {
+        roads = await fetchDssSearchRows(1, query);
+      } else {
+        const response = await fetch(
+          `/api/road-networks/${city.toLowerCase()}/search?q=${encodeURIComponent(
+            query
+          )}&page=1&limit=50${wardsQueryParam()}`
+        );
+        if (!response.ok) throw new Error("Search failed");
+        const data = await response.json();
+        roads = Array.isArray(data) ? data : [];
+      }
       setRoadDropdown(roads);
       if (roads.length < 50) setHasMore(false);
     } catch (error) {
@@ -536,14 +721,19 @@ const MapToolbar = ({
     const nextPage = page + 1;
 
     try {
-      let url = `/api/road-networks/${city.toLowerCase()}/search?page=${nextPage}&limit=50${wardsQueryParam()}`;
-      if (searchQuery && searchQuery.trim() !== "") {
-        url += `&q=${encodeURIComponent(searchQuery)}`;
-      }
+      let newRoads;
+      if (isDssSearch) {
+        newRoads = await fetchDssSearchRows(nextPage, searchQuery);
+      } else {
+        let url = `/api/road-networks/${city.toLowerCase()}/search?page=${nextPage}&limit=50${wardsQueryParam()}`;
+        if (searchQuery && searchQuery.trim() !== "") {
+          url += `&q=${encodeURIComponent(searchQuery)}`;
+        }
 
-      const res = await fetch(url);
-      const data = await res.json();
-      const newRoads = Array.isArray(data) ? data : [];
+        const res = await fetch(url);
+        const data = await res.json();
+        newRoads = Array.isArray(data) ? data : [];
+      }
 
       if (newRoads.length > 0) {
         setRoadDropdown((prev) => [...prev, ...newRoads]);
@@ -672,175 +862,30 @@ const MapToolbar = ({
     }
   };
 
-  const loadCategories = async () => {
-    if (restrictedMode) return applyRestrictedSummaryLoad("byCategory", "Road Category", "category");
-    onClassificationChange?.("category");
-    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
-    onApplyRoadFilter?.(filter);
-    onShowTable?.(filter); // Show table when classification option is clicked
-    try {
-      const cityLower = city.toLowerCase();
-      if (hasZones && selectedZone?.zone_no) {
-        const res = await fetch(
-          `/api/road-networks/${cityLower}/summary?zone=${encodeURIComponent(
-            selectedZone.zone_no
-          )}`
-        );
-        setNestedTitle("Road Category");
-        const summary = await res.json();
-        const list = Array.isArray(summary?.byCategory)
-          ? summary.byCategory
-            .filter((r) => (r?.count ?? 0) > 0)
-            .map((r) => r.label)
-          : [];
-        setNestedList(sortNestedList("Road Category", list));
-      } else {
-        const res = await fetch(`/api/road-networks/${cityLower}/categories`);
-        const data = await res.json();
-        setNestedTitle("Road Category");
-        const list = Array.isArray(data) ? data : [];
-        setNestedList(sortNestedList("Road Category", list));
-      }
-    } catch (err) {
-      setNestedList([]);
-    }
-  };
+  const loadCategories = () =>
+    restrictedMode
+      ? applyRestrictedSummaryLoad("byCategory", "Road Category", "category")
+      : applySummaryLoad("byCategory", "Road Category", "category");
 
-  const loadCondition = async () => {
-    if (restrictedMode) return applyRestrictedSummaryLoad("byCondition", "Road Condition", "condition");
-    onClassificationChange?.("condition");
-    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
-    onApplyRoadFilter?.(filter);
-    onShowTable?.(filter); // Show table when classification option is clicked
-    try {
-      const cityLower = city.toLowerCase();
-      if (hasZones && selectedZone?.zone_no) {
-        const res = await fetch(
-          `/api/road-networks/${cityLower}/summary?zone=${encodeURIComponent(
-            selectedZone.zone_no
-          )}`
-        );
-        setNestedTitle("Road Condition");
-        const summary = await res.json();
-        const list = Array.isArray(summary?.byCondition)
-          ? summary.byCondition
-            .filter((r) => (r?.count ?? 0) > 0)
-            .map((r) => r.label)
-          : [];
-        setNestedList(sortNestedList("Road Condition", list));
-      } else {
-        const res = await fetch(`/api/road-networks/${cityLower}/conditions`);
-        const data = await res.json();
-        setNestedTitle("Road Condition");
-        const list = Array.isArray(data) ? data : [];
-        setNestedList(sortNestedList("Road Condition", list));
-      }
-    } catch (err) {
-      setNestedList([]);
-    }
-  };
+  const loadCondition = () =>
+    restrictedMode
+      ? applyRestrictedSummaryLoad("byCondition", "Road Condition", "condition")
+      : applySummaryLoad("byCondition", "Road Condition", "condition");
 
-  const loadMaterial = async () => {
-    if (restrictedMode) return applyRestrictedSummaryLoad("byMaterial", "Road Material", "material");
-    onClassificationChange?.("material");
-    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
-    onApplyRoadFilter?.(filter);
-    onShowTable?.(filter); // Show table when classification option is clicked
-    try {
-      const cityLower = city.toLowerCase();
-      if (hasZones && selectedZone?.zone_no) {
-        const res = await fetch(
-          `/api/road-networks/${cityLower}/summary?zone=${encodeURIComponent(
-            selectedZone.zone_no
-          )}`
-        );
-        setNestedTitle("Road Material");
-        const summary = await res.json();
-        const list = Array.isArray(summary?.byMaterial)
-          ? summary.byMaterial
-            .filter((r) => (r?.count ?? 0) > 0)
-            .map((r) => r.label)
-          : [];
-        setNestedList(sortNestedList("Road Material", list));
-      } else {
-        const res = await fetch(`/api/road-networks/${cityLower}/materials`);
-        const data = await res.json();
-        setNestedTitle("Road Material");
-        const list = Array.isArray(data) ? data : [];
-        setNestedList(sortNestedList("Road Material", list));
-      }
-    } catch (err) {
-      setNestedList([]);
-    }
-  };
+  const loadMaterial = () =>
+    restrictedMode
+      ? applyRestrictedSummaryLoad("byMaterial", "Road Material", "material")
+      : applySummaryLoad("byMaterial", "Road Material", "material");
 
-  const loadOwnership = async () => {
-    if (restrictedMode) return applyRestrictedSummaryLoad("byOwnership", "Road Ownership", "ownership");
-    onClassificationChange?.("ownership");
-    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
-    onApplyRoadFilter?.(filter);
-    onShowTable?.(filter); // Show table when classification option is clicked
-    try {
-      const cityLower = city.toLowerCase();
-      if (hasZones && selectedZone?.zone_no) {
-        const res = await fetch(
-          `/api/road-networks/${cityLower}/summary?zone=${encodeURIComponent(
-            selectedZone.zone_no
-          )}`
-        );
-        setNestedTitle("Road Ownership");
-        const summary = await res.json();
-        const list = Array.isArray(summary?.byOwnership)
-          ? summary.byOwnership
-            .filter((r) => (r?.count ?? 0) > 0)
-            .map((r) => r.label)
-          : [];
-        setNestedList(sortNestedList("Road Ownership", list));
-      } else {
-        const res = await fetch(`/api/road-networks/${cityLower}/ownership`);
-        const data = await res.json();
-        setNestedTitle("Road Ownership");
-        const list = Array.isArray(data) ? data : [];
-        setNestedList(sortNestedList("Road Ownership", list));
-      }
-    } catch (err) {
-      setNestedList([]);
-    }
-  };
+  const loadOwnership = () =>
+    restrictedMode
+      ? applyRestrictedSummaryLoad("byOwnership", "Road Ownership", "ownership")
+      : applySummaryLoad("byOwnership", "Road Ownership", "ownership");
 
-  const loadCus = async () => {
-    if (restrictedMode) return applyRestrictedSummaryLoad("byCus", "Road CUS Class", "cus");
-    onClassificationChange?.("cus");
-    const filter = hasZones && selectedZone?.zone_no ? `zone_no='${selectedZone.zone_no}'` : "INCLUDE";
-    onApplyRoadFilter?.(filter);
-    onShowTable?.(filter); // Show table when classification option is clicked
-    try {
-      const cityLower = city.toLowerCase();
-      if (hasZones && selectedZone?.zone_no) {
-        const res = await fetch(
-          `/api/road-networks/${cityLower}/summary?zone=${encodeURIComponent(
-            selectedZone.zone_no
-          )}`
-        );
-        setNestedTitle("Road CUS Class");
-        const summary = await res.json();
-        const list = Array.isArray(summary?.byCus)
-          ? summary.byCus
-            .filter((r) => (r?.count ?? 0) > 0)
-            .map((r) => r.label)
-          : [];
-        setNestedList(sortNestedList("Road CUS Class", list));
-      } else {
-        const res = await fetch(`/api/road-networks/${cityLower}/cus`);
-        const data = await res.json();
-        setNestedTitle("Road CUS Class");
-        const list = Array.isArray(data) ? data : [];
-        setNestedList(sortNestedList("Road CUS Class", list));
-      }
-    } catch (err) {
-      setNestedList([]);
-    }
-  };
+  const loadCus = () =>
+    restrictedMode
+      ? applyRestrictedSummaryLoad("byCus", "Road CUS Class", "cus")
+      : applySummaryLoad("byCus", "Road CUS Class", "cus");
 
   // ⭐ ADDED — APPLY FILTER WHEN CLICKING ANY ITEM IN PANEL 3
   const applyFilter = (item) => {
@@ -934,7 +979,7 @@ const MapToolbar = ({
               onClick={() => onDssRoad?.()}
               title="DSS Active — click to exit DSS mode"
             >
-              <i className="fas fa-sitemap" /> <span>Exit DSS</span>
+              <i className="fas fa-sitemap" />
             </button>
 
             {DSS_MODULE_ORDER.map((key) => {
@@ -957,7 +1002,7 @@ const MapToolbar = ({
                   onClick={() => onDssModuleSelect?.(key)}
                   title={knownUnavailable ? `${resolved.label} — data is in process` : resolved.label}
                 >
-                  <i className={DSS_MODULE_ICONS[key] || "fas fa-layer-group"} /> <span>{resolved.label}</span>
+                  <i className={DSS_MODULE_ICONS[key] || "fas fa-layer-group"} />
                 </button>
               );
             })}
@@ -987,7 +1032,7 @@ const MapToolbar = ({
                   }}
                   title={hasOpenLayer ? `${activeResolved.label} info` : "Open a DSS layer first"}
                 >
-                  <i className="fas fa-circle-info" /> <span>Info</span>
+                  <i className="fas fa-circle-info" />
                 </button>
               );
             })()}
@@ -998,7 +1043,24 @@ const MapToolbar = ({
               className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
               disabled={restrictedMode}
               style={restrictedBtnStyle}
-              onClick={() => !restrictedMode && onStreetViewToggle?.(!streetViewVisible)}
+              onClick={() => {
+                if (restrictedMode) return;
+                openExclusive(streetViewVisible, () => {
+                  if (!isStreetViewAvailable(city)) {
+                    if (mapRef?.current?.showFeatureNotice) {
+                      mapRef.current.showFeatureNotice({
+                        feature: "Street View",
+                        message: streetViewUnavailableMessage(city),
+                        dedupeKey: `${city}|streetview-unavailable`,
+                      });
+                    } else {
+                      window.alert(streetViewUnavailableMessage(city));
+                    }
+                    return;
+                  }
+                  onStreetViewToggle?.(true);
+                });
+              }}
             >
               <i className="fas fa-street-view" /> <span>Street View</span>
             </button>
@@ -1011,7 +1073,7 @@ const MapToolbar = ({
               className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
               disabled={restrictedMode}
               style={restrictedBtnStyle}
-              onClick={() => !restrictedMode && handleDataAnalysis()}
+              onClick={() => !restrictedMode && openExclusive(chartPanelOpen, () => handleDataAnalysis())}
             >
               <i className="fas fa-chart-column" /> <span>Data Analysis</span>
             </button>
@@ -1020,7 +1082,7 @@ const MapToolbar = ({
               className={`map-btn wide-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
               disabled={restrictedMode}
               style={restrictedBtnStyle}
-              onClick={() => !restrictedMode && onDssRoad?.()}
+              onClick={() => !restrictedMode && openExclusive(isDssMode, () => onDssRoad?.())}
             >
               <i className="fas fa-sitemap" /> <span>DSS</span>
             </button>
@@ -1043,12 +1105,14 @@ const MapToolbar = ({
                   }
                   return;
                 }
-                if (onChainageToggle) {
-                  onChainageToggle();
-                } else {
-                  // Fallback for any context without an in-place toggle handler.
-                  navigate(`/chainage?city=${city?.toLowerCase()}&mode=CHAINAGE`);
-                }
+                openExclusive(chainageActive, () => {
+                  if (onChainageToggle) {
+                    onChainageToggle();
+                  } else {
+                    // Fallback for any context without an in-place toggle handler.
+                    navigate(`/chainage?city=${city?.toLowerCase()}&mode=CHAINAGE`);
+                  }
+                });
               }}
               title={
                 chainageActive
@@ -1171,16 +1235,7 @@ const MapToolbar = ({
         <div style={{ position: "relative" }}>
           <button
             className="map-btn"
-            onClick={() => {
-              setControlsVisible((v) => {
-                const next = !v;
-                if (next) {
-                  setShowSearchBox(false);
-                  setActiveTool(null);
-                }
-                return next;
-              });
-            }}
+            onClick={() => openExclusive(controlsVisible, () => setControlsVisible(true), { keepDssMode: true })}
             title="Switch Basemap"
           >
             <i className="fas fa-layer-group" />
@@ -1278,7 +1333,7 @@ const MapToolbar = ({
               >
                 <input
                   type="text"
-                  placeholder="Search Road or Lat,Lng"
+                  placeholder={isDssMode ? "Search DSS roads…" : "Search Road or Lat,Lng"}
                   value={searchQuery}
                   autoFocus // Auto focus when opened
                   onChange={handleSearchInputChange}
@@ -1386,16 +1441,47 @@ const MapToolbar = ({
                     Searching places...
                   </div>
                 )}
+                {isDssMode && !activeDssModule && (
+                  <div style={{ padding: "12px", color: "#666", fontSize: "13px" }}>
+                    Select a DSS layer first, then search its roads.
+                  </div>
+                )}
                 {roadDropdown.length > 0 ? (
                   <>
                     {roadDropdown.map((road, i) => (
                       <div
                         key={i}
                         onClick={() => {
-                          const gisId = road.gis_id;
-                          if (gisId) {
-                            onApplyRoadFilter?.(`gis_id='${gisId}'`);
-                            onZoomToFilter?.(`gis_id='${gisId}'`);
+                          if (isDssSearch) {
+                            const rid = road.road_id ?? road.gis_id;
+                            if (rid !== null && rid !== undefined && String(rid).trim() !== "") {
+                              // The DSS branch of handleRoadSelectedFromMap
+                              // sets selectedRoadId + the correct zoomFilter
+                              // itself (road_id or gis_id as present) — the
+                              // extra onZoomToFilter the road path uses
+                              // would wrongly label a gis_id value road_id.
+                              onRoadSelected?.(road);
+                            }
+                          } else {
+                            // Full selection pipeline first (orange map
+                            // highlight + selected row in the table +
+                            // details popup), same as a map click — BEFORE
+                            // the gis_id filter below so that filter, not
+                            // the pipeline's fallback "INCLUDE", is the
+                            // last baseFilter write in this batch. Search
+                            // rows already carry road_id/gis_id/road_name.
+                            // Skipped in field-task mode — there road picks
+                            // go through the chainage selection pipeline,
+                            // and this one's filter resets would fight the
+                            // ward-scoped default.
+                            if (!restrictedMode) {
+                              onRoadSelected?.(road);
+                            }
+                            const gisId = road.gis_id;
+                            if (gisId) {
+                              onApplyRoadFilter?.(`gis_id='${gisId}'`);
+                              onZoomToFilter?.(`gis_id='${gisId}'`);
+                            }
                           }
                           // Close after selection
                           setShowSearchBox(false);
@@ -1416,11 +1502,11 @@ const MapToolbar = ({
                         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "#fff")}
                       >
                         <span style={{ fontWeight: 500 }}>
-                          {road.road_name || "Unnamed Road"}
+                          {road.road_name || (isDssSearch ? road.road_id : null) || "Unnamed Road"}
                         </span>
-                        {road.ward_name && (
+                        {(road.ward_name || (isDssSearch && road.ward_no != null && road.ward_no !== "")) && (
                           <span style={{ color: "#888", fontSize: "12px" }}>
-                            {road.ward_name}
+                            {road.ward_name || `Ward ${road.ward_no}`}
                           </span>
                         )}
                       </div>
@@ -1449,45 +1535,31 @@ const MapToolbar = ({
           {/* THE BUTTON */}
           <button
             className="map-btn wide-btn right-btn"
-            onClick={() => {
-              // Toggle search box
-              if (!showSearchBox) {
-                handleSearchClick(); // Load data
-                setShowSearchBox(true);
-                setControlsVisible(false);
-                setActiveTool(null);
-              } else {
-                setShowSearchBox(false);
-              }
-            }}
+            onClick={() => openExclusive(showSearchBox, () => handleSearchClick(), { keepDssMode: true })}
           >
             <i className="fas fa-search" />
             <span>Search</span>
           </button>
         </div>
 
-        {!isDssMode && (
-          <button
-            className={`map-btn wide-btn right-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
-            disabled={restrictedMode}
-            style={restrictedBtnStyle}
-            onClick={() => {
-              if (restrictedMode) return;
-              setActiveTool("query");
-              setShowSearchBox(false);
-              setControlsVisible(false);
-            }}
-          >
-            <span>Query</span> <i className="fas fa-filter" />
-          </button>
-        )}
+        <button
+          className={`map-btn wide-btn right-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
+          disabled={restrictedMode}
+          style={restrictedBtnStyle}
+          onClick={() => {
+            if (restrictedMode) return;
+            openExclusive(activeTool === "query", () => setActiveTool("query"), { keepDssMode: true });
+          }}
+        >
+          <span>Query</span> <i className="fas fa-filter" />
+        </button>
 
         {!isDssMode && (
           <button
             className={`map-btn wide-btn right-btn${restrictedMode ? " restricted-hide-mobile" : ""}`}
             disabled={restrictedMode}
             style={restrictedBtnStyle}
-            onClick={() => !restrictedMode && onSummary?.()}
+            onClick={() => !restrictedMode && openExclusive(chartPanelOpen, () => onSummary?.())}
           >
             <span>Summary</span> <i className="fas fa-table" />
           </button>
@@ -1504,13 +1576,21 @@ const MapToolbar = ({
       {activeTool === "query" && (
         <QueryPanel
           city={city}
-          onClose={() => setActiveTool(null)}
+          onClose={() => {
+            onClear?.();
+            setActiveTool(null);
+          }}
           onQuery={(queryData) => {
             console.log("Query Data:", queryData);
             if (onQuery) onQuery(queryData);
           }}
           onClear={onClear}
           topOffset={queryPanelTop}
+          dssLayer={isDssMode ? activeDssLayer : null}
+          dssLayerLabel={
+            isDssMode && dssModuleLabel ? `DSS: ${dssModuleLabel}` : null
+          }
+          dssLayers={dssQueryLayers}
         />
       )}
 
@@ -1597,12 +1677,16 @@ const MapToolbar = ({
                 </div>
 
                 <ul className="submenu-list">
-                  <li onClick={loadWards}>Wards »</li>
-                  <li onClick={loadCategories}>Road Category »</li>
-                  <li onClick={loadCondition}>Road Condition »</li>
-                  <li onClick={loadMaterial}>Road Material »</li>
-                  <li onClick={loadOwnership}>Road Ownership »</li>
-                  <li onClick={loadCus}>Road CUS »</li>
+                  {/* Each drill-down only renders when the selected scope's
+                      summary actually has rows for it (availableOptions).
+                      Before the probe resolves, everything shows — same as
+                      the old static list. */}
+                  {(availableOptions?.wards ?? true) && <li onClick={loadWards}>Wards »</li>}
+                  {(availableOptions?.category ?? true) && <li onClick={loadCategories}>Road Category »</li>}
+                  {(availableOptions?.condition ?? true) && <li onClick={loadCondition}>Road Condition »</li>}
+                  {(availableOptions?.material ?? true) && <li onClick={loadMaterial}>Road Material »</li>}
+                  {(availableOptions?.ownership ?? true) && <li onClick={loadOwnership}>Road Ownership »</li>}
+                  {(availableOptions?.cus ?? true) && <li onClick={loadCus}>Road CUS »</li>}
                 </ul>
               </div>
 
