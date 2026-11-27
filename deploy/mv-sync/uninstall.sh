@@ -20,13 +20,15 @@ fi
 rm -f /etc/systemd/system/mv-sync.service /etc/systemd/system/mv-sync.timer
 systemctl daemon-reload
 hba=$(sql "show hba_file")
-if grep -q "mv_sync_job" "$hba"; then
+if grep -q "^# BEGIN mv-sync$" "$hba" && grep -q "^# END mv-sync$" "$hba"; then
   cp -p "$hba" "$hba.before-mv-sync-removal.$(date +%Y%m%d%H%M%S)"
   tmp=$(mktemp)
-  grep -vE "mv_sync_job|^# (Limit the job|Put these lines|\(SELECT pg_reload|TYPE +DATABASE)|^#$" "$hba" > "$tmp" || true
+  sed '/^# BEGIN mv-sync$/,/^# END mv-sync$/d' "$hba" > "$tmp"
   cat "$tmp" > "$hba"; rm -f "$tmp"
   [ "$(sql "select count(*) from pg_hba_file_rules where error is not null")" = 0 ] || { echo "check $hba: it has errors"; exit 1; }
   sql "select pg_reload_conf()" >/dev/null
+elif grep -q "mv_sync_job" "$hba"; then
+  echo "WARNING: $hba mentions mv_sync_job without the mv-sync markers: remove those lines by hand"
 fi
 id mv_sync_job >/dev/null 2>&1 && userdel mv_sync_job
 rm -rf -- /opt/mv-sync /etc/mv-sync

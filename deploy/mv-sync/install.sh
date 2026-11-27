@@ -62,6 +62,7 @@ if [ $APPLY = 0 ]; then
 fi
 
 # ------------------------------------------------------------------ apply
+trap 'echo "INSTALL FAILED part way. Undo with: bash uninstall.sh --database $DB"' ERR
 echo "== 1 system user"
 id "$OSUSER" >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin "$OSUSER"
 
@@ -85,11 +86,12 @@ chown -R root:root "$HOME_DIR/definitions"
 chmod -R a+rX "$HOME_DIR"
 
 echo "== 4 pg_hba"
-if ! grep -q "$OSUSER" "$hba"; then
+if ! grep -q "^# BEGIN mv-sync$" "$hba"; then
   copy="$hba.before-mv-sync.$(date +%Y%m%d%H%M%S)"
   cp -p "$hba" "$copy"
   tmp=$(mktemp)
-  { sed "s/\bnv_allnndb\b/$DB/" "$SRC/sql/pg_hba.mv_sync.conf"; cat "$copy"; } > "$tmp"
+  # the markers let uninstall.sh remove exactly these lines and nothing else
+  { echo "# BEGIN mv-sync"; sed "s/\bnv_allnndb\b/$DB/" "$SRC/sql/pg_hba.mv_sync.conf"; echo "# END mv-sync"; cat "$copy"; } > "$tmp"
   cat "$tmp" > "$hba"   # keeps owner and mode
   rm -f "$tmp"
   if [ "$(sql "select count(*) from pg_hba_file_rules where error is not null")" != 0 ]; then

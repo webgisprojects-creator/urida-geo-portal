@@ -124,8 +124,14 @@ Undo for a city: `sql/deactivate_city.sql`.
   missed, building while another session keeps writing (362 updates, slowest 17 ms),
   deactivation and uninstall.
 - `capture.py --only` for two views, and refusal of an unknown view name.
-- **Not tested:** GeoServer tile cache clearing and layers after a swap, the systemd units, the OS user and the
-  `pg_hba` lines on a real server.
+- On the real database server, installed with `install.sh --apply` against a temporary database (2026-11-28, since
+  removed): system user, `pg_hba` lines (the job login is refused by every other database and over the network),
+  systemd timer, switching a city on, no write access to source tables. `uninstall.sh` left `pg_hba.conf`
+  identical to before.
+- GeoServer, temporary workspace over that database (since removed), 11/11: the layer shows new data after a swap
+  without reload or republish, and the job clears its cached tiles.
+- **Not tested:** switching a city on in the application's own database, and an encrypted route from the database
+  server to GeoServer for cache clearing (the test used SSH tunnels; none is set up permanently).
 
 ### Running the database scenarios
 

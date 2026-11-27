@@ -37,6 +37,7 @@ BEGIN;
 CREATE ROLE mv_sync_job LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
 GRANT pg_read_all_data TO mv_sync_job;      -- also covers tables imported or renamed later
 GRANT pg_read_all_stats TO mv_sync_job;     -- to notice a running pg_dump
+GRANT CONNECT ON DATABASE :"DBNAME" TO mv_sync_job;  -- the database may not allow PUBLIC to connect
 
 CREATE SCHEMA mv_sync AUTHORIZATION mv_sync_job;
 CREATE SCHEMA mv_sync_build AUTHORIZATION mv_sync_job;  -- app and GeoServer get no access
