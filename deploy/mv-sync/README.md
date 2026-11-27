@@ -84,6 +84,17 @@ Observe mode changes no view; it only records `would_build` in `mv_sync.run_log`
 
 Remove: `sudo bash uninstall.sh --database NAME`.
 
+## Encrypted route to GeoServer (for tile cache clearing)
+
+When GeoServer is on another machine and offers no HTTPS REST endpoint, use `systemd/mv-geoserver-tunnel.service`.
+
+1. GeoServer machine: system user `mv_tunnel` with a `nologin` shell; in its `authorized_keys`:
+   `restrict,port-forwarding,permitopen="127.0.0.1:8080",permitlisten="1",from="DB_SERVER_IP",command="/bin/false" <key>`
+2. Database server: system user `mv_tunnel` with its own SSH key and the GeoServer host key in `known_hosts`;
+   install the unit with `GEOSERVER_HOST` replaced, then `systemctl enable --now mv-geoserver-tunnel`.
+3. In `/etc/mv-sync/config.json`: `"geoserver": {"url": "http://127.0.0.1:18080/geoserver", ...}`, and put
+   `user:password` of a GeoServer administrator in the credentials file, readable only by `mv_sync_job`.
+
 ## Switching a city on (separate, deliberate step)
 
 1. A scheduled, restore-tested backup.
@@ -130,8 +141,10 @@ Undo for a city: `sql/deactivate_city.sql`.
   identical to before.
 - GeoServer, temporary workspace over that database (since removed), 11/11: the layer shows new data after a swap
   without reload or republish, and the job clears its cached tiles.
-- **Not tested:** switching a city on in the application's own database, and an encrypted route from the database
-  server to GeoServer for cache clearing (the test used SSH tunnels; none is set up permanently).
+- The permanent tunnel was set up and checked on pre-production: GeoServer answers through it, the key cannot run
+  commands, forward to another port or open a reverse forward, and the service comes back after being killed.
+- **Not tested:** switching a city on in the application's own database, and the job clearing a cache through the
+  permanent tunnel.
 
 ### Running the database scenarios
 
