@@ -8,4 +8,6 @@ SELECT format('ALTER MATERIALIZED VIEW %I.%I OWNER TO mv_sync_job', schemaname, 
   FROM pg_matviews WHERE schemaname = :'city' AND matviewname LIKE 'mv\_' || :'city' || '\_%'
 \gexec
 INSERT INTO mv_sync.enabled_city VALUES (:'city') ON CONFLICT DO NOTHING;
+-- have every view of the city checked against current data on the next runs
+UPDATE mv_sync.view_state SET last_success_at = NULL, retry_after = NULL WHERE city = :'city';
 COMMIT;

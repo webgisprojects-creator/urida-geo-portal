@@ -177,7 +177,7 @@ def compare_with_original(city):
 assert admin("select current_database();") == DB and DB.endswith("_test"), "not a test database"
 cfg = json.load(open(os.path.join(HERE, "config.example.json")))
 cfg.update(database=DB, user=None, disk_path="/var/lib/postgresql", build_timeout="10min",
-           retry_seconds=4, lock_file="/tmp/mv_sync_test.lock")
+           retry_seconds=4, lock_file="/tmp/mv_sync_test.lock", verify_every_seconds=10 ** 9, verify_window=None)
 cfg["groups"] = {g: {"quiet": 2, "max_wait": 600, "min_gap": 0, "window": None} for g in ("fast", "medium", "heavy")}
 cfg["geoserver"] = {"url": ""}
 CONFIG = "/tmp/mv_sync_test_config.json"
@@ -206,10 +206,11 @@ HEAVY = [v for v in MINE if ALL_VIEWS[v]["group"] == "heavy"]
 section("A observe mode")
 before = oids(ALL_VIEWS)
 tick()
-check("baseline builds nothing", logged("built") == 0 and logged("would_build") == 0, log_text(0))
+check("baseline builds nothing", logged("built") == 0, log_text(0))
+check("observe lists never verified views", logged("would_build") == len(ALL_VIEWS), logged("would_build"))
 touch("observe-test")
 cycle()
-check("observe logs would_build", logged("would_build", SL) == 1, log_text(0))
+check("observe logs the change too", logged("would_build", SL) == 2, log_text(0))
 check("observe changes no view", oids(ALL_VIEWS) == before)
 
 section("B clubs: one city and one speed group per run, quickest first")
@@ -479,6 +480,44 @@ cycle()
 last = admin(f"select road_name from {ROAD} where road_id::text='{rid}';")
 check("last write reaches the view", count(f"{SL} where road_name='{last}'") >= 1 and in_sync(SL), last)
 admin("drop table public.zz_writes;")
+
+section("U stale before the job ever saw it, and a change the job missed")
+for group in job.cfg["groups"].values():
+    group["max_wait"] = 600
+cycle()
+probe = view("street_light", OTHER)
+rid = admin(f"select road_id from {probe} where road_id is not null order by road_id::text limit 1;")
+road = f"{OTHER}.{OTHER}_road_net"
+admin(f"update {road} set road_name='stale-before-job' where road_id::text='{rid}';")
+admin(f"delete from mv_sync.view_state where city='{OTHER}';")  # the job meets these views for the first time
+for name in THEIRS:  # and, as on a real first install, its captured definitions match the live views
+    job.views[name]["live_md5"] = admin(f"set search_path=pg_catalog; select md5(pg_get_viewdef('{name}'::regclass));")
+check("view is stale", count(f"{probe} where road_name='stale-before-job'") == 0)
+mine = oids(MINE)
+cycle()
+check("switched-on city is checked and corrected by itself",
+      count(f"{probe} where road_name='stale-before-job'") >= 1 and all(in_sync(v) for v in THEIRS))
+check("other city not rebuilt for that", oids(MINE) == mine)
+admin(f"update {road} set road_name='missed-change' where road_id::text='{rid}';")
+time.sleep(1.5)
+admin("update mv_sync.control set mode='observe';")
+tick()
+admin(f"update mv_sync.view_state set built_sig=seen_sig, first_change_at=null where city='{OTHER}';")  # as if missed
+admin("update mv_sync.control set mode='on';")
+cycle()
+check("missed change stays unseen before the daily check", count(f"{probe} where road_name='missed-change'") == 0)
+job.cfg["verify_every_seconds"] = 1
+before = oids(THEIRS)
+m = mark()
+for _ in range(12):
+    tick()
+    if count(f"{probe} where road_name='missed-change'") and logged("built", since=m) >= 8:
+        break
+check("daily check repairs it", count(f"{probe} where road_name='missed-change'") >= 1, log_text(m))
+same = admin(f"select view_name from mv_sync.run_log where id>{m} and action='built' and detail='same';").split()
+check("views that already match are not swapped",
+      same and all(oids([v])[v] == before[v] for v in same if v in before), same)
+job.cfg["verify_every_seconds"] = 10 ** 9
 
 section("S deactivate and uninstall")
 rows = {v: count(v) for v in ALL_VIEWS}

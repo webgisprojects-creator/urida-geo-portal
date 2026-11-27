@@ -90,6 +90,35 @@ class Schedule(unittest.TestCase):
         self.assertTrue(rules.in_window([22, 2], 3600))
 
 
+class Verification(unittest.TestCase):
+    seen = {"built_sig": "a", "seen_sig": "a"}
+
+    def need(self, state, now=21 * 3600, window=(20, 23), rule=RULE, sig="a"):
+        return rules.needs_verification(state, sig, False, rule, now, 72000, window)
+
+    def test_never_verified_is_checked_at_any_hour(self):
+        self.assertTrue(self.need(self.seen, now=12 * 3600))
+
+    def test_then_only_when_old_and_in_the_window(self):
+        night = 10 * 86400 + 21 * 3600
+        self.assertFalse(self.need(dict(self.seen, last_success_at=night - 3600), now=night))
+        self.assertTrue(self.need(dict(self.seen, last_success_at=night - 86400), now=night))
+        self.assertFalse(self.need(dict(self.seen, last_success_at=night - 86400), now=night - 9 * 3600))
+
+    def test_not_for_changed_held_rejected_or_backing_off(self):
+        self.assertFalse(self.need(self.seen, sig="b"))
+        self.assertFalse(self.need(dict(self.seen, held=True)))
+        self.assertFalse(self.need(dict(self.seen, rejected_sig="a")))
+        self.assertFalse(self.need(dict(self.seen, retry_after=10 ** 12)))
+
+    def test_group_window_still_applies(self):
+        self.assertFalse(self.need(self.seen, now=12 * 3600, rule=dict(RULE, window=[20, 23])))
+
+    def test_real_changes_go_first(self):
+        due = [("a.light", "a", "fast", None, True), ("b.atm", "b", "medium", 90, False)]
+        self.assertEqual(rules.choose_club(due, 100, 3600)[0], "b")
+
+
 class OutsideChange(unittest.TestCase):
     def test_cases(self):
         self.assertIsNone(rules.outside_change(None, 10, "a", "a"))

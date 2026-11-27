@@ -12,6 +12,8 @@
   "stale_alert_seconds": 1800,
   "retry_seconds": 300,
   "overdue_seconds": 3600,
+  "verify_every_seconds": 72000,
+  "verify_window": [20, 23],
   "groups": {
     "fast":   { "quiet": 180, "max_wait": 900,  "min_gap": 600,  "window": null },
     "medium": { "quiet": 600, "max_wait": 3600, "min_gap": 1800, "window": null },

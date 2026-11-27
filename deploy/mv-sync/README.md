@@ -22,6 +22,9 @@ Application and GeoServer names do not change.
 ## Behaviour
 
 - Detects change from table identity, columns and write counters. No triggers.
+- Also verifies views that look unchanged: all of a city's views as soon as it is switched on, then each view
+  about once a day in `verify_window`. This repairs views that were already stale and anything change tracking
+  missed. A rebuild with identical rows is thrown away. `park_roads` waits for its group's night window.
 - Waits until writes are quiet, with a maximum wait. `park_roads` is in the group with a night window.
 - Refuses a new view that is empty, lost more than 20% of its rows, or has different columns. The old view stays.
 - Never overwrites a view that someone else created or changed: it holds that view until `capture.py` is run
@@ -87,9 +90,8 @@ Remove: `sudo bash uninstall.sh --database NAME`.
 2. Change the application (below).
 3. `sudo -u postgres python3 /opt/mv-sync/compare.py --local --city CITY`
 4. `sudo -u postgres psql -d NAME -v city=CITY -f /opt/mv-sync/sql/activate_city.sql`
-5. Set `mode = 'on'` in `mv_sync.control`, then `sudo -u mv_sync_job python3 /opt/mv-sync/mvsync.py rebuild CITY`.
-   Without the rebuild an already stale view stays stale until its table changes again, because the job assumes
-   a view it meets for the first time is current.
+5. Set `mode = 'on'` in `mv_sync.control`. The city's views are then checked against current data and stale
+   ones are replaced without further commands.
 
 Commands: `mvsync.py status | pause [city] | resume [city] | release <view> | accept <view> | rebuild <city>`.
 Undo for a city: `sql/deactivate_city.sql`.
@@ -111,14 +113,15 @@ Undo for a city: `sql/deactivate_city.sql`.
 
 ## Tested
 
-- Unit tests: `python3 test_rules.py` (33, also run by CI).
+- Unit tests: `python3 test_rules.py` (38, also run by CI).
 - All 153 views compared read-only with pre-production (`compare.py`, 2026-11-27): 137 equal to the live view,
   16 equal to their original SQL on current data (those live views are stale). None differs.
-- Database scenarios: 88/88 passed on 2026-11-27 in a temporary copy of the Ghaziabad and Shahjahanpur schemas
+- Database scenarios: 95/95 passed on 2026-11-27 in a temporary copy of the Ghaziabad and Shahjahanpur schemas
   (since removed), with the job running under its own role. Covers clubs and their order, data of all 18 views
   against the original SQL, empty table, large row drop, busy and undroppable views inside a club, leftovers,
   dropped and manually changed views, pause, `pg_dump`, isolation between cities, a renamed table with new data,
-  a missing table, `rebuild`, building while another session keeps writing (362 updates, slowest 17 ms),
+  a missing table, `rebuild`, correction of views that were stale before the job saw them or whose change it
+  missed, building while another session keeps writing (362 updates, slowest 17 ms),
   deactivation and uninstall.
 - `capture.py --only` for two views, and refusal of an unknown view name.
 - **Not tested:** GeoServer tile cache clearing and layers after a swap, the systemd units, the OS user and the

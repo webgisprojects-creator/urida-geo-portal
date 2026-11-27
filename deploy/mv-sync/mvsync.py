@@ -9,7 +9,8 @@ One "tick" (run every minute by a timer):
   1. stop if the mode is off or a pg_dump is connected
   2. detect: for every view, a signature of its source tables (identity, columns, write counters)
      and its definition file; note when it changed, and hold views someone changed by hand
-  3. pick the views that are due (quiet long enough, or waited too long)
+  3. pick the views that are due (quiet long enough, or waited too long), plus views not yet
+     verified against their tables (on switching a city on, then once a day at night)
   4. take ONE club (one city, one speed group): build each view in mv_sync_build, check it,
      then swap the good ones under their original names
   5. clear GeoServer tile caches for swapped layers, raise alerts, record the run
@@ -89,6 +90,14 @@ class Job:
         print(f"{action} {view or '-'} {detail}", flush=True)
         self.db.run("INSERT INTO mv_sync.run_log(view_name, action, detail, ms) VALUES "
                     f"({lit(view)}, {lit(action)}, {lit(detail[:2000])}, {lit(ms)});")
+
+    def alert(self, view, problem):
+        """Record a problem, at most once an hour for the same view and the same problem."""
+        recent = self.db.run("SELECT EXISTS (SELECT 1 FROM mv_sync.run_log WHERE action = 'alert' AND "
+                             f"view_name IS NOT DISTINCT FROM {lit(view)} AND detail = {lit(problem[:2000])} "
+                             "AND at > now() - interval '1 hour');")
+        if recent != "t":
+            self.log(view, "alert", problem)
 
     def definition(self, view, variant):
         with open(os.path.join(self.defs, f"{view}.{variant}.sql"), encoding="utf-8") as f:
@@ -382,7 +391,7 @@ END $swap$;
             return
         url = (geo.get("url") or "").rstrip("/")
         if not (url.startswith("https://") or url.startswith("http://127.0.0.1")):
-            self.log(None, "alert", f"{len(queue)} tile caches waiting: no encrypted GeoServer URL configured")
+            self.alert(None, "tile caches waiting: no encrypted GeoServer URL configured")
             return
         with open(geo["credentials_file"], encoding="utf-8") as f:
             user_pass = f.read().strip()
@@ -408,16 +417,15 @@ END $swap$;
                 problem = f"source table missing: {', '.join(f['missing'])}"
             elif s.get("held"):
                 problem = f"held: {s.get('held_reason')}"
+            elif s.get("rejected_sig") == f["sig"]:
+                problem = f"new build rejected, old view kept: {s.get('held_reason')}"
             elif (rules.is_dirty(s, f["sig"], f["repoint"]) and s.get("first_change_at") is not None
                   and not self.rule(view).get("window")
                   and now - s["first_change_at"] > self.cfg["stale_alert_seconds"]):
                 problem = "change not applied for too long"
             else:
                 continue
-            recent = self.db.run("SELECT EXISTS (SELECT 1 FROM mv_sync.run_log WHERE action = 'alert' AND "
-                                 f"view_name = {lit(view)} AND at > now() - interval '1 hour');")
-            if recent != "t":
-                self.log(view, "alert", problem)
+            self.alert(view, problem)
 
     def tick(self):
         mode = self.db.run("SELECT mode FROM mv_sync.control;")
@@ -429,15 +437,25 @@ END $swap$;
         facts, found = self.detect(now)
         paused = {r["city"] for r in self.db.json("SELECT city FROM mv_sync.paused_city")}
         enabled = {r["city"] for r in self.db.json("SELECT city FROM mv_sync.enabled_city")}
-        due = [view for view, f in found.items()
-               if not f["missing"] and rules.is_due(f["state"], f["sig"], f["repoint"], self.rule(view), now)]
+        due, verifying = [], set()
+        for view, f in found.items():
+            if f["missing"]:
+                continue
+            if rules.is_due(f["state"], f["sig"], f["repoint"], self.rule(view), now):
+                due.append(view)
+            elif rules.needs_verification(f["state"], f["sig"], f["repoint"], self.rule(view), now,
+                                          self.cfg["verify_every_seconds"], self.cfg["verify_window"]):
+                due.append(view)
+                verifying.add(view)
         if mode == "observe":
             for view in due:
                 state = found[view]["state"]
                 if state.get("logged_sig") != found[view]["sig"]:
                     state["logged_sig"] = found[view]["sig"]
                     self.save(view, state)
-                    self.log(view, "would_build", "repoint" if found[view]["repoint"] else "data changed")
+                    why = ("check against current data" if view in verifying
+                           else "repoint" if found[view]["repoint"] else "data changed")
+                    self.log(view, "would_build", why)
         else:
             due = [v for v in due if self.views[v]["city"] in enabled - paused]
             if due:
@@ -447,8 +465,8 @@ END $swap$;
                 else:
                     # one club (one city, one speed group) per run; see "clubs" in rules.py
                     club = rules.choose_club(
-                        [(v, self.views[v]["city"], self.views[v]["group"], found[v]["state"].get("first_change_at"))
-                         for v in due], now, self.cfg["overdue_seconds"])
+                        [(v, self.views[v]["city"], self.views[v]["group"], found[v]["state"].get("first_change_at"),
+                          v in verifying) for v in due], now, self.cfg["overdue_seconds"])
                     self.process_club(club[2], facts, found)
             self.flush_cache()
         self.alerts(found, now)

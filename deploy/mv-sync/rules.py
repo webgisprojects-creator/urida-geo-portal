@@ -128,14 +128,15 @@ def group_of(kind):
 def choose_club(due, now, overdue_after):
     """Pick the next club to build.
 
-    due: list of (view, city, group, first_change_at). Returns (city, group, [views]) or None.
-    Order: anything waiting longer than overdue_after first (nothing starves), then the
-    quicker group, then the longest waiting.
+    due: list of (view, city, group, first_change_at[, verifying]). Returns (city, group, [views])
+    or None. Order: known changes before routine verification; then anything waiting longer than
+    overdue_after (nothing starves), then the quicker group, then the longest waiting.
     """
     clubs = {}
-    for view, city, group, since in due:
-        club = clubs.setdefault((city, group), {"views": [], "since": now})
+    for view, city, group, since, *verifying in due:
+        club = clubs.setdefault((city, group), {"views": [], "since": now, "routine": True})
         club["views"].append(view)
+        club["routine"] = club["routine"] and bool(verifying and verifying[0])
         if since is not None:
             club["since"] = min(club["since"], since)
     if not clubs:
@@ -145,7 +146,7 @@ def choose_club(due, now, overdue_after):
         city, group = key
         waited = now - clubs[key]["since"]
         priority = GROUP_ORDER.index(group) if group in GROUP_ORDER else 0
-        return (waited <= overdue_after, priority, clubs[key]["since"], city)
+        return (clubs[key]["routine"], waited <= overdue_after, priority, clubs[key]["since"], city)
 
     city, group = min(clubs, key=rank)
     return city, group, sorted(clubs[(city, group)]["views"])
@@ -186,6 +187,25 @@ def is_due(state, sig, repoint, rule, now):
     waited = first is not None and now - first >= rule["max_wait"]
     # a view that is missing or reads the wrong table may have no change time yet
     return quiet or waited
+
+
+def needs_verification(state, sig, repoint, rule, now, every, window):
+    """Should a view that looks unchanged be rebuilt anyway, to prove it matches its tables?
+
+    Change tracking cannot see what happened before the job first met a view, or anything it
+    missed. So every view is verified once as soon as its city is switched on, and then again
+    every `every` seconds inside `window`. A rebuild that gives the same rows is thrown away.
+    """
+    if is_dirty(state, sig, repoint):
+        return False  # a known change: is_due decides
+    if state.get("held") or state.get("rejected_sig") == sig or now < (state.get("retry_after") or 0):
+        return False
+    if not in_window(rule.get("window"), now):
+        return False
+    last = state.get("last_success_at")
+    if last is None:
+        return True
+    return now - last >= every and in_window(window, now)
 
 
 def observe(state, sig, repoint, now):
