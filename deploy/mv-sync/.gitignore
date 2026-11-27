@@ -4,3 +4,4 @@ config.json
 *.credentials
 __pycache__/
 *.log
+!test_rules.py
