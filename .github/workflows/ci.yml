@@ -7,6 +7,17 @@ on:
     branches: [ "main" ]
 
 jobs:
+  # Rules of the materialized view sync job. Standard library only; no database is contacted.
+  mv-sync-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Run unit tests
+        working-directory: ./deploy/mv-sync
+        run: python3 test_rules.py
+
   build:
     runs-on: ubuntu-latest
 

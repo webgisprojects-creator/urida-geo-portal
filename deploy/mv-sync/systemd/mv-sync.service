@@ -1,0 +1,11 @@
+[Unit]
+Description=Materialized view sync (one pass)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=mv_sync_job
+RuntimeDirectory=mv-sync
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 /opt/mv-sync/mvsync.py tick
+TimeoutStartSec=4h
