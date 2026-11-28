@@ -1,0 +1,14 @@
+[Unit]
+Description=Encrypted route from the database server to GeoServer (for tile cache clearing)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mv_tunnel
+# Replace GEOSERVER_HOST. The key may only forward to GeoServer's own port; see README.
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -i /var/lib/mv_tunnel/.ssh/id_ed25519 -L 127.0.0.1:18080:127.0.0.1:8080 mv_tunnel@GEOSERVER_HOST
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

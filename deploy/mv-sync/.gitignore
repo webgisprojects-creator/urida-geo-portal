@@ -1,0 +1,7 @@
+# captured from the live database; do not publish without a decision (public repository)
+definitions/
+config.json
+*.credentials
+__pycache__/
+*.log
+!test_rules.py

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the database backup every day at 18:30 UTC (00:00 IST)
+
+[Timer]
+OnCalendar=*-*-* 18:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
