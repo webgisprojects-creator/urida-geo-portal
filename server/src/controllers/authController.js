@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { pool } from '../config/db.js';
 import { blacklistToken, storeActiveToken, enforceSessionLimit, updateActiveTokenStatus, ensureActiveTokensTable, parseCookies, getClientIp } from '../middleware/authMiddleware.js';
+import { saveCaptcha, takeCaptcha } from '../utils/captchaStore.js';
 
 // One account, up to this many devices logged in at once (e.g. phone +
 // browser) — logging in on one more evicts only the single oldest
@@ -20,7 +21,6 @@ const cookieMaxAgeMs = Number(process.env.JWT_COOKIE_MAX_AGE_MS || absoluteTimeo
 const jwtExpiresIn = process.env.JWT_EXPIRES_IN || `${Math.max(1, Math.floor(absoluteTimeoutMs / 60000))}m`;
 const lockoutWindowMs = 15 * 60 * 1000;
 const captchaTtlMs = Number(process.env.CAPTCHA_TTL_MS || 5 * 60 * 1000);
-const captchaStore = new Map();
 
 // Shared accounts used only by KMC/iGile field-task redirects (multiple
 // field staff sign in as the same account, identified afterward by the
@@ -73,15 +73,6 @@ const buildCookieOptions = (req, maxAge) => {
     maxAge,
     path: '/',
   };
-};
-
-const purgeExpiredCaptchas = () => {
-  const now = Date.now();
-  for (const [captchaId, entry] of captchaStore.entries()) {
-    if (!entry || entry.expiresAt <= now) {
-      captchaStore.delete(captchaId);
-    }
-  }
 };
 
 const sanitizeCaptchaInput = (value) =>
@@ -144,8 +135,7 @@ const buildCaptchaDataUrl = (value) => {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
 };
 
-const consumeCaptcha = (req, res, captchaValue) => {
-  purgeExpiredCaptchas();
+const consumeCaptcha = async (req, res, captchaValue) => {
   const normalized = sanitizeCaptchaInput(captchaValue);
   if (!normalized) {
     return { ok: false, status: 400, message: 'CAPTCHA is required.' };
@@ -155,14 +145,13 @@ const consumeCaptcha = (req, res, captchaValue) => {
   if (!captchaId) {
     return { ok: false, status: 400, message: 'CAPTCHA is required.' };
   }
-  const entry = captchaStore.get(captchaId);
+  const entry = await takeCaptcha(captchaId);
   const cookieOptions = buildCookieOptions(req, captchaTtlMs);
   res.clearCookie(captchaCookieName, cookieOptions);
-  captchaStore.delete(captchaId);
   if (!entry) {
     return { ok: false, status: 400, message: 'CAPTCHA expired. Please try again.' };
   }
-  if (entry.expiresAt <= Date.now()) {
+  if (entry.expired) {
     return { ok: false, status: 400, message: 'CAPTCHA expired. Please try again.' };
   }
   if (entry.answerHash !== hashCaptchaValue(normalized)) {
@@ -322,16 +311,15 @@ const logEvent = (type, username, extra = {}) => {
   } catch {}
 };
 
-export const getCaptcha = (req, res) => {
-  purgeExpiredCaptchas();
+export const getCaptcha = async (req, res) => {
   const captchaValue = generateCaptchaText();
   const captchaId = crypto.randomUUID();
-  captchaStore.set(captchaId, {
-    answerHash: hashCaptchaValue(captchaValue),
-    expiresAt: Date.now() + captchaTtlMs,
-    ip: getClientIp(req),
-    userAgent: String(req.headers['user-agent'] || ''),
-  });
+  try {
+    await saveCaptcha(captchaId, hashCaptchaValue(captchaValue), captchaTtlMs);
+  } catch (err) {
+    console.error('Could not save CAPTCHA:', err.message);
+    return res.status(500).json({ success: false, message: 'CAPTCHA unavailable. Please try again.' });
+  }
   res.cookie(captchaCookieName, captchaId, buildCookieOptions(req, captchaTtlMs));
   return res.json({
     success: true,
@@ -367,7 +355,13 @@ export const login = async (req, res) => {
       message: 'This account is only available through an authorized field-task link.',
     });
   }
-  const captchaResult = consumeCaptcha(req, res, captcha);
+  let captchaResult;
+  try {
+    captchaResult = await consumeCaptcha(req, res, captcha);
+  } catch (err) {
+    console.error('Could not check CAPTCHA:', err.message);
+    return res.status(500).json({ success: false, message: 'Something went wrong. Please try again.' });
+  }
   if (!captchaResult.ok) {
     logEvent('login_captcha_failed', username, { ip: getClientIp(req) });
     // Unified user-facing wording regardless of the specific reason
