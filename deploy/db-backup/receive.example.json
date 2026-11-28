@@ -1,0 +1,7 @@
+{
+  "folder": "/var/backups/urida-db",
+  "min_free_gb": 50,
+  "keep_daily": 7,
+  "keep_weekly": 4,
+  "max_total_gb": 30
+}

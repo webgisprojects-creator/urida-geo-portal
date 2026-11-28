@@ -78,8 +78,9 @@ The installer captures without GeoServer layer names, so no tile cache is cleare
 
     cd /opt/mv-sync && sudo -u postgres python3 capture.py --local --database NAME         --geoserver <https url> --credentials /etc/mv-sync/geoserver.credentials
 
-(run before switching any city on, after `sudo chown -R postgres definitions`; recapturing every view after the job
-has rebuilt some is not advised, use `--only` then).
+(run before switching any city on, after `sudo chown -R postgres definitions`, with a temporary copy of the
+credentials file that `postgres` can read, deleted afterwards; recapturing every view after the job has rebuilt
+some is not advised, use `--only` then).
 Observe mode changes no view; it only records `would_build` in `mv_sync.run_log`.
 
 Remove: `sudo bash uninstall.sh --database NAME`.
@@ -98,21 +99,27 @@ When GeoServer is on another machine and offers no HTTPS REST endpoint, use `sys
 ## Switching a city on (separate, deliberate step)
 
 1. A scheduled, restore-tested backup.
-2. Change the application (below).
-3. `sudo -u postgres python3 /opt/mv-sync/compare.py --local --city CITY`
-4. `sudo -u postgres psql -d NAME -v city=CITY -f /opt/mv-sync/sql/activate_city.sql`
-5. Set `mode = 'on'` in `mv_sync.control`. The city's views are then checked against current data and stale
-   ones are replaced without further commands.
+2. `sudo -u postgres python3 /opt/mv-sync/compare.py --local --city CITY` (it ignores `zone_no` and `ward_no`)
+3. `sudo -u postgres psql -d NAME -v city=CITY -f /opt/mv-sync/sql/activate_city.sql`
+4. Set `mode = 'on'` in `mv_sync.control` (needed once). The city's views are then checked against current data
+   and replaced where their rows differ, including differences only in the zone/ward format.
 
 Commands: `mvsync.py status | pause [city] | resume [city] | release <view> | accept <view> | rebuild <city>`.
 Undo for a city: `sql/deactivate_city.sql`.
 
-## Application changes needed before `mode = 'on'`
+## The application and the job
 
-- `server/src/roadNetwork.js`, route `/:cityCode/road-analysis/:amenityType` (used by the map): it creates the
-  view when missing, with different columns, and refreshes it on `?refresh=true`. It should only read.
-- `server/src/controllers/dssController.js`: the `ensure*View` functions create and refresh views, one of them
-  inside a GET request. They should only read.
+No application change is required to switch a city on. The road-analysis route in `server/src/roadNetwork.js` and
+the `ensure*View` functions in `server/src/controllers/dssController.js` create a view only when it is missing,
+and the job replaces views in one transaction, so none goes missing. A refresh by the application keeps the same
+object and definition, which the job accepts. Two limits:
+
+- If someone drops a view and the application recreates it (with different columns), the job holds that view and
+  logs an alert.
+- The application can refresh only while its database user may do so. If that user loses superuser rights, remove
+  the refresh calls first; otherwise the street-light request fails.
+
+Making the application read-only towards views is still the cleaner end state.
 
 ## Not covered
 
@@ -143,8 +150,13 @@ Undo for a city: `sql/deactivate_city.sql`.
   without reload or republish, and the job clears its cached tiles.
 - The permanent tunnel was set up and checked on pre-production: GeoServer answers through it, the key cannot run
   commands, forward to another port or open a reverse forward, and the service comes back after being killed.
-- **Not tested:** switching a city on in the application's own database, and the job clearing a cache through the
-  permanent tunnel.
+- Ghaziabad switched on in the pre-production application database (2026-11-28): 8 views checked, 6 unchanged,
+  `street_light` and `underdeveloped_analysis` replaced (one ward value lost a trailing comma; their `zone_no` and
+  `ward_no` became `text`). Row counts equal the map layers, the two replaced layers answer feature, filter and map
+  requests, GeoServer accepted the cache clear through the tunnel, and a refresh run as the application's database
+  user was accepted.
+- **Not yet observed:** `park_roads` in its night window, a replacement triggered by a real data change on the
+  live database, and any city other than Ghaziabad.
 
 ### Running the database scenarios
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily database backup to the backup server
+After=postgresql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/db-backup/backup.py /opt/db-backup/backup.json
+TimeoutStartSec=3h
+Nice=10

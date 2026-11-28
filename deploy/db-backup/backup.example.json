@@ -1,0 +1,19 @@
+{
+  "folder": "/var/backups/urida-db",
+  "passphrase_file": "/root/.urida_backup_passphrase",
+  "ssh_command": "ssh -i /root/.ssh/urida_backup -o BatchMode=yes -o IdentitiesOnly=yes urida_backup@BACKUP_HOST",
+  "min_free_gb": 100,
+  "keep_daily": 7,
+  "keep_weekly": 4,
+  "max_total_gb": 30,
+  "config_paths": [
+    "/etc/postgresql",
+    "/etc/pgbouncer",
+    "/var/lib/postgresql/17/main/postgresql.auto.conf",
+    "/opt/db-backup",
+    "/etc/systemd/system/urida-db-backup.service",
+    "/etc/systemd/system/urida-db-backup.timer",
+    "/opt/mv-sync",
+    "/etc/mv-sync"
+  ]
+}

@@ -18,6 +18,10 @@ jobs:
         working-directory: ./deploy/mv-sync
         run: python3 test_rules.py
 
+      - name: Run backup rule tests
+        working-directory: ./deploy/db-backup
+        run: python3 test_policy.py
+
   build:
     runs-on: ubuntu-latest
 
