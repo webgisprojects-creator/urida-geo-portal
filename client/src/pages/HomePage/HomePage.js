@@ -9,7 +9,6 @@ import React, {
 import styles from "./HomePage.Module.css";
 import Footer from "../../components/Footer";
 import cmGridConfig from "../../assets/configs/cmGridConfig.json";
-import { isStreetViewAvailable, streetViewUnavailableMessage } from "../../utils/streetViewAvailability";
 import "ol/ol.css";
 
 import Map from "ol/Map";
@@ -1150,11 +1149,10 @@ export default function HomePage() {
 
         const props = clickedAbove10mFeature.getProperties?.() || {};
         const [lng, lat] = toLonLat(evt.coordinate);
-        const currentCity = selectedCityRef.current;
-        const streetViewAvailable = isStreetViewAvailable(currentCity);
-        const streetViewUrl = streetViewAvailable
-          ? `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`
-          : null;
+        // A plain Google Maps link (no API key) for the clicked point, on every
+        // road in every city. The cityConfig streetView setting concerns only the
+        // dashboard's own Street View map layer.
+        const streetViewUrl = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`;
         const escapeHtml = (value) =>
           String(value ?? "")
             .replace(/&/g, "&amp;")
@@ -1201,14 +1199,9 @@ const html = `<div style="min-width:0; width:100%; max-width:100%; box-sizing:bo
               "yoc",
             ].map(renderRoadRow).join("")}
           </div>
-          ${streetViewAvailable
-            ? `<a href="${streetViewUrl}" target="_blank" rel="noopener noreferrer" style="display:block; margin-top:10px; padding:7px 10px; background:#0f172a; color:#fff; border-radius:5px; text-decoration:none; font-size:12px; text-align:center; font-weight:700;">
+          <a href="${streetViewUrl}" target="_blank" rel="noopener noreferrer" style="display:block; margin-top:10px; padding:7px 10px; background:#0f172a; color:#fff; border-radius:5px; text-decoration:none; font-size:12px; text-align:center; font-weight:700;">
             Open Street View
-          </a>`
-            : `<div style="margin-top:10px; padding:7px 10px; background:#f1f5f9; color:#64748b; border-radius:5px; font-size:11px; text-align:center; font-weight:500;">
-            ${escapeHtml(streetViewUnavailableMessage(currentCity))}
-          </div>`
-          }
+          </a>
         </div>`;
 
         if (mapRef.current.hoverEl) {
