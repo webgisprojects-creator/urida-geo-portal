@@ -5,7 +5,7 @@ import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { pool } from '../config/db.js';
-import { blacklistToken, storeActiveToken, enforceSessionLimit, updateActiveTokenStatus, ensureActiveTokensTable, parseCookies, getClientIp } from '../middleware/authMiddleware.js';
+import { blacklistToken, storeActiveToken, clearActiveTokensForUser, getSessionIssuedAt, enforceSessionLimit, updateActiveTokenStatus, ensureActiveTokensTable, parseCookies, getClientIp } from '../middleware/authMiddleware.js';
 import { saveCaptcha, takeCaptcha, readCaptchaAnswer } from '../utils/captchaStore.js';
 import { renderCaptchaPng, CAPTCHA_CHARS } from '../utils/captchaImage.js';
 import { buildCaptchaWav } from '../utils/captchaAudio.js';
@@ -188,6 +188,8 @@ const loadUsersTableInfo = async () => {
   let lockUntilCol;
   let mustChangePasswordCol;
   let passwordChangedAtCol;
+  let isActiveCol;
+  let deletedAtCol;
   if (selectedTarget) {
     const { rows: colRows } = await pool.query(
       `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2`,
@@ -203,6 +205,8 @@ const loadUsersTableInfo = async () => {
     lockUntilCol = resolveColumn(map, ['lock_until', 'locked_until']);
     mustChangePasswordCol = resolveColumn(map, ['must_change_password']);
     passwordChangedAtCol = resolveColumn(map, ['password_changed_at']);
+    isActiveCol = resolveColumn(map, ['is_active']);
+    deletedAtCol = resolveColumn(map, ['deleted_at']);
   } else {
     const best = await findBestUserTable();
     if (!best) {
@@ -218,6 +222,8 @@ const loadUsersTableInfo = async () => {
     lockUntilCol = resolveColumn(map, ['lock_until', 'locked_until']);
     mustChangePasswordCol = resolveColumn(map, ['must_change_password']);
     passwordChangedAtCol = resolveColumn(map, ['password_changed_at']);
+    isActiveCol = resolveColumn(map, ['is_active']);
+    deletedAtCol = resolveColumn(map, ['deleted_at']);
     usersTableCache.schema = best.schema;
     usersTableCache.table = best.table;
   }
@@ -241,6 +247,8 @@ const loadUsersTableInfo = async () => {
     lockUntilCol,
     mustChangePasswordCol,
     passwordChangedAtCol,
+    isActiveCol,
+    deletedAtCol,
   };
   return usersTableCache;
 };
@@ -302,6 +310,9 @@ export const getCaptcha = async (req, res) => {
   });
 };
 
+// is_active left empty counts as active.
+const isDisabledUser = (user) => user.is_active === false || Boolean(user.deleted_at);
+
 export const login = async (req, res) => {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
@@ -359,6 +370,12 @@ export const login = async (req, res) => {
     const mustChangePasswordExpr = columns.mustChangePasswordCol
       ? `${quoteIdentifier(columns.mustChangePasswordCol)} AS must_change_password`
       : `NULL AS must_change_password`;
+    const isActiveExpr = columns.isActiveCol
+      ? `${quoteIdentifier(columns.isActiveCol)} AS is_active`
+      : `NULL AS is_active`;
+    const deletedAtExpr = columns.deletedAtCol
+      ? `${quoteIdentifier(columns.deletedAtCol)} AS deleted_at`
+      : `NULL AS deleted_at`;
     const sql = `
       SELECT
         ${userIdExpr},
@@ -368,7 +385,9 @@ export const login = async (req, res) => {
         ${cityExpr},
         ${failedAttemptsExpr},
         ${lockUntilExpr},
-        ${mustChangePasswordExpr}
+        ${mustChangePasswordExpr},
+        ${isActiveExpr},
+        ${deletedAtExpr}
       FROM ${tableRef}
       WHERE ${quoteIdentifier(columns.usernameCol)} = $1
       LIMIT 1
@@ -437,6 +456,12 @@ export const login = async (req, res) => {
       `;
       await pool.query(resetSql, [0, null, user.username]);
     }
+    // Checked only after the password, and answered like a wrong password, so
+    // that the reply does not tell a stranger which accounts exist.
+    if (isDisabledUser(user)) {
+      logEvent('login_failed', username, { ip: getClientIp(req), reason: 'account_disabled' });
+      return res.status(401).json({ success: false, message: 'Invalid login credentials.' });
+    }
     const userIdForToken = user.user_id ?? user.username;
     // Field-task/chainage is one shared login used by many field staff at
     // once, on purpose (see FIELD_TASK_ONLY_USERNAMES above) — the normal
@@ -489,6 +514,9 @@ export const login = async (req, res) => {
 // user. Requires an existing valid session (verifyToken applied on the
 // route), never a plaintext-password-in-URL reset link — this portal has
 // no forgot-password flow by design, only admin-initiated resets.
+// Used by the forced change after an administrator has set a temporary password;
+// that is the only password change the screens offer. Anyone else asks an
+// administrator to reset it.
 export const changePassword = async (req, res) => {
   const { newPassword, confirmPassword } = req.body || {};
   if (!newPassword || !confirmPassword) {
@@ -508,6 +536,27 @@ export const changePassword = async (req, res) => {
     const info = await loadUsersTableInfo();
     const { schema, table, columns } = info;
     const tableRef = `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`;
+    const select = (column, name) => (column ? `${quoteIdentifier(column)} AS ${name}` : `NULL AS ${name}`);
+    const { rows } = await pool.query(
+      `SELECT ${select(columns.passwordCol, 'password_hash')}, ${select(columns.roleCol, 'role')},
+              ${select(columns.cityCol, 'city')}, ${select(columns.mustChangePasswordCol, 'must_change_password')},
+              ${select(columns.isActiveCol, 'is_active')}, ${select(columns.deletedAtCol, 'deleted_at')}
+         FROM ${tableRef} WHERE ${quoteIdentifier(columns.usernameCol)} = $1 LIMIT 1`,
+      [username]
+    );
+    const current = rows[0];
+    if (!current || isDisabledUser(current)) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    if (FIELD_TASK_ONLY_USERNAMES.has(String(username).toLowerCase()) || !current.must_change_password) {
+      return res.status(403).json({ success: false, message: 'Please ask your administrator to reset your password.' });
+    }
+    const stored = String(current.password_hash || '');
+    const reused = stored.startsWith('$2') ? await bcrypt.compare(newPassword, stored) : newPassword === stored;
+    if (reused) {
+      return res.status(400).json({ success: false, message: 'Choose a password different from the temporary one.' });
+    }
+
     const hashed = await bcrypt.hash(newPassword, 10);
     const values = [hashed];
     const setParts = [`${quoteIdentifier(columns.passwordCol)} = $1`];
@@ -529,35 +578,32 @@ export const changePassword = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
-    // The JWT is stateless — req.user (and anything decoded from the old
-    // cookie on the *next* request) would still carry must_change_password:
-    // true from before this update, sending the user straight back to the
-    // force-change-password screen in an infinite loop. Reissue the session
-    // exactly as login() does, with the flag now cleared, and retire the
-    // old token so there isn't a stale duplicate sitting in active_tokens.
+    // Replace every session of this account with one new one. It keeps the
+    // sign-in time of the old one, so changing a password does not extend how
+    // long a login lasts.
     const secret = process.env.JWT_SECRET;
     if (secret) {
+      const issuedAt = (req.token && (await getSessionIssuedAt(req.token))) || new Date();
+      const expiresAt = new Date(issuedAt.getTime() + absoluteTimeoutMs);
       const payload = {
         user_id: req.user.user_id,
         username: req.user.username,
-        role: req.user.role,
-        city: req.user.city,
+        role: current.role || 'user',
+        city: current.city || null,
         must_change_password: false,
       };
-      const token = jwt.sign(payload, secret, { expiresIn: jwtExpiresIn });
-      const issuedAt = new Date();
-      const expiresAt = new Date(issuedAt.getTime() + absoluteTimeoutMs);
+      const remainingSeconds = Math.max(1, Math.floor((expiresAt.getTime() - Date.now()) / 1000));
+      const token = jwt.sign(payload, secret, { expiresIn: remainingSeconds });
+      await clearActiveTokensForUser(payload.user_id);
       await storeActiveToken({
         token,
         userId: payload.user_id,
         issuedAt,
         expiresAt,
+        lastActivity: new Date(),
         ip: getClientIp(req),
         userAgent: String(req.headers['user-agent'] || ''),
       });
-      if (req.token) {
-        await updateActiveTokenStatus(req.token, 'password_changed');
-      }
       res.cookie(cookieName, token, buildCookieOptions(req, cookieMaxAgeMs));
     }
 
