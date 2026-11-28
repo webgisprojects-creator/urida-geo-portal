@@ -70,9 +70,13 @@ export const parseCookies = (cookieHeader) => {
     if (!trimmed) return acc;
     const eqIdx = trimmed.indexOf('=');
     if (eqIdx === -1) return acc;
-    const name = decodeURIComponent(trimmed.slice(0, eqIdx));
-    const value = decodeURIComponent(trimmed.slice(eqIdx + 1));
-    acc[name] = value;
+    try {
+      const name = decodeURIComponent(trimmed.slice(0, eqIdx));
+      const value = decodeURIComponent(trimmed.slice(eqIdx + 1));
+      acc[name] = value;
+    } catch {
+      // a badly encoded cookie is ignored; it must never stop the server
+    }
     return acc;
   }, {});
 };
