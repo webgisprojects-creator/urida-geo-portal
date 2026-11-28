@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import "../assets/styles/Dashboard.css";
 import { cityConfig } from "../assets/configs/cityConfig.js";
 import { getGeoserverBase } from "../utils/geoserverBase";
@@ -8,6 +8,11 @@ const ALLOWED_ATTRIBUTES = [
   "ownership", "condition", "category", "material", "yoc",
   "cus_class", "row_meter", "carriage_w", "length_km", "road_name"
 ];
+
+// Real columns that exist in the DSS MVs but shouldn't be queryable —
+// strt_slr_l is a truncated duplicate of street_light that GeoServer
+// publishes alongside the full column.
+const DSS_HIDDEN_ATTRIBUTES = ["strt_slr_l"];
 
 const formatAttributeName = (name) => {
   if (!name) return "";
@@ -21,7 +26,7 @@ const formatAttributeName = (name) => {
   }).join('_');
 };
 
-const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
+const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset, dssLayer = null, dssLayerLabel = null, dssLayers = null }) => {
   const [activeTab, setActiveTab] = useState("attributes"); // "attributes" or "draw"
 
   // Attributes Form State
@@ -47,9 +52,76 @@ const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
     if (onClear) onClear();
   };
 
-  // Populate layers based on city
+  // Dragging: null = default position (right: 70px, top: topOffset)
+  const panelRef = useRef(null);
+  const [position, setPosition] = useState(null);
+  // Set when a press on the header turned into a real drag — the
+  // subsequent click (e.g. on a tab or the × button) is swallowed so
+  // dragging across a button doesn't also fire it.
+  const suppressClickRef = useRef(false);
+
+  const handleHeaderPointerDown = (e) => {
+    if (e.button !== 0) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const parentRect = (panel.offsetParent || document.documentElement).getBoundingClientRect();
+    const offsetX = e.clientX - rect.left;
+    const offsetY = e.clientY - rect.top;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let moved = false;
+
+    const onMove = (ev) => {
+      // 4px dead zone keeps plain clicks on tabs/close working.
+      if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+      moved = true;
+      setPosition({
+        x: Math.max(0, Math.min(ev.clientX - parentRect.left - offsetX, parentRect.width - rect.width)),
+        y: Math.max(0, Math.min(ev.clientY - parentRect.top - offsetY, parentRect.height - rect.height)),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      if (moved) suppressClickRef.current = true;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const handleHeaderClickCapture = (e) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+
+  // In DSS mode the panel lists every DSS module layer for the city so the
+  // user can pick which one to query (the active module is preselected when
+  // there is one) — never the Road Network layer.
+  const isDssPanel = !!(dssLayers && dssLayers.length) || !!dssLayer;
   useEffect(() => {
     if (!city) return;
+    if (dssLayers && dssLayers.length) {
+      setAvailableLayers(dssLayers);
+      const pick = (prev) =>
+        dssLayer && dssLayers.some((l) => l.value === dssLayer)
+          ? dssLayer
+          : dssLayers.some((l) => l.value === prev)
+            ? prev
+            : "";
+      setSelectedLayer(pick);
+      setDrawLayer(pick);
+      return;
+    }
+    if (dssLayer) {
+      setAvailableLayers([{ label: dssLayerLabel || "DSS Layer", value: dssLayer }]);
+      setSelectedLayer(dssLayer);
+      setDrawLayer(dssLayer);
+      return;
+    }
     const config = cityConfig[city.toLowerCase()];
     if (!config) return;
 
@@ -60,7 +132,7 @@ const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
     setAvailableLayers(layers);
     setSelectedLayer("");
     setDrawLayer("");
-  }, [city]);
+  }, [city, dssLayer, dssLayerLabel, dssLayers]);
 
   // Fetch attributes for selected layer from GeoServer DescribeFeatureType
   useEffect(() => {
@@ -84,9 +156,21 @@ const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
           .map((el) => ({
             name: el.getAttribute("name"),
             type: el.getAttribute("type") || "",
+            // Schema-level feature element (<xsd:element name="MV_..."
+            // substitutionGroup="gml:_Feature">) — not a real column.
+            sub: el.hasAttribute("substitutionGroup"),
           }))
-          .filter((p) => p.name);
-        const filtered = pairs.filter((p) => ALLOWED_ATTRIBUTES.includes(p.name.toLowerCase()));
+          .filter((p) => p.name && !p.sub);
+        // DSS layers carry module-specific fields (e.g. the street-light
+        // status column) that aren't in the road-network whitelist —
+        // offer every non-geometry attribute there instead.
+        const filtered = isDssPanel
+          ? pairs.filter(
+              (p) =>
+                !/^gml:/i.test(p.type) &&
+                !DSS_HIDDEN_ATTRIBUTES.includes(p.name.toLowerCase())
+            )
+          : pairs.filter((p) => ALLOWED_ATTRIBUTES.includes(p.name.toLowerCase()));
         setAvailableAttributes(filtered.map((p) => p.name));
         const typeMap = {};
         filtered.forEach((p) => {
@@ -99,7 +183,7 @@ const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
         setAttributeTypes({});
       });
 
-  }, [selectedLayer]);
+  }, [selectedLayer, isDssPanel]);
 
   // Fetch unique values when attribute is selected
   useEffect(() => {
@@ -206,6 +290,9 @@ const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
       type: "attribute",
       layer: selectedLayer,
       attribute: selectedAttribute, // Pass selected attribute for layer switching
+      operator: selectedOperator,
+      value: queryValue,
+      value2: queryValue2,
       filter: cql
     });
   };
@@ -223,10 +310,14 @@ const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
   };
 
   return (
-    <div className="floating-panel query-panel" style={{
+    <div ref={panelRef} className="floating-panel query-panel" style={{
       width: "300px",
-      right: "70px",
-      top: typeof topOffset === "number" ? `${topOffset}px` : "100px",
+      ...(position
+        ? { left: `${position.x}px`, top: `${position.y}px`, right: "auto", animation: "none" }
+        : {
+            right: "70px",
+            top: typeof topOffset === "number" ? `${topOffset}px` : "100px",
+          }),
       background: "linear-gradient(149deg, rgba(54, 209, 214, 0.85) 20%, rgba(91, 134, 229, 0.85) 35%)",
       backdropFilter: "blur(2px)",
       boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
@@ -234,7 +325,12 @@ const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
       color: "#000000",
       border: "1px solid rgba(255, 255, 255, 0.4)"
     }}>
-      <div className="panel-header" style={{ marginBottom: "10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div
+        className="panel-header"
+        onPointerDown={handleHeaderPointerDown}
+        onClickCapture={handleHeaderClickCapture}
+        style={{ marginBottom: "10px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "grab", touchAction: "none", userSelect: "none" }}
+      >
         <div className="query-tabs" style={{ marginBottom: 0 }}>
           <button
             className={`tab ${activeTab === "attributes" ? "active" : ""}`}
@@ -259,7 +355,13 @@ const QueryPanel = ({ city, onClose, onQuery, onClear, topOffset }) => {
           <div className="form-group">
             <select
               value={selectedLayer}
-              onChange={(e) => setSelectedLayer(e.target.value)}
+              onChange={(e) => {
+                setSelectedLayer(e.target.value);
+                setSelectedAttribute("");
+                setSelectedOperator("");
+                setQueryValue("");
+                setQueryValue2("");
+              }}
               className="form-control"
             >
               <option value="">Select Layer</option>

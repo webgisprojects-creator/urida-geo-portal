@@ -87,15 +87,16 @@ const purgeExpiredCaptchas = () => {
 const sanitizeCaptchaInput = (value) =>
   String(value || '')
     .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '');
+    .replace(/[^A-Za-z0-9]/g, '');
 
 const hashCaptchaValue = (value) =>
   crypto.createHash('sha256').update(sanitizeCaptchaInput(value)).digest('hex');
 
 const generateCaptchaText = (length = 5) => {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  return Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  // The answer is case-sensitive, so lowercase letters that differ from their
+  // capital only in size (c, k, p, s, u, v, w, x, z) are left out, as are i, l, o.
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabdefghjmnqrty23456789';
+  return Array.from({ length }, () => chars[crypto.randomInt(chars.length)]).join('');
 };
 
 const buildCaptchaDataUrl = (value) => {

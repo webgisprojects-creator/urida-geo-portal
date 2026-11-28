@@ -4,16 +4,14 @@ import express from "express";
 import NodeCache from "node-cache";
 import { getRoadTable, getWardTable, citySchemaMap, getAmenityTable, getCityUtmEpsg, getDrainTable } from "./config/cityConfig.js";
 import { verifyToken } from "./middleware/authMiddleware.js";
+// DSS TABLE reads from the DB — only the GeoJSON/summary handlers are
+// wired to routes. Refresh/counts/health handlers stay unreachable (their
+// routes below are still commented out).
 import {
-  refreshUnderdevelopedAnalysis,
   getUnderdevelopedAnalysis,
-  getUnderdevelopedAnalysisCounts,
   getStreetLightGeojson,
-  getStreetLightCounts,
-  refreshEncroachmentSummary,
   getEncroachmentGeojson,
   getEncroachmentSummary,
-  getDssHealth,
 } from "./controllers/dssController.js";
 
 const router = express.Router();
@@ -877,6 +875,14 @@ router.get("/:cityCode/specialized-details", async (req, res) => {
   }
 });
 
+// DISABLED — Analysis-tab roads are served exclusively by the published
+// GeoServer layers now (the client renders WMS tiles and fetches table rows
+// via WFS GetFeature on the cfg.analysis layer from
+// client/src/assets/configs/cityConfig.js). This endpoint lazily created,
+// refreshed, and queried the materialized view mv_<city>_<amenity>_roads on
+// every call. Kept commented for reference — re-enable only if the
+// GeoServer layers are ever unpublished.
+/*
 router.get("/:cityCode/road-analysis/:amenityType", async (req, res) => {
   try {
     const city = req.params.cityCode;
@@ -993,6 +999,8 @@ router.get("/:cityCode/road-analysis/:amenityType", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+*/
+// END disabled road-analysis route
 
 // 1️⃣ GET WARDS (specific)
 router.get("/:cityCode/wards", async (req, res) => {
@@ -1149,17 +1157,26 @@ router.get("/:cityCode/adjacent-roads", async (req, res) => {
   }
 });
 
+// DSS table/summary data — reads the module's MV (the DSS TABLE comes
+// from the DB; the map layer + legend colors come from GeoServer).
 router.get("/:cityCode/street-light", getStreetLightGeojson);
+router.get("/:cityCode/underdeveloped-analysis", getUnderdevelopedAnalysis);
+router.get("/:cityCode/encroachment-analysis", getEncroachmentGeojson);
+router.get("/:cityCode/encroachment-analysis/summary", getEncroachmentSummary);
+
+// DISABLED (MV from DB) — refresh re-materializes the views and the
+// counts endpoints GROUP BY them server-side; neither is needed since
+// the client derives counts from fetched rows and the legend takes its
+// colors from the GeoServer layer style. Kept commented for reference.
+/*
 router.get("/:cityCode/street-light/counts", getStreetLightCounts);
 
 router.post("/:cityCode/underdeveloped-analysis/refresh", refreshUnderdevelopedAnalysis);
-router.get("/:cityCode/underdeveloped-analysis", getUnderdevelopedAnalysis);
 router.get("/:cityCode/underdeveloped-analysis/counts", getUnderdevelopedAnalysisCounts);
 
 router.post("/:cityCode/encroachment-analysis/refresh", refreshEncroachmentSummary);
-router.get("/:cityCode/encroachment-analysis", getEncroachmentGeojson);
-router.get("/:cityCode/encroachment-analysis/summary", getEncroachmentSummary);
 router.get("/:cityCode/dss/health", getDssHealth);
+*/
 
 // 2️⃣ GET ZONES (generic)
 router.get("/:cityCode", async (req, res) => {
@@ -1519,6 +1536,457 @@ router.post("/:cityCode/amenities-count", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+//s2
+
+// DSS table/search endpoints — server-paginated queries directly against
+// the module's materialized view mv_<city>_<suffix>. The DSS map layer +
+// legend colors come from GeoServer; the DSS TABLE reads from the DB.
+const DSS_VIEWS = {
+  streetLight: "street_light",
+  underdeveloped: "underdeveloped_analysis",
+  roadMaintenance: "road_maintenance",
+  encroachment: "encroachment_summary"
+};
+
+// Numeric-range filters arrive as { type: "range", min, max } — produced by
+// the table's slider/YOC selects (the DSS counterpart of the road table's
+// "col >= a AND col <= b" CQL). The CASE guard skips non-numeric cell values
+// instead of failing the whole query on dirty MV data.
+const isDssRangeFilter = (selected) =>
+  selected !== null && typeof selected === "object" &&
+  !Array.isArray(selected) && selected.type === "range";
+
+const dssNumericExpr = (column, quote) =>
+  `CASE WHEN t.${quote(column)}::text ~ '^-?[0-9]+([.][0-9]+)?$' THEN t.${quote(column)}::numeric END`;
+
+const buildDssRangeCondition = (column, selected, values, quote) => {
+  const min = Number(selected.min);
+  const max = Number(selected.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+  values.push(min, max);
+  const expr = dssNumericExpr(column, quote);
+  return `(${expr} >= $${values.length - 1} AND ${expr} <= $${values.length})`;
+};
+
+// Query-panel operators → SQL. Whitelisted keys only; anything else is
+// ignored rather than interpolated.
+const DSS_FILTER_OPS = {
+  "=": "=", "<>": "<>", "!=": "<>",
+  ">": ">", "<": "<", ">=": ">=", "<=": "<=",
+  ilike: "ILIKE", like: "ILIKE", between: "BETWEEN",
+};
+
+// Shared filter→SQL builder for the DSS table routes (rows / distinct /
+// counts). Each entry is an array of values (= ANY), a {type:"range"}
+// object, or a {type:"op", op, value, value2} object emitted by the
+// attribute Query panel. Returns a WHERE fragment or null; parameters
+// are appended to `values` so nothing is ever interpolated raw.
+const buildDssFilterCondition = (column, selected, values, quote) => {
+  if (Array.isArray(selected)) {
+    if (!selected.length) return null;
+    values.push(selected.map(String).slice(0, 500));
+    return `t.${quote(column)}::text = ANY($${values.length}::text[])`;
+  }
+  if (!selected || typeof selected !== "object") return null;
+  if (isDssRangeFilter(selected)) {
+    return buildDssRangeCondition(column, selected, values, quote);
+  }
+  if (selected.type !== "op") return null;
+  const op = DSS_FILTER_OPS[String(selected.op || "").toLowerCase()];
+  if (!op) return null;
+  const raw1 = String(selected.value ?? "");
+  if (op === "ILIKE") {
+    values.push(`%${raw1.replace(/[%_]/g, "")}%`);
+    return `t.${quote(column)}::text ILIKE $${values.length}`;
+  }
+  if (op === "BETWEEN") {
+    const raw2 = String(selected.value2 ?? "");
+    const a = Number(raw1);
+    const b = Number(raw2);
+    if (raw1.trim() !== "" && raw2.trim() !== "" && Number.isFinite(a) && Number.isFinite(b)) {
+      values.push(Math.min(a, b), Math.max(a, b));
+      const expr = dssNumericExpr(column, quote);
+      return `(${expr} >= $${values.length - 1} AND ${expr} <= $${values.length})`;
+    }
+    values.push(raw1, raw2);
+    return `(t.${quote(column)}::text >= $${values.length - 1} AND t.${quote(column)}::text <= $${values.length})`;
+  }
+  values.push(raw1);
+  if (raw1.trim() !== "" && Number.isFinite(Number(raw1))) {
+    return `${dssNumericExpr(column, quote)} ${op} $${values.length}`;
+  }
+  return `t.${quote(column)}::text ${op} $${values.length}`;
+};
+
+router.get("/:cityCode/dss/:moduleKey/rows", async (req, res) => {
+  try {
+    const city = req.params.cityCode.toLowerCase();
+    const schema = citySchemaMap[city];
+    const suffix = DSS_VIEWS[req.params.moduleKey];
+
+    if (!schema || !suffix) {
+      return res.status(400).json({ error: "Invalid city or DSS module" });
+    }
+
+    const view = `mv_${city}_${suffix}`;
+    const quote = name => `"${String(name).replace(/"/g, '""')}"`;
+    const table = `${quote(schema)}.${quote(view)}`;
+
+    const page = Math.min(1000000, Math.max(1, parseInt(req.query.page, 10) || 1));
+    // limit=0 means unlimited (exports), same convention as /details.
+    const rawLimit = parseInt(req.query.limit, 10);
+    const unlimited = rawLimit === 0;
+    const limit = unlimited ? 0 : Math.min(1000, Math.max(1, rawLimit || 100));
+    const offset = unlimited ? 0 : (page - 1) * limit;
+
+    // Get MV columns; exclude geometry from table responses.
+    const meta = await pool.query(`
+      SELECT a.attname
+      FROM pg_attribute a
+      JOIN pg_class c ON c.oid = a.attrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_type t ON t.oid = a.atttypid
+      WHERE n.nspname = $1
+        AND c.relname = $2
+        AND c.relkind = 'm'
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+        AND t.typname NOT IN ('geometry', 'geography', 'raster')
+    `, [schema, view]);
+
+    const columns = meta.rows.map(r => r.attname);
+
+    if (!columns.length) {
+      return res.status(404).json({ error: "DSS view not found" });
+    }
+
+    const values = [];
+    const conditions = [];
+
+    const search = String(req.query.search || "").trim().slice(0, 100);
+
+    if (search) {
+      values.push(`%${search}%`);
+      conditions.push(`(${
+        columns.map(c => `t.${quote(c)}::text ILIKE $1`).join(" OR ")
+      })`);
+    }
+
+    let filters;
+    try {
+      filters = JSON.parse(req.query.filters || "{}");
+      if (!filters || Array.isArray(filters) || typeof filters !== "object") {
+        throw new Error("Invalid filters");
+      }
+    } catch {
+      return res.status(400).json({ error: "Invalid filters" });
+    }
+
+    for (const [column, selected] of Object.entries(filters)) {
+      if (selected == null || (Array.isArray(selected) && !selected.length)) continue;
+
+      if (!columns.includes(column)) {
+        return res.status(400).json({ error: "Invalid filter column" });
+      }
+
+      const cond = buildDssFilterCondition(column, selected, values, quote);
+      if (cond) conditions.push(cond);
+    }
+
+    const where = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+
+    const idColumn = ["gid", "gis_id", "objectid", "road_id", "id"]
+      .find(c => columns.includes(c));
+
+    const orderBy = idColumn
+      ? `t.${quote(idColumn)}, t.ctid`
+      : "t.ctid";
+
+    // Count only when requested, normally on first load.
+    let total = null;
+    // Total road length in km across the whole filtered view — same scope
+    // as `total`. Prefers a length_km column when the MV carries one
+    // (mirrors /summary's COALESCE(length_km, ST_Length) logic), otherwise
+    // falls back to measuring the geometry. null when the MV has neither
+    // (e.g. the per-zone encroachment summary has no geometry).
+    let totalLengthKm = null;
+
+    if (req.query.includeTotal === "1") {
+      const geomMeta = pool.query(`
+        SELECT a.attname
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_type t ON t.oid = a.atttypid
+        WHERE n.nspname = $1
+          AND c.relname = $2
+          AND c.relkind = 'm'
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+          AND t.typname = 'geometry'
+        ORDER BY a.attnum
+        LIMIT 1
+      `, [schema, view]);
+
+      const [count, geom] = await Promise.all([
+        pool.query(
+          `SELECT COUNT(*) AS total FROM ${table} t ${where}`,
+          values
+        ),
+        geomMeta,
+      ]);
+      total = Number(count.rows[0].total);
+
+      const geomColumn = geom.rows[0]?.attname || null;
+      const hasLengthKm = columns.includes("length_km");
+      let lengthExpr = null;
+      if (hasLengthKm && geomColumn) {
+        lengthExpr = `COALESCE(t.${quote("length_km")}::numeric, ST_Length(t.${quote(geomColumn)}::geography)/1000.0)`;
+      } else if (hasLengthKm) {
+        lengthExpr = `t.${quote("length_km")}::numeric`;
+      } else if (geomColumn) {
+        lengthExpr = `ST_Length(t.${quote(geomColumn)}::geography)/1000.0`;
+      }
+      if (lengthExpr) {
+        const len = await pool.query(
+          `SELECT COALESCE(SUM(${lengthExpr}), 0)::numeric(14,3) AS km FROM ${table} t ${where}`,
+          values
+        );
+        totalLengthKm = Number(len.rows[0]?.km ?? 0);
+      }
+    }
+
+    const pagingClause = unlimited
+      ? ""
+      : `LIMIT $${values.length + 1} OFFSET $${values.length + 2}`;
+    const result = await pool.query(`
+      SELECT ${columns.map(c => `t.${quote(c)}`).join(", ")}
+      FROM ${table} t
+      ${where}
+      ORDER BY ${orderBy}
+      ${pagingClause}
+    `, unlimited ? values : [...values, limit, offset]);
+
+    res.json({ data: result.rows, total, total_length_km: totalLengthKm, page, limit });
+  } catch (err) {
+    console.error("DSS database error:", err);
+    res.status(500).json({ error: "DSS data could not be loaded" });
+  }
+});
+
+// Distinct values for one column across the WHOLE DSS view (not just the
+// loaded page) so the table's filter dropdown can offer every option.
+// Honors the same search + filters as /dss/:moduleKey/rows, minus the
+// requested column's own filter (Excel-style: a column's choices aren't
+// shrunk by its own selection).
+router.get("/:cityCode/dss/:moduleKey/distinct/:column", async (req, res) => {
+  try {
+    const city = req.params.cityCode.toLowerCase();
+    const schema = citySchemaMap[city];
+    const suffix = DSS_VIEWS[req.params.moduleKey];
+    const column = String(req.params.column || "");
+
+    if (!schema || !suffix) {
+      return res.status(400).json({ error: "Invalid city or DSS module" });
+    }
+
+    const view = `mv_${city}_${suffix}`;
+    const quote = name => `"${String(name).replace(/"/g, '""')}"`;
+    const table = `${quote(schema)}.${quote(view)}`;
+
+    const meta = await pool.query(`
+      SELECT a.attname
+      FROM pg_attribute a
+      JOIN pg_class c ON c.oid = a.attrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_type t ON t.oid = a.atttypid
+      WHERE n.nspname = $1
+        AND c.relname = $2
+        AND c.relkind = 'm'
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+        AND t.typname NOT IN ('geometry', 'geography', 'raster')
+    `, [schema, view]);
+
+    const columns = meta.rows.map(r => r.attname);
+
+    if (!columns.length) {
+      return res.status(404).json({ error: "DSS view not found" });
+    }
+    if (!columns.includes(column)) {
+      return res.status(400).json({ error: "Invalid column" });
+    }
+
+    const values = [];
+    const conditions = [];
+
+    const search = String(req.query.search || "").trim().slice(0, 100);
+
+    if (search) {
+      values.push(`%${search}%`);
+      conditions.push(`(${
+        columns.map(c => `t.${quote(c)}::text ILIKE $1`).join(" OR ")
+      })`);
+    }
+
+    let filters;
+    try {
+      filters = JSON.parse(req.query.filters || "{}");
+      if (!filters || Array.isArray(filters) || typeof filters !== "object") {
+        throw new Error("Invalid filters");
+      }
+    } catch {
+      return res.status(400).json({ error: "Invalid filters" });
+    }
+
+    for (const [filterColumn, selected] of Object.entries(filters)) {
+      if (selected == null || (Array.isArray(selected) && !selected.length)) continue;
+      if (filterColumn === column) continue; // don't shrink a column's own options
+
+      if (!columns.includes(filterColumn)) {
+        return res.status(400).json({ error: "Invalid filter column" });
+      }
+
+      const cond = buildDssFilterCondition(filterColumn, selected, values, quote);
+      if (cond) conditions.push(cond);
+    }
+
+    const where = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+
+    // numeric=1 returns [min, max] instead of the distinct list — the range
+    // slider only needs the endpoints, and a >5000-value column would get
+    // truncated by the DISTINCT LIMIT otherwise.
+    if (req.query.numeric === "1" || req.query.numeric === "true") {
+      const expr = dssNumericExpr(column, quote);
+      const result = await pool.query(`
+        SELECT MIN(${expr}) AS min, MAX(${expr}) AS max
+        FROM ${table} t
+        ${where}
+      `, values);
+      return res.json([result.rows[0]?.min ?? null, result.rows[0]?.max ?? null]);
+    }
+
+    const result = await pool.query(`
+      SELECT DISTINCT t.${quote(column)}::text AS value
+      FROM ${table} t
+      ${where}
+      ORDER BY 1
+      LIMIT 5000
+    `, values);
+
+    res.json(result.rows.map(r => r.value));
+  } catch (err) {
+    console.error("DSS distinct error:", err);
+    res.status(500).json({ error: "DSS distinct values could not be loaded" });
+  }
+});
+
+// Per-value counts for one column across the WHOLE DSS view — feeds the
+// DSS legend so counts reflect the full (filtered) dataset, not just the
+// table's currently loaded page. Same search + filters contract as
+// /dss/:moduleKey/rows, with ALL filters applied (legend follows the
+// filtered view, including the column's own selection).
+// The DSS legend takes colors from the GeoServer layer style; counts come
+// from this GROUP BY over the whole MV (the loaded table page alone can't
+// represent the full dataset).
+router.get("/:cityCode/dss/:moduleKey/counts/:column", async (req, res) => {
+  try {
+    const city = req.params.cityCode.toLowerCase();
+    const schema = citySchemaMap[city];
+    const suffix = DSS_VIEWS[req.params.moduleKey];
+    const column = String(req.params.column || "");
+
+    if (!schema || !suffix) {
+      return res.status(400).json({ error: "Invalid city or DSS module" });
+    }
+
+    const view = `mv_${city}_${suffix}`;
+    const quote = name => `"${String(name).replace(/"/g, '""')}"`;
+    const table = `${quote(schema)}.${quote(view)}`;
+
+    const meta = await pool.query(`
+      SELECT a.attname
+      FROM pg_attribute a
+      JOIN pg_class c ON c.oid = a.attrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_type t ON t.oid = a.atttypid
+      WHERE n.nspname = $1
+        AND c.relname = $2
+        AND c.relkind = 'm'
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+        AND t.typname NOT IN ('geometry', 'geography', 'raster')
+    `, [schema, view]);
+
+    const columns = meta.rows.map(r => r.attname);
+
+    if (!columns.length) {
+      return res.status(404).json({ error: "DSS view not found" });
+    }
+    if (!columns.includes(column)) {
+      return res.status(400).json({ error: "Invalid column" });
+    }
+
+    const values = [];
+    const conditions = [];
+
+    const search = String(req.query.search || "").trim().slice(0, 100);
+
+    if (search) {
+      values.push(`%${search}%`);
+      conditions.push(`(${
+        columns.map(c => `t.${quote(c)}::text ILIKE $1`).join(" OR ")
+      })`);
+    }
+
+    let filters;
+    try {
+      filters = JSON.parse(req.query.filters || "{}");
+      if (!filters || Array.isArray(filters) || typeof filters !== "object") {
+        throw new Error("Invalid filters");
+      }
+    } catch {
+      return res.status(400).json({ error: "Invalid filters" });
+    }
+
+    for (const [filterColumn, selected] of Object.entries(filters)) {
+      if (selected == null || (Array.isArray(selected) && !selected.length)) continue;
+
+      if (!columns.includes(filterColumn)) {
+        return res.status(400).json({ error: "Invalid filter column" });
+      }
+
+      const cond = buildDssFilterCondition(filterColumn, selected, values, quote);
+      if (cond) conditions.push(cond);
+    }
+
+    const where = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+
+    const result = await pool.query(`
+      SELECT t.${quote(column)}::text AS value, COUNT(*)::int AS count
+      FROM ${table} t
+      ${where}
+      GROUP BY t.${quote(column)}::text
+      ORDER BY 2 DESC, 1
+      LIMIT 5000
+    `, values);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("DSS counts error:", err);
+    res.status(500).json({ error: "DSS counts could not be loaded" });
+  }
+});
+// END DSS routes
+
+
 
 // 8️⃣ ROAD DETAILS TABLE
 router.get("/:cityCode/details", async (req, res) => {

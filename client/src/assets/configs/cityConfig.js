@@ -5,6 +5,7 @@ export const cityConfig = {
     name: "Agra",
     center: fromLonLat([78.0081, 27.1767]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Agra_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Agra_Ward_Boundary", // change layer
@@ -40,13 +41,21 @@ export const cityConfig = {
       religious: "Amenities:Agra_Religious",
       state_gov: "Amenities:Agra_State_Gov",
     },
-    
+
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_agra_atm_bank_roads",
+      Road_edu: "Road_Network:mv_agra_education_roads",
+      Road_hospital: "Road_Network:mv_agra_hospital_roads",
+      Road_hotel: "Road_Network:mv_agra_hotel_roads",
+      Road_park: "Road_Network:mv_agra_park_roads"
+    }
   },
 
   aligarh: {
     name: "Aligarh",
     center: fromLonLat([78.088, 27.8974]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Aligarh_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Aligarh_Ward_Boundary", // change layer
@@ -80,12 +89,21 @@ export const cityConfig = {
       religious: "Amenities:Aligarh_Religious",
       state_gov: "Amenities:Aligarh_State_Gov",
     },
+
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_aligarh_atm_bank_roads",
+      Road_edu: "Road_Network:mv_aligarh_education_roads",
+      Road_hospital: "Road_Network:mv_aligarh_hospital_roads",
+      Road_hotel: "Road_Network:mv_aligarh_hotel_roads",
+      Road_park: "Road_Network:mv_aligarh_park_roads"
+    }
   },
 
   ayodhya: {
     name: "Ayodhya",
     center: fromLonLat([82.1944, 26.7999]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Ayodhya_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Ayodhya_Ward_Boundary", // change layer
@@ -122,6 +140,14 @@ export const cityConfig = {
       religious: "Amenities:Ayodhya_Religious_Places",
     },
 
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_ayodhya_atm_bank_roads",
+      Road_edu: "Road_Network:mv_ayodhya_education_roads",
+      Road_hospital: "Road_Network:mv_ayodhya_hospital_roads",
+      Road_hotel: "Road_Network:mv_ayodhya_hotel_roads",
+      Road_park: "Road_Network:mv_ayodhya_park_roads"
+    },
+
     specializedNetworks: {
       drainage: {
         label: "Drainage Network",
@@ -147,6 +173,7 @@ export const cityConfig = {
     name: "Bareilly",
     center: fromLonLat([79.4304, 28.367]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Bareilly_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Bareilly_Ward_Boundary", // change layer
@@ -181,6 +208,14 @@ export const cityConfig = {
       state_gov: "Amenities:Bareilly_State_Gov",
     },
 
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_bareilly_atm_bank_roads",
+      Road_edu: "Road_Network:mv_bareilly_education_roads",
+      Road_hospital: "Road_Network:mv_bareilly_hospital_roads",
+      Road_hotel: "Road_Network:mv_bareilly_hotel_roads",
+      Road_park: "Road_Network:mv_bareilly_park_roads"
+    },
+
     specializedNetworks: {
       drainage: {
         label: "Drainage Network",
@@ -199,6 +234,7 @@ export const cityConfig = {
     name: "Firozabad",
     center: fromLonLat([78.3949, 27.1591]),
     zoom: 11,
+    streetView: { enabled: false },
 
     // zoneLayer: "Ward_Boundary_New:Firozabad_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Firozabad_Ward_Boundary", // change layer
@@ -234,12 +270,21 @@ export const cityConfig = {
       religious: "Amenities:Firozabad_Religious",
       state_gov: "Amenities:Firozabad_State_Gov",
     },
+
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_firozabad_atm_bank_roads",
+      Road_edu: "Road_Network:mv_firozabad_education_roads",
+      Road_hospital: "Road_Network:mv_firozabad_hospital_roads",
+      Road_hotel: "Road_Network:mv_firozabad_hotel_roads",
+      Road_park: "Road_Network:mv_firozabad_park_roads"
+    },
   },
 
   ghaziabad: {
     name: "Ghaziabad",
     center: fromLonLat([77.4538, 28.6692]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Ghaziabad_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Ghaziabad_Ward_Boundary", // change layer
@@ -265,6 +310,7 @@ export const cityConfig = {
       petrol_pump: "Amenities:Ghaziabad_Petrol_Pump",
       // stadium: "Amenities:Firozabad_Stadium",
     },
+
     others: {
       central_gov: "Amenities:Ghaziabad_Central_Gov",
       // community_toilet: "Amenities:Firozabad_Community_Toilet",
@@ -273,6 +319,14 @@ export const cityConfig = {
       post_office: "Amenities:Ghaziabad_Post_Office",
       religious: "Amenities:Ghaziabad_Religious",
       state_gov: "Amenities:Ghaziabad_State_Gov",
+    },
+
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_ghaziabad_atm_bank_roads",
+      Road_edu: "Road_Network:mv_ghaziabad_education_roads",
+      Road_hospital: "Road_Network:mv_ghaziabad_hospital_roads",
+      Road_hotel: "Road_Network:mv_ghaziabad_hotel_roads",
+      Road_park: "Road_Network:mv_ghaziabad_park_roads"
     },
 
     specializedNetworks: {
@@ -293,6 +347,7 @@ export const cityConfig = {
     name: "Gorakhpur",
     center: fromLonLat([83.3732, 26.7606]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Gorakhpur_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Gorakhpur_Ward_Boundary", // change layer
@@ -331,12 +386,21 @@ export const cityConfig = {
       religious: "Amenities:Gorakhpur_Religious",
       state_gov: "Amenities:Gorakhpur_State_Gov",
     },
+
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_gorakhpur_atm_bank_roads",
+      Road_edu: "Road_Network:mv_gorakhpur_education_roads",
+      Road_hospital: "Road_Network:mv_gorakhpur_hospital_roads",
+      Road_hotel: "Road_Network:mv_gorakhpur_hotel_roads",
+      Road_park: "Road_Network:mv_gorakhpur_park_roads"
+    }
   },
 
   jhansi: {
     name: "Jhansi",
     center: fromLonLat([78.5685, 25.4484]),
     zoom: 11,
+    streetView: { enabled: false },
 
     // zoneLayer: "Ward_Boundary_New:jhansi_zone_boundary", // change layer
     wardLayer: "Ward_Boundary_New:Jhansi_Ward_Boundary", // change layer
@@ -376,6 +440,14 @@ export const cityConfig = {
       state_gov: "Amenities:Jhansi_State_Gov",
     },
 
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_jhansi_atm_bank_roads",
+      Road_edu: "Road_Network:mv_jhansi_education_roads",
+      Road_hospital: "Road_Network:mv_jhansi_hospital_roads",
+      Road_hotel: "Road_Network:mv_jhansi_hotel_roads",
+      Road_park: "Road_Network:mv_jhansi_park_roads"
+    },
+
     LCLUClassifications: {
       Jhansi_LCLU_ULU: "Amenities:Jhansi_LCLU_ULU",
     },
@@ -385,6 +457,7 @@ export const cityConfig = {
     name: "Kanpur",
     center: fromLonLat([80.3319, 26.4499]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Kanpur_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Kanpur_Ward_Boundary", // change layer
@@ -421,6 +494,15 @@ export const cityConfig = {
       religious: "Amenities:Kanpur_Religious",
       state_gov: "Amenities:Kanpur_State_Gov",
     },
+
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_kanpur_atm_bank_roads",
+      Road_edu: "Road_Network:mv_kanpur_education_roads",
+      Road_hospital: "Road_Network:mv_kanpur_hospital_roads",
+      Road_hotel: "Road_Network:mv_kanpur_hotel_roads",
+      Road_park: "Road_Network:mv_kanpur_park_roads"
+    },
+
     specializedNetworks: {
       drainage: {
         label: "Drainage Network",
@@ -449,6 +531,7 @@ export const cityConfig = {
     name: "Lucknow",
     center: fromLonLat([80.9462, 26.8467]),
     zoom: 11,
+    streetView: { enabled: true, layer: "Street_View:Lucknow_Street_View" },
 
     // GeoServer WMS Layers
     zoneLayer: "Ward_Boundary_New:Lucknow_Zone_Boundary", // change layer name
@@ -492,6 +575,14 @@ export const cityConfig = {
       state_gov: "Amenities:Lucknow_State_Gov",
     },
 
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_lucknow_atm_bank_roads",
+      Road_edu: "Road_Network:mv_lucknow_education_roads",
+      Road_hospital: "Road_Network:mv_lucknow_hospital_roads",
+      Road_hotel: "Road_Network:mv_lucknow_hotel_roads",
+      Road_park: "Road_Network:mv_lucknow_park_roads"
+    },
+
     utilities: {
       manhole: {
         label: "Manhole",
@@ -511,6 +602,7 @@ export const cityConfig = {
     name: "Mathura",
     center: fromLonLat([77.6737, 27.4924]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Mathura_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Mathura_Ward_Boundary", // change layer
@@ -545,11 +637,21 @@ export const cityConfig = {
       religious: "Amenities:Mathura_Religious_Place",
       state_gov: "Amenities:Mathura_State_Gov",
     },
+
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_mathura_atm_bank_roads",
+      Road_edu: "Road_Network:mv_mathura_education_roads",
+      Road_hospital: "Road_Network:mv_mathura_hospital_roads",
+      Road_hotel: "Road_Network:mv_mathura_hotel_roads",
+      Road_park: "Road_Network:mv_mathura_park_roads"
+    }
   },
+
   meerut: {
     name: "Meerut",
     center: fromLonLat([77.7064, 28.9845]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Meerut_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Meerut_Ward_Boundary", // change layer
@@ -584,12 +686,21 @@ export const cityConfig = {
       religious: "Amenities:Meerut_Religious",
       state_gov: "Amenities:Meerut_State_Gov",
     },
+    
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_meerut_atm_bank_roads",
+      Road_edu: "Road_Network:mv_meerut_education_roads",
+      Road_hospital: "Road_Network:mv_meerut_hospital_roads",
+      Road_hotel: "Road_Network:mv_meerut_hotel_roads",
+      Road_park: "Road_Network:mv_meerut_park_roads"
+    }
   },
 
   moradabad: {
     name: "Moradabad",
     center: fromLonLat([78.7768, 28.8386]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Moradabad_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Moradabad_Ward_Boundary", // change layer
@@ -623,12 +734,21 @@ export const cityConfig = {
       religious: "Amenities:Moradabad_Religious_Place",
       state_gov: "Amenities:Moradabad_State_Gov",
     },
+    
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_moradabad_atm_bank_roads",
+      Road_edu: "Road_Network:mv_moradabad_education_roads",
+      Road_hospital: "Road_Network:mv_moradabad_hospital_roads",
+      Road_hotel: "Road_Network:mv_moradabad_hotel_roads",
+      Road_park: "Road_Network:mv_moradabad_park_roads"
+    }
   },
 
   prayagraj: {
     name: "Prayagraj",
     center: fromLonLat([81.8463, 25.4358]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Prayagraj_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Prayagraj_Ward_Boundary", // change layer
@@ -666,12 +786,21 @@ export const cityConfig = {
       state_gov: "Amenities:Prayagraj_State_Gov",
       // temple:"Amenities:Prayagraj_Temple",
     },
+
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_prayagraj_atm_bank_roads",
+      Road_edu: "Road_Network:mv_prayagraj_education_roads",
+      Road_hospital: "Road_Network:mv_prayagraj_hospital_roads",
+      Road_hotel: "Road_Network:mv_prayagraj_hotel_roads",
+      Road_park: "Road_Network:mv_prayagraj_park_roads"
+    }
   },
 
   saharanpur: {
     name: "Saharanpur",
     center: fromLonLat([77.546, 29.9679]),
     zoom: 11,
+    streetView: { enabled: false },
 
     // zoneLayer: "MRT_NN:meerut_zone_boundary", // change layer
     wardLayer: "Ward_Boundary_New:Saharanpur_Ward_Boundary", // change layer
@@ -707,12 +836,21 @@ export const cityConfig = {
       religious: "Amenities:Saharanpur_Religious",
       state_gov: "Amenities:Saharanpur_State_Gov",
     },
+
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_saharanpur_atm_bank_roads",
+      Road_edu: "Road_Network:mv_saharanpur_education_roads",
+      Road_hospital: "Road_Network:mv_saharanpur_hospital_roads",
+      Road_hotel: "Road_Network:mv_saharanpur_hotel_roads",
+      Road_park: "Road_Network:mv_saharanpur_park_roads"
+    }
   },
 
   shahjahanpur: {
     name: "Shahjahanpur",
     center: fromLonLat([79.912, 27.8804]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Shahjahanpur_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Shahjahanpur_Ward_Boundary", // change layer
@@ -750,6 +888,14 @@ export const cityConfig = {
       // state_gov: "Amenities:Saharanpur_State_Gov",
     },
 
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_shahjahanpur_atm_bank_roads",
+      Road_edu: "Road_Network:mv_shahjahanpur_education_roads",
+      Road_hospital: "Road_Network:mv_shahjahanpur_hospital_roads",
+      Road_hotel: "Road_Network:mv_shahjahanpur_hotel_roads",
+      Road_park: "Road_Network:mv_shahjahanpur_park_roads"
+    },
+
     specializedNetworks: {
       drainage: {
         label: "Drainage Network",
@@ -768,6 +914,7 @@ export const cityConfig = {
     name: "Varanasi",
     center: fromLonLat([82.9566, 25.3176]),
     zoom: 11,
+    streetView: { enabled: false },
 
     zoneLayer: "Ward_Boundary_New:Varanasi_Zone_Boundary", // change layer
     wardLayer: "Ward_Boundary_New:Varanasi_Ward_Boundary", // change layer
@@ -802,6 +949,14 @@ export const cityConfig = {
       post_office: "Amenities:Varanasi_Post_Office",
       religious: "Amenities:Varanasi_Religious",
       state_gov: "Amenities:Varanasi_State_Gov",
+    },
+
+    analysis: {
+      Road_atm_bank: "Road_Network:mv_varanasi_atm_bank_roads",
+      Road_edu: "Road_Network:mv_varanasi_education_roads",
+      Road_hospital: "Road_Network:mv_varanasi_hospital_roads",
+      Road_hotel: "Road_Network:mv_varanasi_hotel_roads",
+      Road_park: "Road_Network:mv_varanasi_park_roads"
     },
   },
 };

@@ -452,6 +452,7 @@ export const auditLogger = (req, res, next) => {
 // load.
 const ACTIVE_TOKENS_RETENTION_MS = Number(process.env.ACTIVE_TOKENS_RETENTION_MS || 45 * 24 * 60 * 60 * 1000); // 45 days
 const ACTIVE_TOKENS_SWEEP_INTERVAL_MS = Number(process.env.ACTIVE_TOKENS_SWEEP_INTERVAL_MS || 6 * 60 * 60 * 1000); // 6 hours
+const ACTIVE_TOKENS_EXPIRY_CHECK_INTERVAL_MS = Number(process.env.ACTIVE_TOKENS_EXPIRY_CHECK_INTERVAL_MS || 5 * 60 * 1000); // 5 minutes
 
 export async function runActiveTokensRetentionSweep() {
   try {
@@ -469,6 +470,54 @@ export async function runActiveTokensRetentionSweep() {
   }
 }
 
+// Background task that periodically checks active sessions and updates their
+// status if they've exceeded idle/absolute timeouts. This handles the case
+// where users close their browser without logging out — their sessions would
+// otherwise remain marked as 'active' indefinitely because no further requests
+// trigger the timeout checks in verifyToken/tryVerifyToken.
+export async function runActiveTokensExpiryCheck() {
+  try {
+    await ensureActiveTokensTable();
+    const now = new Date();
+    const absoluteTimeoutCutoff = new Date(now.getTime() - absoluteTimeoutMs);
+
+    // Mark sessions as expired if their absolute timeout has passed
+    const absoluteResult = await pool.query(
+      `UPDATE active_tokens
+       SET status = 'session_expired'
+       WHERE status = 'active'
+         AND issued_at < $1`,
+      [absoluteTimeoutCutoff]
+    );
+    if ((absoluteResult.rowCount || 0) > 0) {
+      console.log(`[active_tokens] expiry check marked ${absoluteResult.rowCount} session(s) as session_expired (absolute timeout)`);
+    }
+
+    // Idle timeout. This sweep only tidies up sessions nobody is using; the
+    // exact per-user limit is enforced by verifyToken on each request. It uses
+    // the longer of the two limits, so it can never end a field-task session
+    // early, whatever active_tokens.user_id holds. One statement, so a request
+    // that refreshes last_activity_time in between is never overwritten.
+    const idleCutoff = new Date(now.getTime() - Math.max(idleTimeoutMs, fieldTaskIdleTimeoutMs));
+    const idleResult = await pool.query(
+      `UPDATE active_tokens
+       SET status = 'inactivated'
+       WHERE status = 'active'
+         AND last_activity_time < $1`,
+      [idleCutoff]
+    );
+    if ((idleResult.rowCount || 0) > 0) {
+      console.log(`[active_tokens] expiry check marked ${idleResult.rowCount} session(s) as inactivated (idle timeout)`);
+    }
+  } catch (err) {
+    console.error('active_tokens expiry check failed:', err?.message || err);
+  }
+}
+
 export function startActiveTokensRetentionSchedule() {
   setInterval(runActiveTokensRetentionSweep, ACTIVE_TOKENS_SWEEP_INTERVAL_MS);
+}
+
+export function startActiveTokensExpirySchedule() {
+  setInterval(runActiveTokensExpiryCheck, ACTIVE_TOKENS_EXPIRY_CHECK_INTERVAL_MS);
 }
