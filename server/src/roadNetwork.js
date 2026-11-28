@@ -315,93 +315,6 @@ function isSafeIdent(value) {
   return /^[A-Za-z0-9_]+$/.test(String(value || ""));
 }
 
-function extractLayerBaseName(layerName) {
-  const raw = String(layerName || "").trim();
-  if (!raw) return "";
-  const parts = raw.split(":");
-  return (parts[parts.length - 1] || "").trim();
-}
-
-function normalizeRelname(value) {
-  return String(value || "")
-    .trim()
-    .replace(/[^A-Za-z0-9_]+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toLowerCase();
-}
-
-async function resolveRelationForLayer(schema, cityCode, layerName) {
-  const base = extractLayerBaseName(layerName);
-  const guess = normalizeRelname(base);
-  if (!guess) return null;
-  if (!isSafeIdent(schema)) return null;
-
-  const city = String(cityCode || "").toLowerCase();
-  const candidates = [];
-  if (guess) candidates.push(guess);
-  if (city && guess.startsWith(`${city}_`)) {
-    candidates.push(guess.slice(city.length + 1));
-  }
-
-  const exactSql = `
-    SELECT c.relname
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = $1
-      AND c.relkind IN ('r','v','m')
-      AND c.relname = ANY($2)
-    LIMIT 1
-  `;
-  const exact = await pool.query(exactSql, [schema, candidates]);
-  if (exact.rows[0]?.relname) return exact.rows[0].relname;
-
-  const tokens = Array.from(
-    new Set(
-      guess
-        .split("_")
-        .map((t) => t.trim())
-        .filter(Boolean)
-    )
-  );
-  if (tokens.length === 0) return null;
-
-  const buildTokenSql = (includeCity) => {
-    const filtered = includeCity ? tokens : tokens.filter((t) => t !== city);
-    if (filtered.length === 0) return null;
-    const conditions = filtered
-      .map((_, i) => `lower(c.relname) LIKE $${i + 2}`)
-      .join(" AND ");
-    return {
-      text: `
-        SELECT c.relname
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = $1
-          AND c.relkind IN ('r','v','m')
-          AND ${conditions}
-        ORDER BY length(c.relname) ASC
-        LIMIT 1
-      `,
-      values: [schema, ...filtered.map((t) => `%${t.toLowerCase()}%`)],
-    };
-  };
-
-  const strictQuery = buildTokenSql(true);
-  if (strictQuery) {
-    const strict = await pool.query(strictQuery.text, strictQuery.values);
-    if (strict.rows[0]?.relname) return strict.rows[0].relname;
-  }
-
-  const relaxedQuery = buildTokenSql(false);
-  if (relaxedQuery) {
-    const relaxed = await pool.query(relaxedQuery.text, relaxedQuery.values);
-    if (relaxed.rows[0]?.relname) return relaxed.rows[0].relname;
-  }
-
-  return null;
-}
-
 async function getNonGeometryColumns(schema, table) {
   const sql = `
     SELECT column_name, udt_name
@@ -654,9 +567,10 @@ router.get("/:cityCode/distinct/:column", async (req, res) => {
   }
 });
 
+// Datasets of the slum screen, by option.
+const SLUM_TABLES = { roads: "ann_slum_roads", boundary: "ann_slum_boundary" };
+
 router.get("/:cityCode/specialized-details", async (req, res) => {
-  let debugStage = "init";
-  let resolutionDebug = null;
   try {
     const { cityCode } = req.params;
     const layer = String(req.query.layer || "").trim();
@@ -680,175 +594,52 @@ router.get("/:cityCode/specialized-details", async (req, res) => {
 
     let schema = citySchema;
     let relname = null;
-    debugStage = "init";
-    resolutionDebug = {
-      cityKey,
-      citySchema,
-      network,
-      option,
-      layer,
-      relInCity: null,
-      relInPublic: null,
-      fixedFallback: null,
-      resolvedSchema: null,
-      resolvedRelation: null,
-      columns: null,
-      stage: "init",
-    };
 
-    if (network) {
-      const n = network.toLowerCase();
-      const o = option.toLowerCase();
+    const n = network.toLowerCase();
+    const o = option.toLowerCase();
 
-      if (!o || o === "none") {
-        return res.json({
-          relation: null,
-          layer,
-          network: n,
-          option: o || null,
-          columns: [],
-          page,
-          limit,
-          total: 0,
-          data: [],
-        });
-      }
+    if (n && (!o || o === "none")) {
+      return res.json({
+        relation: null,
+        layer,
+        network: n,
+        option: o || null,
+        columns: [],
+        page,
+        limit,
+        total: 0,
+        data: [],
+      });
+    }
 
-      if (n === "drainage") {
-        // For drainage, always use the city-specific drain table regardless of option
-        const drainTable = getDrainTable(cityKey);
-        const { schema: drainSchema, table: drainRelname } = parseQualified(drainTable);
-        
-        // Verify the table exists
-        const checkSql = `
-          SELECT n.nspname AS schema, c.relname
-          FROM pg_class c
-          JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE n.nspname = $1
-            AND c.relkind IN ('r','v','m')
-            AND c.relname = $2
-          LIMIT 1
-        `;
-        const checkRes = await pool.query(checkSql, [drainSchema, drainRelname]);
-        
-        if (checkRes.rows[0]) {
-          schema = drainSchema;
-          relname = drainRelname;
-        } else {
-          resolutionDebug.stage = "drain-table-not-found";
-          return res.status(404).json({
-            error: `Drainage table not found: ${drainTable}`,
-            debug: resolutionDebug,
-          });
-        }
-      } else if (n === "slum") {
-        // Slum logic remains unchanged
-        const fixed = o === "roads" ? "ann_slum_roads" : (o === "boundary" ? "ann_slum_boundary" : null);
-        
-        if (layer) {
-          const relInCity = await resolveRelationForLayer(citySchema, cityKey, layer);
-          resolutionDebug.relInCity = relInCity;
-          if (relInCity) {
-            relname = relInCity;
-            schema = citySchema;
-          } else {
-            const relInPublic = await resolveRelationForLayer("public", cityKey, layer);
-            resolutionDebug.relInPublic = relInPublic;
-            if (relInPublic) {
-              relname = relInPublic;
-              schema = "public";
-            }
-          }
-        }
-
-        if (!relname && fixed) {
-          resolutionDebug.fixedFallback = fixed;
-          const preferredSchemas = [citySchema, "public"];
-
-          const sql = `
-            SELECT n.nspname AS schema, c.relname
-            FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname::text = ANY($1::text[])
-              AND c.relkind IN ('r','v','m','p','f')
-              AND c.relname = $2
-            ORDER BY CASE WHEN n.nspname::text = $3 THEN 0 ELSE 1 END
-            LIMIT 1
-          `;
-          const r = await pool.query(sql, [preferredSchemas, fixed, citySchema]);
-          const found = r.rows[0] || null;
-
-          if (!found) {
-            resolutionDebug.stage = "fixed-fallback-miss";
-            return res.status(404).json({
-              error: `Table not found: ${fixed}`,
-              debug: resolutionDebug,
-            });
-          }
-
-          schema = found.schema;
-          relname = found.relname;
-        }
-      } else if (!relname) {
-        if (layer) {
-          const relInCity = await resolveRelationForLayer(citySchema, cityKey, layer);
-          if (relInCity) {
-            relname = relInCity;
-            schema = citySchema;
-          } else {
-            const relInPublic = await resolveRelationForLayer("public", cityKey, layer);
-            if (relInPublic) {
-              relname = relInPublic;
-              schema = "public";
-            }
-          }
-        }
-
-        if (!relname) {
-          return res.status(400).json({ error: "Unsupported specialized dataset" });
-        }
-      }
+    // Only these tables can be read through this route, always in the city's own
+    // schema. The table name is never taken from the request.
+    if (n === "drainage") {
+      relname = parseQualified(getDrainTable(cityKey)).table;
+    } else if (n === "slum" && Object.prototype.hasOwnProperty.call(SLUM_TABLES, o)) {
+      relname = SLUM_TABLES[o];
     } else {
-      const relInCity = await resolveRelationForLayer(citySchema, cityKey, layer);
-      if (relInCity) {
-        relname = relInCity;
-        schema = citySchema;
-      } else {
-        const relInPublic = await resolveRelationForLayer("public", cityKey, layer);
-        if (relInPublic) {
-          relname = relInPublic;
-          schema = "public";
-        }
-      }
-
-      if (!relname) {
-        return res.status(404).json({ error: "No matching table found for layer" });
-      }
+      return res.status(400).json({ error: "Unsupported specialized dataset" });
     }
 
-    resolutionDebug.resolvedSchema = schema;
-    resolutionDebug.resolvedRelation = relname;
-
-    if (!isSafeIdent(schema) || !isSafeIdent(relname)) {
-      resolutionDebug.stage = "unsafe-identifier";
-      return res.status(400).json({ error: "Unsafe identifier", debug: resolutionDebug });
+    const found = await pool.query(
+      `SELECT 1 FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
+        WHERE ns.nspname = $1 AND c.relkind IN ('r','v','m') AND c.relname = $2`,
+      [schema, relname]
+    );
+    if (!found.rows.length) {
+      return res.status(404).json({ error: "Dataset not found" });
     }
 
-    debugStage = "columns";
-    resolutionDebug.stage = debugStage;
     const columns = await getNonGeometryColumns(schema, relname);
-    resolutionDebug.columns = columns;
     if (!columns.length) {
-      resolutionDebug.stage = "no-readable-columns";
-      return res.status(404).json({ error: "No readable columns found", debug: resolutionDebug });
+      return res.status(404).json({ error: "No readable columns found" });
     }
 
     const identCols = columns.map((c) => `"${c}"`).join(", ");
     const dataSql = `SELECT ${identCols} FROM "${schema}"."${relname}" LIMIT $1 OFFSET $2`;
     const countSql = `SELECT COUNT(1)::int AS total FROM "${schema}"."${relname}"`;
 
-    debugStage = "query";
-    resolutionDebug.stage = debugStage;
     const [dataRes, countRes] = await Promise.all([
       pool.query(dataSql, [limit, offset]),
       pool.query(countSql),
@@ -867,14 +658,7 @@ router.get("/:cityCode/specialized-details", async (req, res) => {
     });
   } catch (err) {
     console.error("Error fetching specialized details:", err);
-    res.status(500).json({
-      error: "Internal server error",
-      debug: {
-        ...(typeof resolutionDebug === "object" && resolutionDebug ? resolutionDebug : {}),
-        stage: debugStage || resolutionDebug?.stage || "unknown",
-        message: err?.message || String(err),
-      },
-    });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
