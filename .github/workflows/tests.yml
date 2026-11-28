@@ -44,6 +44,29 @@ jobs:
           DB_PASS: ci-only-password
           DB_NAME: urida_test
 
+  # Installs and builds with the same commands as the deployment, which uses the
+  # separate lock files in client/ and server/.
+  deploy-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-node@v4.3.0
+        with:
+          node-version: '24'
+
+      - name: Server packages
+        run: npm --prefix server ci --omit=dev
+
+      - name: Client packages
+        run: npm --prefix client ci
+
+      - name: Build client
+        run: npm --prefix client run build
+        env:
+          CI: "false"
+          REACT_APP_GEOSERVER_BASE: /geoserver
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
@@ -54,9 +77,13 @@ jobs:
           node-version: '22'
 
       - name: Server packages (fails on high or critical)
-        run: npm audit --omit=dev --workspace server --audit-level=high
+        run: |
+          npm audit --omit=dev --workspace server --audit-level=high
+          (cd server && npm audit --omit=dev --workspaces=false --audit-level=high)
 
       # The client still has high findings inside the react-scripts build tool,
       # which can only be removed by replacing that tool. Fail on anything critical.
       - name: Client packages (fails on critical)
-        run: npm audit --omit=dev --workspace client --audit-level=critical
+        run: |
+          npm audit --omit=dev --workspace client --audit-level=critical
+          (cd client && npm audit --omit=dev --workspaces=false --audit-level=critical)

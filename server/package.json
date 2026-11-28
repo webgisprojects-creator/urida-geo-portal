@@ -28,6 +28,9 @@
     "pg": "^8.21.0",
     "sharp": "^0.35.3"
   },
+  "overrides": {
+    "qs": "6.16.2"
+  },
   "devDependencies": {
     "nodemon": "^3.0.2"
   }
