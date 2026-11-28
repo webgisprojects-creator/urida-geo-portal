@@ -1,5 +1,5 @@
 /* Login and session bootstrap for URIDA portal users. */
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import "./LoginPage.css";
 
 const cmYogi = require("../../assets/Login/CM-Yogi-PNG.png");
@@ -29,11 +29,6 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [captcha, setCaptcha] = useState("");
   const [captchaImage, setCaptchaImage] = useState("");
-  // Plaintext captcha characters, used only to drive the audio button below
-  // — never rendered, never sent anywhere except back to /login for the
-  // user's own typed answer to be checked against (server-side, same as
-  // before). See authController.js getCaptcha()'s audioText field.
-  const [captchaAudioText, setCaptchaAudioText] = useState("");
   const [captchaLoading, setCaptchaLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("error");
@@ -53,26 +48,20 @@ export default function LoginPage() {
 
   const closeLoginModal = () => {
     setShowLogin(false);
-    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    stopCaptchaAudio();
   };
 
+  // The server speaks the CAPTCHA; the page never receives its text.
+  const captchaAudioRef = useRef(null);
+  const stopCaptchaAudio = () => {
+    captchaAudioRef.current?.pause();
+    captchaAudioRef.current = null;
+  };
   const handleCaptchaAudio = () => {
-    if (!("speechSynthesis" in window) || !captchaAudioText) return;
-    // Speak each character as its own word ("A7K9" -> "A, 7, K, 9") instead
-    // of the whole string at once, which speech synthesis would otherwise
-    // often run together or mispronounce as a single token — the previous
-    // version never spoke the captcha at all, just a fixed instruction
-    // string, regardless of what was actually on screen.
-    // The answer is case-sensitive, so say which letters are capitals.
-    const spoken = captchaAudioText
-      .split("")
-      .map((ch) => (/[A-Z]/.test(ch) ? `capital ${ch}` : /[a-z]/.test(ch) ? `small ${ch.toUpperCase()}` : ch))
-      .join(", ");
-    const utterance = new SpeechSynthesisUtterance(spoken);
-    utterance.rate = 0.8;
-    utterance.pitch = 1;
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
+    if (!captchaImage) return;
+    stopCaptchaAudio();
+    captchaAudioRef.current = new Audio(`${API_BASE_URL}/captcha/audio?t=${Date.now()}`);
+    captchaAudioRef.current.play().catch(() => {});
   };
 
   const loadCaptcha = async () => {
@@ -80,16 +69,14 @@ export default function LoginPage() {
     // Stop any in-flight speech referencing the captcha that's about to be
     // replaced — otherwise a refresh mid-utterance keeps speaking the old
     // (now invalid) characters.
-    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    stopCaptchaAudio();
     try {
       const response = await fetch(`${API_BASE_URL}/captcha`, { credentials: "include" });
       const data = await response.json().catch(() => ({}));
       setCaptchaImage(String(data?.captcha?.image || ""));
-      setCaptchaAudioText(String(data?.captcha?.audioText || ""));
       setCaptcha("");
     } catch {
       setCaptchaImage("");
-      setCaptchaAudioText("");
     } finally {
       setCaptchaLoading(false);
     }

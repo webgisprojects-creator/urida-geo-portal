@@ -4,9 +4,12 @@ import { getZoneSummary, getWardSummary } from '../controllers/cityController.js
 import { pool } from '../config/db.js';
 import { citySchemaMap } from '../config/cityConfig.js';
 import { verifyToken } from '../middleware/authMiddleware.js';
+import { requireOwnCity } from '../middleware/cityScope.js';
 const router = express.Router();
 
 router.use(verifyToken);
+// A user with a city can read only that city.
+router.param('city', requireOwnCity);
 
 const amenityTables = [
   'atm_bank',
