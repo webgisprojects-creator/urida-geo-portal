@@ -371,18 +371,115 @@ const findAmenityTable = (tables, key) => {
   return candidates[0].name;
 };
 
-const fetchAmenityCounts = async (schema) => {
+// Locates the zone/ward boundary polygon table for a schema, plus the
+// column/geometry names needed to filter it. Resolved lazily once per
+// fetchAmenityCounts call (see boundarySpecs below).
+const findBoundarySpec = async (schema, tables, kind) => {
+  // kind: 'zone' | 'ward'
+  const preferred = `${schema}_${kind}_boundary`;
+  const rx = kind === 'zone' ? /zone.*bound|bound.*zone/ : /ward.*bound|bound.*ward/;
+  const table = tables.includes(preferred) ? preferred : tables.find((n) => rx.test(n));
+  if (!table) return null;
+  const colsRes = await pool.query(
+    `SELECT column_name, udt_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2`,
+    [schema, table]
+  );
+  const noCol = colsRes.rows.find((r) => r.column_name.toLowerCase() === `${kind}_no`)?.column_name;
+  const geomCol = colsRes.rows.find((r) => r.udt_name === 'geometry' || r.udt_name === 'geography')?.column_name;
+  if (!noCol || !geomCol) return null;
+  const sridRes = await pool.query(
+    `SELECT srid FROM geometry_columns WHERE f_table_schema = $1 AND f_table_name = $2 AND f_geometry_column = $3`,
+    [schema, table, geomCol]
+  );
+  return { table, noCol, geomCol, srid: sridRes.rows[0]?.srid ?? null };
+};
+
+const fetchAmenityCounts = async (schema, zoneFilter = null, wardFilter = null) => {
   const existingRes = await pool.query(
     `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
     [schema]
   );
   const tables = existingRes.rows.map((r) => r.table_name.toLowerCase());
+
+  // Some amenity tables have no zone_no/ward_no columns at all (e.g.
+  // Ayodhya's park) — for those, filter spatially: count features that
+  // intersect the selected zone/ward boundary polygon instead of
+  // silently returning the citywide total.
+  const boundarySpecs = {};
+  const getBoundarySpec = async (kind) => {
+    if (!(kind in boundarySpecs)) {
+      boundarySpecs[kind] = await findBoundarySpec(schema, tables, kind);
+    }
+    return boundarySpecs[kind];
+  };
+  const getAmenitySrid = async (tableName, geomCol) => {
+    const r = await pool.query(
+      `SELECT srid FROM geometry_columns WHERE f_table_schema = $1 AND f_table_name = $2 AND f_geometry_column = $3`,
+      [schema, tableName, geomCol]
+    );
+    return r.rows[0]?.srid ?? null;
+  };
+
   const results = await Promise.all(
     amenityTables.map(async (tableKey) => {
       const tableName = findAmenityTable(tables, tableKey);
       if (!tableName) return { tableName: tableKey, count: 0 };
-      const { rows } = await pool.query(`SELECT COUNT(*)::int AS count FROM ${schema}.${tableName}`);
-      return { tableName: tableKey, count: rows[0]?.count ?? 0 };
+
+      try {
+        // Check if the table has zone_no and ward_no columns. Keep the
+        // REAL column name (case included): some cities' amenity tables were
+        // imported with quoted UPPERCASE columns ("ZONE_NO"), which an
+        // unquoted lowercase reference can't see — the case-insensitive
+        // lookup finds it, then quoting preserves whatever case is stored.
+        const columnsRes = await pool.query(
+          `SELECT column_name, udt_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2`,
+          [schema, tableName]
+        );
+        const colNames = columnsRes.rows.map((r) => r.column_name);
+        const zoneCol = colNames.find((c) => c.toLowerCase() === 'zone_no');
+        const wardCol = colNames.find((c) => c.toLowerCase() === 'ward_no');
+        const amenityGeomCol = columnsRes.rows.find((r) => r.udt_name === 'geometry' || r.udt_name === 'geography')?.column_name;
+
+        let query = `SELECT COUNT(*)::int AS count FROM ${schema}.${tableName} a`;
+        const params = [];
+        const conditions = [];
+
+        // Column match when the column exists; spatial join against the
+        // boundary polygon when it doesn't.
+        const pushFilter = async (kind, filterValue, colName) => {
+          if (filterValue === null || filterValue === '') return;
+          if (colName) {
+            conditions.push(`a."${colName}" = $${params.length + 1}`);
+            params.push(filterValue);
+            return;
+          }
+          const spec = await getBoundarySpec(kind);
+          if (!spec || !amenityGeomCol) return;
+          const amenitySrid = await getAmenitySrid(tableName, amenityGeomCol);
+          const amenityGeom = `a."${amenityGeomCol}"`;
+          const geomExpr =
+            amenitySrid && spec.srid && amenitySrid !== spec.srid
+              ? `ST_Transform(${amenityGeom}, ${spec.srid})`
+              : amenityGeom;
+          conditions.push(
+            `EXISTS (SELECT 1 FROM ${schema}."${spec.table}" b WHERE b."${spec.noCol}" = $${params.length + 1} AND ST_Intersects(${geomExpr}, b."${spec.geomCol}"))`
+          );
+          params.push(filterValue);
+        };
+
+        await pushFilter('zone', zoneFilter, zoneCol);
+        await pushFilter('ward', wardFilter, wardCol);
+
+        if (conditions.length > 0) {
+          query += ' WHERE ' + conditions.join(' AND ');
+        }
+
+        const { rows } = await pool.query(query, params);
+        return { tableName: tableKey, count: rows[0]?.count ?? 0 };
+      } catch (err) {
+        console.error(`Amenity count failed for ${schema}.${tableName}:`, err.message);
+        return { tableName: tableKey, count: 0 };
+      }
     })
   );
   return results.reduce((acc, item) => {
@@ -611,6 +708,30 @@ router.get('/home/summary', async (req, res) => {
 
 router.get('/:city/zone-summary', getZoneSummary);
 router.get('/:city/ward-summary', getWardSummary);
+
+// New endpoint for amenity counts with zone/ward filtering
+router.get('/:city/amenities', async (req, res) => {
+  try {
+    const city = String(req.params.city).toLowerCase();
+    const schema = Object.prototype.hasOwnProperty.call(citySchemaMap, city) ? citySchemaMap[city] : null;
+    if (!schema) {
+      return res.status(404).json({ error: 'City not found' });
+    }
+
+    const { zone, ward } = req.query;
+    if ([zone, ward].some((v) => v !== undefined && typeof v !== 'string')) {
+      return res.status(400).json({ error: 'Invalid zone or ward' });
+    }
+    const zoneFilter = zone || null;
+    const wardFilter = ward || null;
+
+    const amenities = await fetchAmenityCounts(schema, zoneFilter, wardFilter);
+    res.json(amenities);
+  } catch (err) {
+    console.error('Amenity counts error:', err);
+    res.status(500).json({ error: 'Amenity counts could not be loaded' });
+  }
+});
 
 router.get('/test-db', async (req, res) => {
   const { rows } = await pool.query('SELECT NOW()');

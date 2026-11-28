@@ -716,6 +716,16 @@ body.login-page,
   background: #ffffff;
 }
 
+/* Hide browser's built-in password reveal icon (Chrome/Edge/Safari) */
+.form__input[type="password"]::-ms-reveal,
+.form__input[type="password"]::-ms-clear {
+  display: none;
+}
+
+.form__input[type="password"]::-webkit-credentials-auto-fill-button {
+  display: none;
+}
+
 .form__button {
   width: 100%;
   background: var(--color-primary);

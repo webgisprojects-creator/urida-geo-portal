@@ -5,6 +5,7 @@ import Header from "./Header";
 import MapContainer from "./MapContainer";
 import Footer from "./Footer";
 import { captureMapCanvas, drawWatermark, exportToExcel, exportToPDF } from "../utils/gisExport";
+import { resolveDssModule } from "../assets/configs/dssLayerConfig";
 import streetLightImage from "../assets/images/Street_light.JPG";
 import underdevelopedImage from "../assets/images/Underdeveloped_zones.JPG";
 import roadMaintenanceImage from "../assets/images/road.png";
@@ -709,6 +710,8 @@ const DSS = () => {
       return;
     }
     const controller = new AbortController();
+    // GeoJSON feeds the TABLE + legend counts only (the DSS table comes
+    // from the DB); the map layer is GeoServer WMS via activeDssModule.
     const url = `/api/road-networks/${city}/street-light`;
     fetch(url, { credentials: "include", signal: controller.signal })
       .then((res) => (handleUnauthorized(res) ? null : res.ok ? res.json() : null))
@@ -726,6 +729,10 @@ const DSS = () => {
           setStreetLightGeojson(null);
         }
       });
+    // ── DISABLED (MV from DB) — /street-light/counts ran a server-side ──
+    // ── GROUP BY over mv_<city>_street_light. Counts are derived from  ──
+    // ── the fetched GeoJSON above instead; kept commented for reference. ──
+    /*
     fetch(`/api/road-networks/${city}/street-light/counts`, {
       credentials: "include",
       signal: controller.signal,
@@ -744,6 +751,7 @@ const DSS = () => {
           setStreetLightCounts(null);
         }
       });
+    */
     return () => controller.abort();
   }, [streetLightVisible, city]);
 
@@ -756,6 +764,10 @@ const DSS = () => {
     setUnderdevelopedVisible(true);
     setUnderdevelopedGeojson(null);
     setUnderdevelopedCounts(null);
+    // ── DISABLED (MV from DB) — the REFRESH endpoint re-materialized the ──
+    // ── view server-side; not needed to read table data. Kept for       ──
+    // ── reference.                                                      ──
+    /*
     try {
       const res = await fetch(`/api/road-networks/${city}/underdeveloped-analysis/refresh`, {
         method: "POST",
@@ -763,6 +775,9 @@ const DSS = () => {
       });
       if (handleUnauthorized(res)) return;
     } catch { }
+    */
+    // GeoJSON feeds the TABLE + legend counts only; the map layer is
+    // GeoServer WMS via activeDssModule.
     try {
       const res = await fetch(`/api/road-networks/${city}/underdeveloped-analysis`, {
         credentials: "include",
@@ -778,6 +793,10 @@ const DSS = () => {
     } catch {
       setUnderdevelopedGeojson(null);
     }
+    // ── DISABLED (MV from DB) — /underdeveloped-analysis/counts ran a ──
+    // ── server-side GROUP BY over the MV; counts come from the fetched ──
+    // ── GeoJSON above instead. Kept commented for reference.           ──
+    /*
     try {
       const res = await fetch(`/api/road-networks/${city}/underdeveloped-analysis/counts`, {
         credentials: "include",
@@ -794,6 +813,7 @@ const DSS = () => {
     } catch {
       setUnderdevelopedCounts(null);
     }
+    */
   };
   const handleEncroachmentToggle = async () => {
     if (encroachmentVisible) {
@@ -806,13 +826,21 @@ const DSS = () => {
     setEncroachmentError("");
     setEncroachmentGeojson(null);
     setSelectedEncroachmentZone("");
+    // ── DISABLED (MV from DB) — the REFRESH endpoint re-materialized the ──
+    // ── view server-side; not needed to read table data. Kept for       ──
+    // ── reference.                                                      ──
+    /*
     try {
       const refreshRes = await fetch(`/api/road-networks/${city}/encroachment-analysis/refresh`, {
         method: "POST",
         credentials: "include",
       });
       if (handleUnauthorized(refreshRes)) return;
-
+    } catch { }
+    */
+    // GeoJSON + zone summary feed the TABLE + summary panel only; the
+    // map layer is GeoServer WMS via activeDssModule.
+    try {
       const geoRes = await fetch(`/api/road-networks/${city}/encroachment-analysis`, {
         credentials: "include",
       });
@@ -1064,11 +1092,16 @@ const DSS = () => {
     return filterGeojsonByRowIds(underdevelopedGeojson);
   }, [underdevelopedGeojson, selectedFeature, filteredRowIdSet]);
 
+  // DISABLED — used to feed the DB-GeoJSON vector overlay on the map; the
+  // DSS layer is GeoServer WMS (activeDssModule) now and the geojson only
+  // feeds the table. Kept commented for reference.
+  /*
   const encroachmentGeojsonView = useMemo(() => {
     if (!encroachmentGeojson?.features) return encroachmentGeojson;
     if (selectedFeature !== "encroachment") return encroachmentGeojson;
     return filterGeojsonByRowIds(encroachmentGeojson);
   }, [encroachmentGeojson, selectedFeature, filteredRowIdSet]);
+  */
 
   const streetLightCountsView = useMemo(() => {
     if (!streetLightVisible) return streetLightCounts;
@@ -1085,6 +1118,20 @@ const DSS = () => {
     }
     return underdevelopedCounts;
   }, [underdevelopedVisible, underdevelopedCounts, selectedFeature, hasActiveTableFilter, underdevelopedGeojsonView]);
+
+  // The DSS map layer is GeoServer WMS only — the active module's layer
+  // resolves via resolveDssModule (same contract the Dashboard DSS mode
+  // uses). The DB GeoJSON above feeds the table/legend counts and is
+  // deliberately NOT passed to MapContainer, so no DB-backed vector
+  // overlay is drawn.
+  const dssOverlayModule =
+    streetLightVisible ? "streetLight" :
+    underdevelopedVisible ? "underdeveloped" :
+    encroachmentVisible ? "encroachment" :
+    null;
+  const dssOverlayLayer = dssOverlayModule
+    ? resolveDssModule(dssOverlayModule, city)?.layer
+    : null;
 
   return (
     <div
@@ -1106,18 +1153,20 @@ const DSS = () => {
           baseMap={baseMap}
           layerVisibility={layerVisibility}
           streetViewVisible={false}
+          activeDssModule={dssOverlayModule}
+          activeDssLayer={dssOverlayLayer}
           streetLightVisible={streetLightVisible}
-          streetLightGeojson={streetLightGeojsonView}
+          streetLightGeojson={null}
           streetLightCounts={streetLightCountsView}
           streetLightFilters={streetLightFilters}
           onStreetLightFilterChange={setStreetLightFilters}
           underdevelopedVisible={underdevelopedVisible}
-          underdevelopedGeojson={underdevelopedGeojsonView}
+          underdevelopedGeojson={null}
           underdevelopedCounts={underdevelopedCountsView}
           underdevelopedFilters={underdevelopedFilters}
           onUnderdevelopedFilterChange={setUnderdevelopedFilters}
           encroachmentVisible={encroachmentVisible}
-          encroachmentGeojson={encroachmentGeojsonView}
+          encroachmentGeojson={null}
           encroachmentZone={selectedEncroachmentZone}
           encroachmentTotals={encroachmentTotals}
           onRoadFilterChange={() => {}}
@@ -1667,7 +1716,7 @@ const DSS = () => {
                           </td>
                         )}
                         {tableColumns.map((col) => (
-                          <td key={col.key}>
+                          <td key={col.key} title={row[col.key] === null || row[col.key] === undefined ? "" : String(row[col.key])}>
                             {["row_meter", "carriage_w", "length_km"].includes(col.key) &&
                               row[col.key] !== null &&
                               row[col.key] !== undefined

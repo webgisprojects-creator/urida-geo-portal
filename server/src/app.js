@@ -12,7 +12,7 @@ import authRoutes from './routes/authRoutes.js';
 // import chainageRoutes from './routes/chainage.js';
 import adminRoutes from './routes/adminRoutes.js';
 import roadNetworkRoutes from './roadNetwork.js';
-import { auditLogger, tryVerifyToken, verifyToken, verifyRole, startActiveTokensRetentionSchedule } from './middleware/authMiddleware.js';
+import { auditLogger, tryVerifyToken, verifyToken, verifyRole, startActiveTokensRetentionSchedule, startActiveTokensExpirySchedule, runActiveTokensExpiryCheck } from './middleware/authMiddleware.js';
 import { pool } from './config/db.js';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import chainageRoutes from "./routes/chainage.js";//chainage
@@ -243,6 +243,10 @@ if (isSingletonWorker) {
   startTileCacheEvictionSchedule();
   startWfsCacheEvictionSchedule();
   startActiveTokensRetentionSchedule();
+  startActiveTokensExpirySchedule();
+  // Run an immediate expiry check on startup to clean up stale sessions
+  // that accumulated while the server was down
+  runActiveTokensExpiryCheck().catch(err => console.error('Initial expiry check failed:', err));
   startCacheWarmer();
 }
 startMetricsSampler();

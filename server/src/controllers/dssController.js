@@ -1,3 +1,8 @@
+// DSS table-data handlers — the GeoJSON/summary endpoints below are live
+// because the DSS TABLE reads from the DB (product requirement). The DSS
+// map layer + legend colors come from GeoServer. Refresh/counts/health
+// handlers here are unreachable — their routes in roadNetwork.js stay
+// commented out.
 import { pool } from '../config/db.js';
 import { citySchemaMap, getCityUtmEpsg, getCityOwnershipConfig } from '../config/cityConfig.js';
 
@@ -713,13 +718,22 @@ export const getEncroachmentSummary = async (req, res) => {
   try {
     const city = req.params.cityCode;
     const { mvQualified, ownershipCode } = await ensureEncroachmentSummaryView(city, { refresh: false });
+    // One row per zone. The published view holds one row per encroached road with
+    // the zone totals repeated on each, and has no percentage column.
     const summarySql = `
       SELECT
-        zone_no::text AS zone_no,
-        total_roads::int AS total_roads,
-        encroached_roads::int AS encroached_roads,
-        encroachment_percentage::float AS encroachment_percentage
-      FROM ${mvQualified}
+        zone_no,
+        total_roads,
+        encroached_roads,
+        COALESCE(ROUND(encroached_roads * 100.0 / NULLIF(total_roads, 0), 2), 0)::float AS encroachment_percentage
+      FROM (
+        SELECT
+          zone_no::text AS zone_no,
+          MAX(total_roads)::int AS total_roads,
+          MAX(encroached_roads)::int AS encroached_roads
+        FROM ${mvQualified}
+        GROUP BY 1
+      ) z
       ORDER BY
         CASE WHEN zone_no ~ '^[0-9]+$' THEN 0 ELSE 1 END,
         CASE WHEN zone_no ~ '^[0-9]+$' THEN zone_no::int END,

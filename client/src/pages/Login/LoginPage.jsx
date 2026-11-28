@@ -26,6 +26,7 @@ export default function LoginPage() {
   const [showLogin, setShowLogin] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [captcha, setCaptcha] = useState("");
   const [captchaImage, setCaptchaImage] = useState("");
   // Plaintext captcha characters, used only to drive the audio button below
@@ -62,7 +63,11 @@ export default function LoginPage() {
     // often run together or mispronounce as a single token — the previous
     // version never spoke the captcha at all, just a fixed instruction
     // string, regardless of what was actually on screen.
-    const spoken = captchaAudioText.split("").join(", ");
+    // The answer is case-sensitive, so say which letters are capitals.
+    const spoken = captchaAudioText
+      .split("")
+      .map((ch) => (/[A-Z]/.test(ch) ? `capital ${ch}` : /[a-z]/.test(ch) ? `small ${ch.toUpperCase()}` : ch))
+      .join(", ");
     const utterance = new SpeechSynthesisUtterance(spoken);
     utterance.rate = 0.8;
     utterance.pitch = 1;
@@ -408,14 +413,34 @@ export default function LoginPage() {
                   className="form__input"
                 />
               </div>
-              <div className="form__input-group">
+              <div className="form__input-group" style={{ position: "relative" }}>
                 <input
-                  type="password"
+                  type={showPassword ? "text" : "password"}
                   placeholder="Password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="form__input"
+                  style={{ paddingRight: "40px" }}
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  style={{
+                    position: "absolute",
+                    right: "10px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "#666",
+                    fontSize: "16px",
+                    padding: "0",
+                  }}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  <i className={`fa-solid ${showPassword ? "fa-eye-slash" : "fa-eye"}`} />
+                </button>
               </div>
               <div className="form__input-group">
                 <div className="captcha-panel">
@@ -459,11 +484,14 @@ export default function LoginPage() {
               <div className="form__input-group">
                 <input
                   type="text"
-                  placeholder="Enter CAPTCHA"
+                  placeholder="Enter CAPTCHA (case-sensitive)"
                   value={captcha}
                   onChange={(e) => setCaptcha(e.target.value)}
                   className="form__input"
                   autoComplete="off"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                 />
               </div>
               <button type="submit" className="form__button" disabled={loading}>

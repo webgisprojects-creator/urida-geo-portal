@@ -1,0 +1,89 @@
+{
+  "CM_GRID_WMS": {
+    "agra": {
+      "Phase2": { "ws": "Phase_2", "layer": "Agra_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Agra_Phase_3" }
+    },
+    "aligarh": {
+      "Phase1": { "ws": "Phase_1", "layer": "Aligarh_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Aligarh_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Aligarh_Phase_3" }
+    },
+    "ayodhya": {
+      "Phase1": { "ws": "Phase_1", "layer": "Ayodhya_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Ayodhya_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Ayodhya_Phase_3" }
+    },
+    "bareilly": {
+      "Phase1": { "ws": "Phase_1", "layer": "Bareilly_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Bareilly_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Bareilly_Phase_3" }
+    },
+    "firozabad": {
+      "Phase1": { "ws": "Phase_1", "layer": "Firozabad_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Firozabad_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Firozabad_Phase_3" }
+    },
+    "ghaziabad": {
+      "Phase1": { "ws": "Phase_1", "layer": "Ghaziabad_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Ghaziabad_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Ghaziabad_Phase_3" }
+    },
+    "gorakhpur": {
+      "Phase1": { "ws": "Phase_1", "layer": "Gorakhpur_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Gorakhpur_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Gorakhpur_Phase_3" }
+    },
+    "jhansi": {
+      "Phase1": { "ws": "Phase_1", "layer": "Jhansi_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Jhansi_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Jhansi_Phase_3" }
+    },
+    "kanpur": {
+      "Phase1": { "ws": "Phase_1", "layer": "Kanpur_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Kanpur_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Kanpur_Phase_3" }
+    },
+    "lucknow": {
+      "Phase1": { "ws": "Phase_1", "layer": "Lucknow_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Lucknow_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Lucknow_Phase_3" },
+      "GPR": { "ws": "GPR_Layer", "layer": "GPR_Data" }
+    },
+    "mathura": {
+      "Phase1": { "ws": "Phase_1", "layer": "Mathura_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Mathura_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Mathura_Phase_3" }
+    },
+    "meerut": {
+      "Phase1": { "ws": "Phase_1", "layer": "Meerut_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Meerut_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Meerut_Phase_3" }
+    },
+    "moradabad": {
+      "Phase1": { "ws": "Phase_1", "layer": "Moradabad_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Moradabad_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Moradabad_Phase_3" }
+    },
+    "prayagraj": {
+      "Phase1": { "ws": "Phase_1", "layer": "Prayagraj_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Prayagraj_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Prayagraj_Phase_3" }
+    },
+    "saharanpur": {
+      "Phase1": { "ws": "Phase_1", "layer": "Saharanpur_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Saharanpur_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Saharanpur_Phase_3" }
+    },
+    "shahjahanpur": {
+      "Phase1": { "ws": "Phase_1", "layer": "Shahjahanpur_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Shahjahanpur_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Shahjahanpur_Phase_3" }
+    },
+    "varanasi": {
+      "Phase1": { "ws": "Phase_1", "layer": "Varanasi_Phase_1" },
+      "Phase2": { "ws": "Phase_2", "layer": "Varanasi_Phase_2" },
+      "Phase3": { "ws": "Phase_3", "layer": "Varanasi_Phase_3" }
+    }
+  }
+}

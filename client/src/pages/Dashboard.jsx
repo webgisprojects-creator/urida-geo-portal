@@ -20,6 +20,7 @@ import ChartPanel from "../components/ChartPanel";
 import { cityConfig } from "../assets/configs/cityConfig.js";
 import { getGeoserverBase } from "../utils/geoserverBase";
 import { isChainageAvailable } from "../utils/chainageAvailability"; //chainage
+import { isStreetViewAvailable, streetViewUnavailableMessage } from "../utils/streetViewAvailability";
 import {
   resolveDssModule,
   dssPendingToastMessage,
@@ -29,12 +30,28 @@ import {
   buildDssWfsTableUrl,
   flattenDssFeatures,
   buildDssLegendCounts,
+  buildDssLegendCountsFromGroups,
   buildDssColumns,
+  dssLegendKeyFromRule,
 } from "../assets/configs/dssLayerConfig.js";
 const GEOSERVER_BASE = getGeoserverBase();
 
 // ⭐ Internal Component for Filter Dropdown
 const NUMERIC_COLS = ['yoc', 'row_meter', 'carriage_w', 'length_km'];
+
+// Preferred column order for the drainage specialized table. Any columns
+// present in the data but not listed here are appended after these (see
+// genericTableColumns), so name variants are safe to include.
+const DRAINAGE_COLUMN_ORDER = [
+  "gis_id", "gisid",
+  "zone_no", "zone_name",
+  "ward_no", "ward_name",
+  "ownership", "status", "type",
+  "const_year", "constyear",
+  "condition", "material",
+  "length", "length_km",
+  "depth", "width",
+];
 
 // Keeps the top-loading-strip message short and readable regardless of how
 // many things happen to be loading at once — a long comma-joined list of
@@ -49,7 +66,6 @@ function formatLoadingMessage(labels) {
   return `Loading ${list[0]}, ${list[1]} and ${list.length - 2} more, please wait…`;
 }
 
-const normalizeLegendToken = (value) => String(value || "").trim().toUpperCase().replace(/[\s_-]+/g, "");
 const getLegendRuleColor = (rule) => {
   const symbolizers = Array.isArray(rule?.symbolizers) ? rule.symbolizers : [];
   for (const sym of symbolizers) {
@@ -59,17 +75,12 @@ const getLegendRuleColor = (rule) => {
   }
   return null;
 };
-const getStreetLightLegendKeyFromRule = (rule) => {
-  const candidates = [rule?.title, rule?.name];
-  for (const candidate of candidates) {
-    const token = normalizeLegendToken(candidate);
-    if (!token) continue;
-    if (token.includes("NONILLUMINATED")) return "nonIlluminated";
-    if (token === "ILLUMINATED" || token.includes("ILLUMINATED")) return "illuminated";
-    if (token.includes("OTHER") || token === "NA") return "others";
-  }
-  return null;
-};
+// Maps a GeoServer legend rule to the DSS legend item key — shared logic
+// lives in dssLayerConfig (dssLegendKeyFromRule) so map styles and legend
+// swatches always agree on which class a rule colors.
+const getDssLegendKeyFromRule = (moduleKey, rule) =>
+  dssLegendKeyFromRule(moduleKey, rule?.title) ||
+  dssLegendKeyFromRule(moduleKey, rule?.name);
 
 const RangeSlider = ({ col, min, max, value, onChange }) => {
   const [lo, setLo] = React.useState(value?.[0] ?? min);
@@ -148,16 +159,31 @@ const RangeSlider = ({ col, min, max, value, onChange }) => {
   );
 };
 
-const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, city, baseFilter, columnFilters, onRangePreview, datasetKind, localRows, networkId }) => {
+const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, city, baseFilter, columnFilters, onRangePreview, datasetKind, localRows, networkId, dssModule, dssSearch }) => {
   const isSpecialized = datasetKind === "specialized";
   const isDrainage = isSpecialized && networkId === "drainage";
-  const isNumericCol = !isSpecialized && NUMERIC_COLS.includes(column.key);
-  const [selected, setSelected] = useState(currentFilters || []);
+  // DSS tables are server-paginated — localRows only holds the fetched
+  // batch, so distinct options must come from a server-side DISTINCT query
+  // over the whole DSS view instead of the loaded rows.
+  const isDssDataset = datasetKind === "dss";
+  // Local datasets (specialized networks, analysis results) filter their
+  // already-loaded rows client-side — they get distinct-value lists from
+  // localRows and never the numeric range slider (range produces CQL for
+  // the road_net server query, which a local table can't evaluate).
+  const isLocalDataset = isSpecialized || datasetKind === "analysis";
+  // DSS numeric columns (yoc, row_meter, carriage_w, length_km) get the same
+  // range UI as the road table — the range is shipped to the DSS endpoints
+  // as a { type: "range" } filter instead of CQL.
+  const isNumericCol = !isLocalDataset && NUMERIC_COLS.includes(column.key);
+  // {type:"range"}/{type:"op"} objects are valid filter values (slider /
+  // Query panel) but have no checkbox state — only seed from real arrays.
+  const [selected, setSelected] = useState(Array.isArray(currentFilters) ? currentFilters : []);
   const [distinctValues, setDistinctValues] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [rangeValue, setRangeValue] = useState(null); // [lo, hi] for numeric
+  const [yocYears, setYocYears] = useState([]); // distinct YOC years for the To/From selects
 
   const sortDistinctValues = (values) => {
     if (isNumericCol) return values; // skip sort for numeric — only need min/max
@@ -173,12 +199,36 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
     });
   };
 
+  // Reduce a distinct-value list to the [min, max] pair the range UI needs —
+  // for YOC also the sorted list of real year values for the To/From selects.
+  const applyNumericDistinct = (raw) => {
+    const nums = raw.map(Number).filter(Number.isFinite);
+    if (column.key === "yoc") {
+      // YOC rows contain non-year junk (0, 5, 2026 etc.) — the
+      // To/From selects and Min/Max labels only use values that
+      // are actually years present in the column.
+      const years = [...new Set(
+        nums.filter((n) => Number.isInteger(n) && n >= 1900 && n <= 2100)
+      )].sort((a, b) => a - b);
+      setYocYears(years);
+      const minV = years.length ? years[0] : 0;
+      const maxV = years.length ? years[years.length - 1] : 0;
+      setDistinctValues([minV, maxV]);
+      setRangeValue([minV, maxV]);
+    } else {
+      const minV = nums.length ? Math.min(...nums) : 0;
+      const maxV = nums.length ? Math.max(...nums) : 0;
+      setDistinctValues([minV, maxV]);
+      setRangeValue([minV, maxV]);
+    }
+  };
+
   useEffect(() => {
     let active = true;
     setLoading(true);
     setError(null);
 
-    if (isSpecialized) {
+    if (isLocalDataset) {
       const rows = Array.isArray(localRows) ? localRows : [];
       const uniq = new Set();
 
@@ -208,6 +258,42 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
         setDistinctValues(values);
         setLoading(false);
       }
+      return () => {
+        active = false;
+      };
+    }
+
+    if (isDssDataset) {
+      const otherFilters = { ...(columnFilters || {}) };
+      delete otherFilters[column.key];
+      const params = new URLSearchParams({
+        search: String(dssSearch || ""),
+        filters: JSON.stringify(otherFilters),
+      });
+      // Non-YOC numeric columns only need min/max — computed server-side so
+      // a >5000-value distinct list can't truncate the range endpoints.
+      const numericParam = isNumericCol && column.key !== "yoc" ? "&numeric=1" : "";
+      fetch(`/api/road-networks/${city}/dss/${dssModule}/distinct/${encodeURIComponent(column.key)}?${params}${numericParam}`)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then(data => {
+          if (!active) return;
+          if (data.error) { setError(data.error); setLoading(false); return; }
+          const raw = (Array.isArray(data) ? data : [])
+            .filter(v => v !== null && v !== undefined && v !== "");
+          if (isNumericCol) {
+            applyNumericDistinct(raw);
+          } else {
+            setDistinctValues(sortDistinctValues(raw.map(v => String(v))));
+          }
+          setLoading(false);
+        })
+        .catch(err => {
+          console.error("Error fetching DSS distinct values:", err);
+          if (active) { setError(err.message); setLoading(false); }
+        });
       return () => {
         active = false;
       };
@@ -248,11 +334,7 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
             .filter(v => v !== null && v !== undefined && v !== "");
 
           if (isNumericCol) {
-            const nums = raw.map(Number).filter(Number.isFinite);
-            const minV = nums.length ? Math.min(...nums) : 0;
-            const maxV = nums.length ? Math.max(...nums) : 0;
-            setDistinctValues([minV, maxV]);
-            setRangeValue([minV, maxV]);
+            applyNumericDistinct(raw);
           } else {
             const valid = raw.map(v => {
               if (["row_meter", "carriage_w", "length_km"].includes(column.key)) return Number(v).toFixed(2);
@@ -269,7 +351,7 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
       });
 
     return () => { active = false; };
-  }, [column.key, city, baseFilter, columnFilters, isSpecialized, localRows]);
+  }, [column.key, city, baseFilter, columnFilters, isLocalDataset, localRows, isDssDataset, dssModule, dssSearch]);
 
   const filteredValues = isNumericCol ? [] : distinctValues.filter(val =>
     val.toLowerCase().includes(searchTerm.toLowerCase())
@@ -350,18 +432,48 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
         ) : error ? (
           <div style={{ padding: "8px", color: "red", fontSize: 12 }}>Error: {error}</div>
         ) : isNumericCol ? (
-          <RangeSlider
-            col={column}
-            min={numMin}
-            max={numMax}
-            value={rangeValue || [numMin, numMax]}
-            onChange={(nextRange) => {
-              setRangeValue(nextRange);
-              if (onRangePreview) {
-                onRangePreview(buildCombinedFilter(nextRange));
-              }
-            }}
-          />
+          column.key === "yoc" ? (
+            // YOC: To/From selects listing the years that actually exist
+            // in the YOC column (first box is To, second is From).
+            <div style={{ padding: "12px 8px", display: "flex", flexDirection: "column", gap: 8 }}>
+              {[{ label: "To", idx: 1 }, { label: "From", idx: 0 }].map(({ label, idx }) => (
+                <div key={label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 38, fontSize: 12, fontWeight: 600, color: "#1e40af" }}>{label}</span>
+                  <select
+                    value={(rangeValue || [numMin, numMax])[idx]}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      const cur = rangeValue || [numMin, numMax];
+                      const next = idx === 0 ? [v, cur[1]] : [cur[0], v];
+                      setRangeValue(next);
+                      if (onRangePreview) onRangePreview(buildCombinedFilter(next));
+                    }}
+                    style={{ flex: 1, padding: "4px 8px", borderRadius: 4, border: "1px solid #cbd5e1", fontSize: 12, color: "#1e40af", fontWeight: 600 }}
+                  >
+                    {yocYears.map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#64748b" }}>
+                <span>Min: {numMin}</span><span>Max: {numMax}</span>
+              </div>
+            </div>
+          ) : (
+            <RangeSlider
+              col={column}
+              min={numMin}
+              max={numMax}
+              value={rangeValue || [numMin, numMax]}
+              onChange={(nextRange) => {
+                setRangeValue(nextRange);
+                if (onRangePreview) {
+                  onRangePreview(buildCombinedFilter(nextRange));
+                }
+              }}
+            />
+          )
         ) : filteredValues.length > 0 ? (
           <>
             <label style={{ display: "block", marginBottom: "6px", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#3b82f6", borderBottom: "1px solid #e2e8f0", paddingBottom: 4 }}>
@@ -414,8 +526,10 @@ const FilterDropdown = ({ column, currentFilters, onApply, onClose, position, ci
           style={{ flex: 1, padding: "5px 8px", background: "#3b82f6", color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
           onClick={() => {
             if (isNumericCol && rangeValue) {
-              const [lo, hi] = rangeValue;
-              if (Number.isFinite(lo) && Number.isFinite(hi)) {
+              const [a, b] = rangeValue;
+              if (Number.isFinite(a) && Number.isFinite(b)) {
+                const lo = Math.min(a, b);
+                const hi = Math.max(a, b);
                 onApply(`${column.key} >= ${lo} AND ${column.key} <= ${hi}`);
               } else {
                 onApply([]);
@@ -547,9 +661,12 @@ const DashboardPage = () => {
   // /chainage page. "/chainage" deep links (e.g. from the mobile field-task
   // app) redirect here with ?mode=CHAINAGE preserved, so this also picks
   // that up on load. //chainage
-  const [mode, setMode] = useState(() =>
-    new URLSearchParams(location.search).get("mode") === "CHAINAGE" ? "CHAINAGE" : "DASHBOARD"
-  ); //chainage
+  const [mode, setMode] = useState(() => {
+    // mode=DSS is restored on refresh too — the DSS-mode persistence
+    // effect below keeps the URL in sync as the user toggles modes/modules.
+    const urlMode = new URLSearchParams(location.search).get("mode");
+    return urlMode === "CHAINAGE" ? "CHAINAGE" : urlMode === "DSS" ? "DSS" : "DASHBOARD";
+  }); //chainage
   const handleChainageToggle = () => {
     setMode((m) => {
       if (m === "CHAINAGE") {
@@ -598,6 +715,32 @@ const DashboardPage = () => {
   const [dssTableMessage, setDssTableMessage] = useState("");
   const [dssTableMinimized, setDssTableMinimized] = useState(false);
   const [dssSearchQuery, setDssSearchQuery] = useState("");
+  //s2
+
+const dssPageSize = 100;
+const [dssCurrentPage, setDssCurrentPage] = useState(1);
+const [dssTotalRows, setDssTotalRows] = useState(0);
+const [dssTotalLengthKm, setDssTotalLengthKm] = useState(null);
+
+// Remember the first 1000 records.
+const dssFirstBatchRef = useRef(null);
+
+// Pages 1-10 use batch 1.
+// Pages 11+ request their own page.
+const dssRequestPage = dssCurrentPage <= 10
+  ? 1
+  : dssCurrentPage;
+
+const [dssDebouncedSearch, setDssDebouncedSearch] = useState("");
+
+useEffect(() => {
+  const timer = setTimeout(() => {
+    setDssDebouncedSearch(dssSearchQuery.trim());
+  }, 350);
+
+  return () => clearTimeout(timer);
+}, [dssSearchQuery]);
+
   const dssTableAbortRef = useRef(null);
   const dssAvailabilityAbortRef = useRef(null);
 
@@ -635,6 +778,11 @@ const DashboardPage = () => {
   const clearDssDisplayState = useCallback(() => {
     dssTableAbortRef.current?.abort();
     setDssAllRows([]);
+    //s2
+     dssFirstBatchRef.current = null;
+  setDssTotalRows(0);
+  setDssTotalLengthKm(null);
+  setDssCurrentPage(1);
     setDssColumnFilters({});
     setDssTableStatus(null);
     setDssTableMessage("");
@@ -656,6 +804,13 @@ const DashboardPage = () => {
         clearDssDisplayState();
         dssAvailabilityAbortRef.current?.abort();
         setDssCheckingModule(null);
+        // A road picked via the DSS search/map belongs to the DSS picture —
+        // drop it on exit so the shared zoom/selection state doesn't get
+        // re-fetched against the road-network endpoints as a stale remnant.
+        setZoomFilter("");
+        setSelectedRoad("");
+        setSelectedRoadId(null);
+        setSelectedRoadIds([]);
         return "DASHBOARD";
       }
       return "DSS";
@@ -668,6 +823,8 @@ const DashboardPage = () => {
   // table) or leave the map with no DSS layer and show the pending toast.
   // Never leaves a stale module's layer/table/legend on screen while a new
   // one is being checked.
+  // Returns true when the module was actually activated — the Query panel
+  // awaits this before applying filters to a not-yet-active DSS layer.
   const handleDssModuleSelect = async (moduleKey) => {
     setActiveDssModule(null);
     clearDssDisplayState();
@@ -681,7 +838,7 @@ const DashboardPage = () => {
         dedupeKey: `dss-pending|${city}|${moduleKey}`,
         autoDismissMs: 4000,
       });
-      return;
+      return false;
     }
 
     // Already confirmed READY earlier this city session — activate
@@ -691,7 +848,7 @@ const DashboardPage = () => {
     // and reliable rather than re-probing GeoServer every single click.
     if (getDssModuleStatus(moduleKey) === DSS_STATUS.READY) {
       setActiveDssModule(moduleKey);
-      return;
+      return true;
     }
 
     dssAvailabilityAbortRef.current?.abort();
@@ -702,10 +859,10 @@ const DashboardPage = () => {
     try {
       status = await checkDssLayerAvailability(GEOSERVER_BASE, resolved.layer, { signal: controller.signal });
     } catch (err) {
-      if (err?.name === "AbortError") return; // superseded by a newer click
+      if (err?.name === "AbortError") return false; // superseded by a newer click
       status = DSS_STATUS.WFS_ERROR;
     }
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted) return false;
     setDssCheckingModule(null);
     setDssModuleStatus(moduleKey, status);
 
@@ -716,11 +873,56 @@ const DashboardPage = () => {
         dedupeKey: `dss-pending|${city}|${moduleKey}`,
         autoDismissMs: 4000,
       });
-      return;
+      return false;
     }
 
     setActiveDssModule(moduleKey);
+    return true;
   };
+
+  // Keep the DSS mode + active module mirrored in the URL so a browser
+  // refresh lands back on the same DSS page instead of falling back to
+  // the road network. Written via history.replaceState (not navigate) so
+  // react-router's `location` — and every effect keyed on
+  // location.search — stays stable; the params are only read back by the
+  // mount-time mode init above and the restore effect below on the next
+  // full page load. Other params (city, chainage deep-link params) are
+  // never touched: a non-DSS mode only deletes the params this effect
+  // owns.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const before = params.toString();
+    if (mode === "DSS") {
+      params.set("mode", "DSS");
+      if (activeDssModule) params.set("dss_module", activeDssModule);
+      else params.delete("dss_module");
+    } else {
+      if (params.get("mode") === "DSS") params.delete("mode");
+      params.delete("dss_module");
+    }
+    const next = params.toString();
+    if (next !== before) {
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash}`
+      );
+    }
+  }, [mode, activeDssModule]);
+
+  // Refresh restore: when the page loads straight into DSS mode
+  // (mode=DSS in the URL), re-run the normal module-selection path —
+  // live WFS availability probe + table/legend setup — for the module
+  // saved in dss_module. Once only, so a later manual DSS toggle doesn't
+  // re-trigger it.
+  const dssModuleRestoreRef = useRef(false);
+  useEffect(() => {
+    if (dssModuleRestoreRef.current || !isDssMode) return;
+    dssModuleRestoreRef.current = true;
+    const mod = new URLSearchParams(window.location.search).get("dss_module");
+    if (mod && resolveDssModule(mod, city)) handleDssModuleSelect(mod);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDssMode]);
 
   // ⭐ NEW: Generic Layer Filters (for Attribute Query)
   const [layerFilters, setLayerFilters] = useState({});
@@ -797,6 +999,13 @@ const DashboardPage = () => {
     columns: null,
   });
   const [tableRows, setTableRows] = useState([]);
+  // True when `tableRows` holds exactly ONE server-side page of the
+  // filtered result set (fetched with page/limit - see the road-table
+  // fetch effect). Pagination then skips client-side slicing and every
+  // page navigation fetches its own page from /details. False when
+  // tableRows is a complete local result set (analysis / spatial query /
+  // specialized flows) that still needs client-side slicing.
+  const [tableRowsAreServerPage, setTableRowsAreServerPage] = useState(false);
   const [globalTableMetrics, setGlobalTableMetrics] = useState({ total_roads: 0, total_length_km: 0 });
 
   // Debug logging for tableRows changes
@@ -810,6 +1019,9 @@ const DashboardPage = () => {
   const [columnFilters, setColumnFilters] = useState({});
   const [specializedAllRows, setSpecializedAllRows] = useState([]);
   const [specializedColumnFilters, setSpecializedColumnFilters] = useState({});
+  // Analysis-table filters live in their own bucket — they must filter
+  // the loaded analysis rows locally, never the whole road_net table.
+  const [analysisColumnFilters, setAnalysisColumnFilters] = useState({});
   const [isLoading, setIsLoading] = useState(false); // ⭐ NEW: Global loading state
   const [loadingLabels, setLoadingLabels] = useState([]); // Friendly names of whatever's currently loading
   // Reference-counted loading registry: any number of independent things
@@ -875,6 +1087,7 @@ const DashboardPage = () => {
       roadFilter,
       zoomFilter,
       tableRows,
+      tableRowsAreServerPage,
       currentPage,
       selectedRoad,
       selectedRoadId,
@@ -895,6 +1108,7 @@ const DashboardPage = () => {
     roadFilter,
     zoomFilter,
     tableRows,
+    tableRowsAreServerPage,
     currentPage,
     selectedRoad,
     selectedRoadId,
@@ -1107,64 +1321,148 @@ const DashboardPage = () => {
   // BBOX-aware DSS table fetch — reruns whenever the active module or the
   // current map viewport (mapExtent, already debounced upstream by
   // MapContainer's own moveend handler) changes. Aborts any in-flight
-  // request from a previous module/extent. Deliberately hits GeoServer WFS
-  // directly (never the DB-rendered /api/road-networks endpoints).
-  useEffect(() => {
-    if (!isDssMode || !activeDssModule) return undefined;
-    const resolved = resolveDssModule(activeDssModule, city);
-    if (!resolved?.layer) return undefined;
+  // request from a previous module/extent. Reads the module's MV via
+  // /api/road-networks — the DSS table comes from the DB; the map layer
+  // and legend colors come from GeoServer.
+  //s2
 
-    dssTableAbortRef.current?.abort();
-    const controller = new AbortController();
-    dssTableAbortRef.current = controller;
-    setDssTableStatus("loading");
-    setDssTableMessage("");
+useEffect(() => {
+  if (!isDssMode || !activeDssModule) return undefined;
 
-    const url = buildDssWfsTableUrl(GEOSERVER_BASE, resolved.layer, mapExtent, 500);
-    fetch(url, { signal: controller.signal })
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        if (controller.signal.aborted) return;
-        const rows = flattenDssFeatures(data?.features);
-        setDssAllRows(rows);
-        setDssColumnFilters({});
-        setDssTableStatus(rows.length ? "ready" : "empty");
-        setDssTableMessage(rows.length ? "" : "No DSS records in current map area.");
-      })
-      .catch((err) => {
-        if (controller.signal.aborted) return;
-        setDssTableStatus("error");
-        setDssTableMessage("DSS table data could not be loaded right now.");
-        console.error("DSS WFS table fetch error:", err);
-      });
+  const key = JSON.stringify([
+    city,
+    activeDssModule,
+    dssDebouncedSearch,
+    dssColumnFilters
+  ]);
 
-    return () => controller.abort();
-  }, [isDssMode, activeDssModule, city, mapExtent]);
+  // Reuse cached 1000 records on pages 1-10.
+  if (
+    dssRequestPage === 1 &&
+    dssFirstBatchRef.current?.key === key
+  ) {
+    const cached = dssFirstBatchRef.current;
+    setDssAllRows(cached.rows);
+    setDssTotalRows(cached.total);
+    setDssTotalLengthKm(cached.totalLengthKm ?? null);
+    setDssTableStatus(cached.rows.length ? "ready" : "empty");
+    return undefined;
+  }
 
-  const dssFilteredRows = useMemo(() => {
-    const filtered = Object.entries(dssColumnFilters).some(([, v]) => Array.isArray(v) && v.length > 0)
-      ? applySpecializedFilters(dssAllRows, dssColumnFilters)
-      : dssAllRows;
-    const q = dssSearchQuery.trim().toLowerCase();
-    if (!q) return filtered;
-    return filtered.filter((row) =>
-      Object.values(row || {}).some((v) => v !== null && v !== undefined && String(v).toLowerCase().includes(q))
-    );
-  }, [dssAllRows, dssColumnFilters, dssSearchQuery, applySpecializedFilters]);
+  const controller = new AbortController();
+  dssTableAbortRef.current = controller;
+
+  setDssTableStatus("loading");
+  setDssTableMessage("");
+
+  const firstBatch = dssRequestPage === 1;
+
+  const params = new URLSearchParams({
+    page: String(dssRequestPage),
+    limit: String(firstBatch ? 1000 : 100),
+    includeTotal: firstBatch ? "1" : "0",
+    search: dssDebouncedSearch,
+    filters: JSON.stringify(dssColumnFilters)
+  });
+
+  fetch(
+    `/api/road-networks/${city}/dss/${activeDssModule}/rows?${params}`,
+    { signal: controller.signal }
+  )
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then(result => {
+      if (controller.signal.aborted) return;
+
+      const rows = result.data || [];
+
+      if (firstBatch) {
+        const total = result.total ?? 0;
+        const totalLengthKm = result.total_length_km ?? null;
+
+        dssFirstBatchRef.current = { key, rows, total, totalLengthKm };
+        setDssTotalRows(total);
+        setDssTotalLengthKm(totalLengthKm);
+      }
+
+      setDssAllRows(rows);
+      setDssTableStatus(rows.length ? "ready" : "empty");
+      setDssTableMessage(
+        rows.length ? "" : "No matching DSS records."
+      );
+    })
+    .catch(err => {
+      if (controller.signal.aborted) return;
+
+      console.error("DSS fetch error:", err);
+      setDssTableStatus("error");
+      setDssTableMessage("Unable to load DSS data.");
+    });
+
+  return () => controller.abort();
+}, [
+  isDssMode,
+  activeDssModule,
+  city,
+  dssRequestPage,
+  dssDebouncedSearch,
+  dssColumnFilters
+]);
+
+
+  //s2
+  const dssFilteredRows = dssAllRows;
 
   const dssColumns = useMemo(
     () => (activeDssModule ? buildDssColumns(activeDssModule, dssFilteredRows) : []),
     [activeDssModule, dssFilteredRows]
   );
-  const dssLegendItems = useMemo(
-    () => (activeDssModule ? buildDssLegendCounts(activeDssModule, dssFilteredRows) : []),
-    [activeDssModule, dssFilteredRows]
-  );
+  // Server-side GROUP BY counts for the module's category column — the
+  // table is server-paginated, so counting loaded rows (dssAllRows) would
+  // only ever reflect the fetched batch. Honors the same search + filters
+  // as the rows endpoint so legend counts mirror the filtered view.
+  const [dssCategoryGroups, setDssCategoryGroups] = useState(null);
+  const dssCategoryField = activeDssModuleConfig?.categoryField || null;
   useEffect(() => {
-    if (!isDssMode || activeDssModule !== "streetLight" || !activeDssModuleConfig?.layer) {
+    if (!isDssMode || !activeDssModule || !dssCategoryField) {
+      setDssCategoryGroups(null);
+      return undefined;
+    }
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      search: dssDebouncedSearch,
+      filters: JSON.stringify(dssColumnFilters),
+    });
+    fetch(
+      `/api/road-networks/${city}/dss/${activeDssModule}/counts/${encodeURIComponent(dssCategoryField)}?${params}`,
+      { signal: controller.signal }
+    )
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        if (!controller.signal.aborted) setDssCategoryGroups(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        // Keep null (not []) on failure so the legend falls back to
+        // row-counting instead of rendering all-zero counts.
+        if (!controller.signal.aborted) setDssCategoryGroups(null);
+      });
+    return () => controller.abort();
+  }, [isDssMode, activeDssModule, dssCategoryField, city, dssDebouncedSearch, dssColumnFilters]);
+
+  const dssLegendItems = useMemo(() => {
+    if (!activeDssModule) return [];
+    const grouped = dssCategoryGroups
+      ? buildDssLegendCountsFromGroups(activeDssModule, dssCategoryGroups)
+      : null;
+    if (grouped) return grouped;
+    return buildDssLegendCounts(activeDssModule, dssFilteredRows);
+  }, [activeDssModule, dssCategoryGroups, dssFilteredRows]);
+  // Legend swatch colors for EVERY DSS module come from the active
+  // layer's GeoServer style (GetLegendGraphic) — no hard-coded palette.
+  useEffect(() => {
+    if (!isDssMode || !activeDssModule || !activeDssModuleConfig?.layer) {
       setDssLegendColorMap({});
       return;
     }
@@ -1176,7 +1474,7 @@ const DashboardPage = () => {
         const rules = json?.Legend?.[0]?.rules || [];
         const next = {};
         rules.forEach((rule) => {
-          const key = getStreetLightLegendKeyFromRule(rule);
+          const key = getDssLegendKeyFromRule(activeDssModule, rule);
           const color = getLegendRuleColor(rule);
           if (key && color) next[key] = color;
         });
@@ -1203,7 +1501,15 @@ const DashboardPage = () => {
   const handleDssColumnFilterChange = (key, selectedValues) => {
     setDssColumnFilters((prev) => {
       const next = { ...prev };
-      if (Array.isArray(selectedValues) && selectedValues.length > 0) {
+      // Numeric range filters arrive as a CQL fragment ("yoc >= 2007 AND
+      // yoc <= 2025") — same shape the road table emits — but stored as a
+      // structured { type: "range" } so the DSS endpoints can parameterize it.
+      const rangeMatch = typeof selectedValues === "string"
+        ? /^\s*([A-Za-z_]\w*)\s*>=\s*(-?\d+(?:\.\d+)?)\s+AND\s+\1\s*<=\s*(-?\d+(?:\.\d+)?)\s*$/i.exec(selectedValues)
+        : null;
+      if (rangeMatch && rangeMatch[1].toLowerCase() === String(key).toLowerCase()) {
+        next[key] = { type: "range", min: Number(rangeMatch[2]), max: Number(rangeMatch[3]) };
+      } else if (Array.isArray(selectedValues) && selectedValues.length > 0) {
         next[key] = selectedValues.map(String);
       } else {
         delete next[key];
@@ -1213,13 +1519,31 @@ const DashboardPage = () => {
     setDssCurrentPage(1);
   };
 
-  const dssPageSize = 100;
-  const [dssCurrentPage, setDssCurrentPage] = useState(1);
-  useEffect(() => { setDssCurrentPage(1); }, [activeDssModule, dssSearchQuery]);
-  const dssTotalPages = Math.max(1, Math.ceil(dssFilteredRows.length / dssPageSize));
-  const dssIndexOfLast = Math.min(dssCurrentPage, dssTotalPages) * dssPageSize;
-  const dssIndexOfFirst = dssIndexOfLast - dssPageSize;
-  const dssCurrentRecords = dssFilteredRows.slice(dssIndexOfFirst, dssIndexOfLast);
+  
+  //s2
+
+useEffect(() => {
+  setDssCurrentPage(1);
+}, [activeDssModule, city, dssDebouncedSearch, dssColumnFilters]);
+
+const dssTotalPages = Math.max(
+  1,
+  Math.ceil(dssTotalRows / dssPageSize)
+);
+
+const dssCurrentRecords = dssCurrentPage <= 10
+  ? dssAllRows.slice(
+      (dssCurrentPage - 1) * dssPageSize,
+      dssCurrentPage * dssPageSize
+    )
+  : dssAllRows;
+
+const dssIndexOfFirst =
+  (dssCurrentPage - 1) * dssPageSize;
+
+const dssIndexOfLast =
+  dssIndexOfFirst + dssCurrentRecords.length;
+
 
   const specializedLayerNameRef = useRef(null);
   const buildSpecializedCqlFilter = useCallback((filters) => {
@@ -1238,6 +1562,46 @@ const DashboardPage = () => {
       .filter(Boolean)
       .join(" AND ");
   }, []);
+
+  // CQL mirror of dssColumnFilters for the DSS WMS layer — values are
+  // always quoted because MV column types vary per module (GeoServer
+  // coerces string literals to numeric bindings, but not the reverse).
+  const dssCqlFilter = useMemo(() => {
+    const isRange = (v) =>
+      v && typeof v === "object" && !Array.isArray(v) && v.type === "range" &&
+      Number.isFinite(Number(v.min)) && Number.isFinite(Number(v.max));
+    const isOp = (v) =>
+      v && typeof v === "object" && !Array.isArray(v) && v.type === "op";
+    const entries = Object.entries(dssColumnFilters || {}).filter(
+      ([, v]) => (Array.isArray(v) && v.length > 0) || isRange(v) || isOp(v)
+    );
+    if (!entries.length) return "";
+    const esc = (s) => `'${String(s ?? "").replace(/'/g, "''")}'`;
+    return entries
+      .map(([key, vals]) => {
+        if (isRange(vals)) {
+          return `${key} >= ${Number(vals.min)} AND ${key} <= ${Number(vals.max)}`;
+        }
+        if (isOp(vals)) {
+          // Query-panel operators. Values stay quoted — the comment above
+          // on numeric coercion applies here too.
+          const op = String(vals.op || "").toUpperCase();
+          if (op === "ILIKE") {
+            const needle = String(vals.value ?? "").replace(/[%_]/g, "");
+            return `${key} ILIKE ${esc(`%${needle}%`)}`;
+          }
+          if (op === "BETWEEN") {
+            return `${key} BETWEEN ${esc(vals.value)} AND ${esc(vals.value2)}`;
+          }
+          return `${key} ${op} ${esc(vals.value)}`;
+        }
+        const quoted = vals
+          .map((v) => `'${String(v).trim().replace(/'/g, "''")}'`)
+          .join(",");
+        return `${key} IN (${quoted})`;
+      })
+      .join(" AND ");
+  }, [dssColumnFilters]);
 
   useEffect(() => {
     if (tableDataset.kind !== "specialized") {
@@ -1317,6 +1681,7 @@ const DashboardPage = () => {
       setSpecializedColumnFilters(newFilters);
       const nextRows = applySpecializedFilters(specializedAllRows, newFilters);
       setTableRows(nextRows);
+      setTableRowsAreServerPage(false);
       setGlobalTableMetrics({ total_roads: nextRows.length, total_length_km: 0 });
       setCurrentPage(1);
       setActiveFilterColumn(null);
@@ -1337,6 +1702,32 @@ const DashboardPage = () => {
         setZoomFilter("");
       }
 
+      return;
+    }
+
+    if (tableDataset.kind === "analysis") {
+      // Analysis tables hold a complete local result set — column filters
+      // run against those rows only and must never fall through to the
+      // road_net server fetch below (which would swap the whole city
+      // table back in).
+      const newFilters = { ...analysisColumnFilters };
+      if (Array.isArray(selectedValues) && selectedValues.length > 0) {
+        newFilters[key] = selectedValues.map(String);
+      } else {
+        delete newFilters[key];
+      }
+      setAnalysisColumnFilters(newFilters);
+      const nextRows = applySpecializedFilters(Object.values(analysisResults).flat(), newFilters);
+      setTableRows(nextRows);
+      setTableRowsAreServerPage(false);
+      setGlobalTableMetrics({
+        total_roads: nextRows.length,
+        total_length_km: nextRows.reduce((sum, r) => sum + (Number(r?.length_km) || 0), 0),
+      });
+      setCurrentPage(1);
+      setActiveFilterColumn(null);
+      setFilterPosition(null);
+      setIsTableMinimized(false);
       return;
     }
 
@@ -1384,6 +1775,11 @@ const DashboardPage = () => {
   // ⭐ NEW: Store analysis results per layer
   const [analysisResults, setAnalysisResults] = useState({});
 
+  // GeoServer-resolved layer colors pushed up from MapContainer once its
+  // color-sync fetch lands — the Sidebar Analysis icons tint with the same
+  // color the map overlays use so both always match.
+  const [geoserverLayerColors, setGeoserverLayerColors] = useState({});
+
   const handleAnalysisDataLoaded = (id, data) => {
     setAnalysisResults(prev => {
       const next = { ...prev };
@@ -1396,11 +1792,22 @@ const DashboardPage = () => {
     });
   };
 
+  // The same local column filters applied per analysis layer — the map
+  // overlay and legend count consume this via analysisFilteredRows so the
+  // table, the drawn roads, and the "N roads" badge all agree.
+  const analysisFilteredRowsById = useMemo(() => {
+    const out = {};
+    Object.entries(analysisResults).forEach(([id, rows]) => {
+      out[id] = applySpecializedFilters(rows || [], analysisColumnFilters);
+    });
+    return out;
+  }, [analysisResults, analysisColumnFilters, applySpecializedFilters]);
+
   // ⭐ NEW: Effect to update tableRows when analysisResults change
   useEffect(() => {
     if (tableDataset.kind === "specialized") return;
 
-    const analysisRows = Object.values(analysisResults).flat();
+    const analysisRows = Object.values(analysisFilteredRowsById).flat();
 
     // Only update if we are NOT using a road filter (search mode)
     // If roadFilter is active, it takes precedence in the other effect
@@ -1408,14 +1815,27 @@ const DashboardPage = () => {
       if (analysisRows.length > 0) {
         setTableDataset({ kind: "analysis", title: "Analysis", networkId: null, option: null, layerName: null });
         setTableRows(analysisRows);
+        setTableRowsAreServerPage(false);
         setCurrentPage(1);
       } else {
         if (tableDataset.kind === "analysis") {
           setTableRows([]);
+          if (Object.keys(analysisColumnFilters).length > 0) {
+            setAnalysisColumnFilters({});
+          }
         }
       }
     }
-  }, [analysisResults, roadFilter, tableDataset.kind]);
+  }, [analysisFilteredRowsById, analysisColumnFilters, roadFilter, tableDataset.kind]);
+
+  // The column-filter set that applies to the table currently on screen:
+  // "roads" filters feed the road_net server query, while "specialized"
+  // and "analysis" are local-only buckets applied to loaded rows.
+  const activeTableColumnFilters =
+    tableDataset.kind === "specialized" ? specializedColumnFilters :
+    tableDataset.kind === "analysis" ? analysisColumnFilters :
+    columnFilters;
+  const analysisFlatRows = Object.values(analysisResults).flat();
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   // ⭐ NEW: Track Road Network Panel visibility
@@ -1425,18 +1845,95 @@ const DashboardPage = () => {
   // Minimize keeps the panel mounted (filters/zones/layers preserved) but
   // visually hidden; only an explicit Close actually resets everything.
   const [chartPanelMinimized, setChartPanelMinimized] = useState(false);
+  // ⭐ NEW: Lift zone/ward selection state to Dashboard for MapContainer access
+  const [selectedZone, setSelectedZone] = useState("");
+  const [selectedWard, setSelectedWard] = useState("");
+  // City switches (/dashboard?city=X reuses this component) must drop the
+  // previous city's zone/ward selection - a leftover zone_no from a zoned
+  // city keeps polluting the CQL in zone-less cities, where ward_no is
+  // the only valid tier ("zone_no=3 AND ward_no=20" matches nothing).
+  useEffect(() => {
+    setSelectedZone("");
+    setSelectedWard("");
+  }, [city]);
+  //s1
+  // const handleChartPanelToggle = () => {
+  //   logEvent("chart_panel_toggle", { wasOpen: showChartPanel, wasMinimized: chartPanelMinimized });
+  //   setShowChartPanel((prev) => {
+  //     if (prev && chartPanelMinimized) {
+  //       setChartPanelMinimized(false); // was minimized — restore, don't close
+  //       return true;
+  //     }
+  //     if (prev) return false; // was open — toolbar click closes it fully
+  //     setChartPanelMinimized(false);
+  //     return true; // was closed — open fresh
+  //   });
+  // };
+
   const handleChartPanelToggle = () => {
-    logEvent("chart_panel_toggle", { wasOpen: showChartPanel, wasMinimized: chartPanelMinimized });
-    setShowChartPanel((prev) => {
-      if (prev && chartPanelMinimized) {
-        setChartPanelMinimized(false); // was minimized — restore, don't close
-        return true;
-      }
-      if (prev) return false; // was open — toolbar click closes it fully
-      setChartPanelMinimized(false);
-      return true; // was closed — open fresh
+    logEvent("chart_panel_toggle", {
+      wasOpen: showChartPanel,
+      wasMinimized: chartPanelMinimized
     });
+
+    if (!showChartPanel || chartPanelMinimized) {
+      setShowRoadNetworkPanel(false);
+      setChartPanelMinimized(false);
+      setShowChartPanel(true);
+    } else {
+      setShowChartPanel(false);
+    }
   };
+
+  // Exclusive tool switching: every toolbar button funnels through
+  // MapToolbar's openExclusive -> onToolSwitch, so opening a tool closes
+  // every other panel, drops the layers/filters that tool added, and
+  // refreshes the map instead of stacking panels and layers on top of
+  // each other.
+  const closeAllMapTools = useCallback((options) => {
+    setShowChartPanel(false);
+    setChartPanelMinimized(false);
+    setShowRoadNetworkPanel(false);
+    setShowRoadSearch(false);
+    setStreetViewVisible(false);
+    // Tool modes — DSS teardown mirrors handleDssToggle's exit path, but
+    // only for road-network tools: DSS-aware tools (Query, Search, Layers)
+    // pass keepDssMode so opening them doesn't drop the DSS session.
+    if (mode === "DSS" && !options?.keepDssMode) {
+      setActiveDssModule(null);
+      clearDssDisplayState();
+      dssAvailabilityAbortRef.current?.abort();
+      setDssCheckingModule(null);
+      setMode("DASHBOARD");
+    } else if (mode === "CHAINAGE") {
+      setMode("DASHBOARD");
+    }
+    mapRef.current?.closeChainagePanel?.();
+    mapRef.current?.clearPopup?.();
+    setSelectedRoad("");
+    setSelectedRoadId(null);
+    setSelectedRoadIds([]);
+    setMultiSelectCandidateRoadIds([]);
+    setZoomFilter("");
+    setBaseFilter(isFieldTaskMode ? fieldTaskDefaultFilter || "" : "");
+    setColumnFilters({});
+    setLayerFilters({});
+    setCurrentPage(1);
+    if (!isFieldTaskMode) setTableRows([]);
+    setSelectedZone("");
+    setSelectedWard("");
+    // Tool-owned layers only — `network`/`lclu` are sidebar/base-map
+    // layers and stay as the user left them.
+    setLayerVisibility((prev) => ({
+      ...prev,
+      amenities: {},
+      others: {},
+      utility: {},
+      roadClassifications: {},
+      specializedOptions: {},
+    }));
+    (mapRef.current?.map || mapRef.current?.instance)?.updateSize?.();
+  }, [mode, isFieldTaskMode, fieldTaskDefaultFilter, clearDssDisplayState]);
   const handleChartPanelChartClick = useCallback((col, val) => {
     if (val) handleColumnFilterChange(col, [val]);
     else handleColumnFilterChange(col, []);
@@ -1463,6 +1960,14 @@ const DashboardPage = () => {
     }));
   }, []);
   const [streetViewVisible, setStreetViewVisible] = useState(false);
+
+  const handleStreetViewToggle = useCallback((newState) => {
+    if (newState && !isStreetViewAvailable(city)) {
+      alert(streetViewUnavailableMessage(city));
+      return;
+    }
+    setStreetViewVisible(newState);
+  }, [city]);
 
   const toggleSidebar = () => {
     setIsSidebarOpen((prev) => {
@@ -1513,6 +2018,7 @@ const DashboardPage = () => {
         option: optionKey,
         layerName,
         columns: null,
+        columnOrder: networkId === "drainage" ? DRAINAGE_COLUMN_ORDER : null,
       });
       setShouldFetchTable(true);
       setIsTableMinimized(false);
@@ -1536,9 +2042,11 @@ const DashboardPage = () => {
           option: optionKey,
           layerName,
           columns: payload?.columns || null,
+          columnOrder: networkId === "drainage" ? DRAINAGE_COLUMN_ORDER : null,
         });
         setSpecializedAllRows(rows);
         setTableRows(rows);
+        setTableRowsAreServerPage(false);
         setGlobalTableMetrics({ total_roads: payload?.total || rows.length, total_length_km: 0 });
         setCurrentPage(1);
         setShouldFetchTable(true);
@@ -1770,6 +2278,7 @@ const DashboardPage = () => {
       // ⭐ Only clear if no analysis results are present
       if (Object.keys(analysisResults).length === 0) {
         setTableRows([]);
+        setTableRowsAreServerPage(false);
         setCurrentPage(1); // Reset to first page
       }
       return;
@@ -1785,6 +2294,7 @@ const DashboardPage = () => {
     if (!shouldFetchTable) {
       console.log("Skipping table fetch as shouldFetchTable is false");
       setTableRows([]);
+      setTableRowsAreServerPage(false);
       return;
     }
 
@@ -1795,10 +2305,12 @@ const DashboardPage = () => {
     const controller = new AbortController();
 
     beginLoading("roadTable", "Road Network data");
-    // Explicit limit (server defaults to 1000 rows when omitted) so a
-    // detected slow connection pulls a smaller first batch instead of the
-    // full 1000-row page every time the filter changes.
-    const roadTableLimit = getIsLowBandwidth() ? 300 : 1000;
+    // Server-side pagination: fetch exactly the page the user is on
+    // (recordsPerPage rows). The old behaviour pulled one fixed batch
+    // (limit=1000) and paged it client-side, but totalPages came from the
+    // full filtered count - every page beyond the loaded batch rendered
+    // empty. currentPage in the dep array below makes each page
+    // navigation fetch its own page.
     // Live extent sync: whenever the table is open, only ask for roads
     // actually within the current map viewport instead of the whole
     // filtered set - MapContainer reports this (debounced) via
@@ -1827,7 +2339,7 @@ const DashboardPage = () => {
       ? `&includeRoadId=${encodeURIComponent(selectedRoadId)}`
       : "";
     fetch(
-      `/api/road-networks/${city}/details?filter=${encodeURIComponent(roadFilter)}&limit=${roadTableLimit}${bboxParam}${includeRoadIdParam}`,
+      `/api/road-networks/${city}/details?filter=${encodeURIComponent(roadFilter)}&page=${currentPage}&limit=${recordsPerPage}${bboxParam}${includeRoadIdParam}`,
       { signal: controller.signal }
     )
       .then((res) => res.json())
@@ -1835,6 +2347,7 @@ const DashboardPage = () => {
         if (fetchId !== tableFetchIdRef.current) return;
         console.log("Table data received:", data);
         setTableRows(data.data || []);
+        setTableRowsAreServerPage(true);
         setGlobalTableMetrics({
           total_roads: data.total || (data.data || []).length,
           total_length_km: data.total_length_km || 0
@@ -1847,7 +2360,7 @@ const DashboardPage = () => {
         endLoading("roadTable");
       });
     return () => controller.abort();
-  }, [roadFilter, city, shouldFetchTable, analysisResults, mapExtent, selectedRoadId, isMultiSelectMode, chainageCandidateContext.active]);
+  }, [roadFilter, city, shouldFetchTable, analysisResults, mapExtent, selectedRoadId, isMultiSelectMode, chainageCandidateContext.active, currentPage, recordsPerPage]);
 
   const buildSelectionFilter = useCallback((ids) => {
     if (!ids || ids.length === 0) return "";
@@ -1951,8 +2464,19 @@ const DashboardPage = () => {
   // wherever they'd fall in the untouched tableRows order.
   const indexOfLastRecord = currentPage * recordsPerPage;
   const indexOfFirstRecord = indexOfLastRecord - recordsPerPage;
-  const currentRecords = orderedTableRows.slice(indexOfFirstRecord, indexOfLastRecord);
-  const totalPages = Math.ceil(((liveTableMetrics?.total_roads ?? globalTableMetrics.total_roads) || orderedTableRows.length) / recordsPerPage);
+  // Server-paged rows already ARE the current page - slicing them again
+  // with global indices would return empty for every page > 1.
+  const currentRecords = tableRowsAreServerPage
+    ? orderedTableRows
+    : orderedTableRows.slice(indexOfFirstRecord, indexOfLastRecord);
+  // For server-paged rows, globalTableMetrics.total_roads is the total of
+  // the exact query the page came from (bbox included). liveTableMetrics
+  // is only a live-typing preview and ignores the bbox scope, so trusting
+  // it here creates phantom pages with no rows.
+  const tableTotalRows = tableRowsAreServerPage
+    ? globalTableMetrics.total_roads
+    : ((liveTableMetrics?.total_roads ?? globalTableMetrics.total_roads) || orderedTableRows.length);
+  const totalPages = Math.ceil(tableTotalRows / recordsPerPage);
 
   console.log("Dashboard pagination:", {
     orderedTableRowsLength: orderedTableRows.length,
@@ -2086,6 +2610,17 @@ const DashboardPage = () => {
     // The selected row is highlighted via CSS.
   };
 
+  // DSS rows carry the same road_id as the road table — selecting one goes
+  // through the exact same pipeline a road-table row click uses (orange map
+  // highlight + auto-zoom + details popup, plus selected-row tinting here).
+  // Rows without a resolvable id (e.g. encroachment's per-zone summaries)
+  // are a no-op instead of clearing the current selection.
+  const handleDssRowClick = (row) => {
+    const rowId = getRowSelectionId(row);
+    if (rowId == null || rowId === "") return;
+    handleRowClick(row);
+  };
+
   const restorePrevTableState = () => {
     const isMapSelection =
       mapFilterActiveRef.current ||
@@ -2102,6 +2637,7 @@ const DashboardPage = () => {
       setRoadFilter(prev.roadFilter);
       setZoomFilter(prev.zoomFilter);
       setTableRows(prev.tableRows);
+      setTableRowsAreServerPage(!!prev.tableRowsAreServerPage);
       setCurrentPage(prev.currentPage);
       setSelectedRoad(prev.selectedRoad);
       setSelectedRoadId(prev.selectedRoadId);
@@ -2302,6 +2838,10 @@ const DashboardPage = () => {
 
   // ⭐ NEW: Robust pagination and missing road sync + move selected road to top
   useEffect(() => {
+    // DSS selection sets selectedRoadId too (for the map highlight) — but
+    // the road table isn't the target here, and this fetch would hit the
+    // road-network /details endpoint for a DSS road_id.
+    if (isDssMode) return;
     // Only run if we actually have data and an active single-road selection
     if (tableRows.length === 0 || !selectedRoadId || isMultiSelectMode) return;
 
@@ -2346,7 +2886,67 @@ const DashboardPage = () => {
         })
         .catch(err => console.error("[Auto-Pagination] Failed to fetch missing road:", err));
     }
-  }, [tableRows, selectedRoadId, isMultiSelectMode, recordsPerPage, city, currentPage]);
+  }, [tableRows, selectedRoadId, isMultiSelectMode, recordsPerPage, city, currentPage, isDssMode]);
+
+  // DSS counterpart of the pin-to-top effect above: the DSS table is
+  // server-paginated (100/page over thousands of rows), so a road picked
+  // from search or the map is almost never on the loaded page — pin it to
+  // the top of page 1 the same way. A row already in the loaded batch is
+  // moved up; a missing row is fetched singly through the DSS rows
+  // endpoint (road_id filter) and prepended. The first-batch cache is
+  // updated identically so a later cache restore doesn't drop the pin.
+  useEffect(() => {
+    if (!isDssMode || !activeDssModule || !selectedRoadId || isMultiSelectMode) return;
+    const idStr = String(selectedRoadId);
+    const pinToTop = (rows) => {
+      const i = rows.findIndex((r) => String(getRowSelectionId(r)) === idStr);
+      if (i <= 0) return rows;
+      const next = [...rows];
+      const [sel] = next.splice(i, 1);
+      return [sel, ...next];
+    };
+    const idx = dssAllRows.findIndex((r) => String(getRowSelectionId(r)) === idStr);
+    if (idx >= 0) {
+      if (idx !== 0) setDssAllRows((prev) => pinToTop(prev));
+      if (dssFirstBatchRef.current?.rows) {
+        dssFirstBatchRef.current = {
+          ...dssFirstBatchRef.current,
+          rows: pinToTop(dssFirstBatchRef.current.rows),
+        };
+      }
+      if (dssCurrentPage !== 1) setDssCurrentPage(1);
+      return;
+    }
+    const params = new URLSearchParams({
+      page: "1",
+      limit: "1",
+      includeTotal: "0",
+      search: "",
+      filters: JSON.stringify({ road_id: [idStr] }),
+    });
+    fetch(`/api/road-networks/${city}/dss/${activeDssModule}/rows?${params}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((result) => {
+        const row = result?.data?.[0];
+        if (!row) return;
+        setDssAllRows((prev) =>
+          prev.some((r) => String(getRowSelectionId(r)) === idStr)
+            ? prev
+            : [row, ...prev]
+        );
+        if (
+          dssFirstBatchRef.current?.rows &&
+          !dssFirstBatchRef.current.rows.some((r) => String(getRowSelectionId(r)) === idStr)
+        ) {
+          dssFirstBatchRef.current = {
+            ...dssFirstBatchRef.current,
+            rows: [row, ...dssFirstBatchRef.current.rows],
+          };
+        }
+        setDssCurrentPage(1);
+      })
+      .catch(() => {});
+  }, [isDssMode, activeDssModule, selectedRoadId, isMultiSelectMode, dssAllRows, dssCurrentPage, city]);
 
   // Table-row-highlight-only counterpart to handleRoadSelectedFromMap, used
   // specifically by field-task mode's chainage click flow (openChainageForRoadId)
@@ -2388,6 +2988,23 @@ const DashboardPage = () => {
         roadId = match.road_id;
         console.log("[handleRoadSelectedFromMap] resolved road_id from table:", roadId);
       }
+    }
+
+    // DSS mode: keep the pick scoped to the DSS picture — the same orange
+    // highlight + zoom + popup as a road click via selectedRoadId/
+    // zoomFilter, but WITHOUT touching baseFilter/table state. A truthy
+    // baseFilter would feed roadFilter into MapContainer, whose
+    // road-visibility effect then force-shows the plain road network + its
+    // labels layer on top of the DSS thematic layer.
+    if (isDssMode) {
+      setSelectedRoadIds([]);
+      setSelectedRoadId(roadId ?? gisId);
+      if (road.road_name) {
+        setSelectedRoad(road.road_name);
+      }
+      const dssZf = roadId ? `road_id='${roadId}'` : gisId ? `gis_id='${gisId}'` : "";
+      if (dssZf) setZoomFilter(dssZf);
+      return;
     }
 
     // Ensure table opens up if it was closed
@@ -2481,7 +3098,10 @@ const DashboardPage = () => {
     // Single-select: highlight in table, zoom on map
     setIsMultiSelectMode(false);
     setSelectedRoadIds([]);
-    setSelectedRoadId(roadId);
+    // Fall back to gis_id when the clicked feature carries no road_id —
+    // MapContainer caches the clicked geometry under both keys, so the
+    // orange highlight layer can still resolve it.
+    setSelectedRoadId(roadId ?? gisId);
     if (road.road_name) {
       setSelectedRoad(road.road_name);
     }
@@ -2490,7 +3110,7 @@ const DashboardPage = () => {
     const zf = roadId ? `road_id='${roadId}'` : gisId ? `gis_id='${gisId}'` : "";
     if (zf) setZoomFilter(zf);
 
-  }, [buildSelectionFilter, handleRoadFilterChange, isMultiSelectMode, selectedRoadId, tableRows, recordsPerPage, city]);
+  }, [buildSelectionFilter, handleRoadFilterChange, isMultiSelectMode, selectedRoadId, tableRows, recordsPerPage, city, isDssMode]);
 
   // ⭐ ADDED: Handle zoom to filter for road network selections
   const handleZoomToFilter = (filter) => {
@@ -2632,12 +3252,53 @@ const DashboardPage = () => {
     map.renderSync?.();
   }, [overlayVisibility, city]);
 
-  const handleQuery = (queryData) => {
+  // Reverse lookup: which DSS module owns a given GeoServer layer name for
+  // this city — the Query panel can target any DSS layer, not just the
+  // currently active module's.
+  const dssModuleKeyForLayer = (layerName) =>
+    DSS_MODULE_ORDER.find(
+      (k) => resolveDssModule(k, city)?.layer === layerName
+    ) || null;
+
+  const handleQuery = async (queryData) => {
     console.log("Dashboard received query:", queryData);
 
     if (queryData.type === "attribute") {
       // Check if it's the road layer
       const cfg = cityConfig[city.toLowerCase()];
+
+      // DSS mode: the Query panel lists every DSS module layer — translate
+      // the attribute query into dssColumnFilters so it drives the DSS
+      // table, legend counts and WMS CQL through the existing pipeline,
+      // instead of opening the road-network table. When the picked layer
+      // isn't the active module, switch to it first (the same live-probe
+      // path the toolbar buttons use).
+      const dssTarget = isDssMode ? dssModuleKeyForLayer(queryData.layer) : null;
+      if (dssTarget) {
+        const attr = queryData.attribute;
+        const op = String(queryData.operator || "").toUpperCase();
+        if (!attr) return;
+        if (dssTarget !== activeDssModule) {
+          const activated = await handleDssModuleSelect(dssTarget);
+          if (!activated) return;
+        }
+        if (op === "BETWEEN") {
+          setDssColumnFilters({
+            [attr]: { type: "op", op: "BETWEEN", value: queryData.value, value2: queryData.value2 },
+          });
+        } else if (op === "=") {
+          setDssColumnFilters({ [attr]: [String(queryData.value)] });
+        } else {
+          const mapped = op === "LIKE" ? "ILIKE" : op === "!=" ? "<>" : op;
+          setDssColumnFilters({
+            [attr]: { type: "op", op: mapped, value: queryData.value },
+          });
+        }
+        setDssTableMinimized(false);
+        setDssCurrentPage(1);
+        return;
+      }
+
       if (cfg && queryData.layer === cfg.roadLayer) {
         setTableDataset({ kind: "roads", title: "Road Network", networkId: null, option: null, layerName: null });
         setBaseFilter(queryData.filter);
@@ -2676,10 +3337,41 @@ const DashboardPage = () => {
   };
 
   // ⭐ ADDED: Handle Spatial Query Results from MapContainer
-  const handleSpatialQueryResults = (features) => {
+  const handleSpatialQueryResults = async (features) => {
     console.log("Spatial query results:", features);
     const cfg = cityConfig[city.toLowerCase()];
     const isRoadLayer = drawMode && drawMode.layer === cfg.roadLayer;
+
+    // DSS draw query: results are DSS features — filter the DSS table +
+    // WMS to those roads via road_id instead of opening the road table.
+    // Capped because each road_id lands in the WMS CQL_FILTER URL. When the
+    // drawn layer isn't the active module, switch to it first.
+    const dssTarget = isDssMode && drawMode ? dssModuleKeyForLayer(drawMode.layer) : null;
+    if (dssTarget) {
+      const ids = [...new Set(
+        (features || [])
+          .map((f) => {
+            const p = f?.values_ || f?.properties || {};
+            const k = Object.keys(p).find((kk) => kk.toLowerCase() === "road_id");
+            return k ? p[k] : null;
+          })
+          .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+          .map(String)
+      )];
+      if (ids.length && ids.length <= 200) {
+        if (dssTarget !== activeDssModule) {
+          const activated = await handleDssModuleSelect(dssTarget);
+          if (!activated) { setDrawMode(null); return; }
+        }
+        setDssColumnFilters({ road_id: ids });
+        setDssTableMinimized(false);
+        setDssCurrentPage(1);
+      } else {
+        alert(`Found ${features.length} features.`);
+      }
+      setDrawMode(null);
+      return;
+    }
 
     if (isRoadLayer) {
       setTableDataset({ kind: "roads", title: "Road Network", networkId: null, option: null, layerName: null });
@@ -2693,6 +3385,7 @@ const DashboardPage = () => {
         return normalized;
       });
       setTableRows(rows);
+      setTableRowsAreServerPage(false);
       setIsTableMinimized(false);
       setShouldFetchTable(true);
     } else {
@@ -2799,9 +3492,118 @@ const DashboardPage = () => {
     }
   };
 
+  // Every row of the active DSS module's filtered set (limit=0 → no
+  // server-side limit, same convention /details uses for exports) so a
+  // DSS export isn't truncated to the table's loaded page batch. Honors
+  // the same search + column filters the table/legend are using.
+  const fetchDssExportRows = async () => {
+    const params = new URLSearchParams({
+      page: "1",
+      limit: "0",
+      includeTotal: "0",
+      search: dssDebouncedSearch,
+      filters: JSON.stringify(dssColumnFilters),
+    });
+    const res = await fetch(
+      `/api/road-networks/${city}/dss/${activeDssModule}/rows?${params}`
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const result = await res.json();
+    return result?.data || [];
+  };
+
+  // DSS-mode counterpart to the road-network branches in
+  // handleDownloadAction: excel/pdf export the active module's filtered
+  // rows, kml pulls geometry from the DSS layer itself (WFS GetFeature on
+  // activeDssLayer honoring the same column filters) — never the
+  // road-network /details export path.
+  const handleDssDownload = async (action) => {
+    const dssTitle = `DSS_${activeDssModuleConfig?.label || activeDssModule}`;
+    const downloadStartedAt = performance.now();
+    logEvent("download_start", { action, dssModule: activeDssModule });
+    setIsDownloading(true);
+    try {
+      if (action === "excel" || action === "pdf") {
+        const rows = await fetchDssExportRows();
+        if (!rows.length) {
+          alert("No data to export. Please adjust your filter and try again.");
+          return;
+        }
+        if (action === "excel") {
+          await exportToExcel(rows, city, { title: dssTitle });
+        } else {
+          // The PDF's filter-context line only understands scalars and
+          // 2-element arrays — reshape {type:"range"} filters to [min,max].
+          const pdfColumnFilters = Object.fromEntries(
+            Object.entries(dssColumnFilters || {}).map(([k, v]) => [
+              k,
+              v && typeof v === "object" && !Array.isArray(v) && v.type === "range"
+                ? [v.min, v.max]
+                : v,
+            ])
+          );
+          await exportToPDF({
+            mapRef,
+            rows,
+            city,
+            watermarkSrc: rsacBanner,
+            layerVisibility,
+            overlayVisibility,
+            roadFilter: "",
+            columnFilters: pdfColumnFilters,
+            title: dssTitle,
+          });
+        }
+      } else if (action === "kml") {
+        const wfsUrl =
+          `${GEOSERVER_BASE}/wfs?service=WFS&version=1.1.0&request=GetFeature` +
+          `&typeName=${encodeURIComponent(activeDssModuleConfig?.layer || "")}` +
+          `&outputFormat=application/json` +
+          `&CQL_FILTER=${encodeURIComponent(dssCqlFilter || "INCLUDE")}` +
+          `&maxFeatures=50000`;
+        const res = await fetch(wfsUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const rows = (json?.features || []).map((f) => ({
+          ...(f?.properties || {}),
+          geom: f?.geometry || null,
+        }));
+        if (!rows.length) {
+          alert("No data to export. Please adjust your filter and try again.");
+          return;
+        }
+        const { skippedCount } = exportToKML(rows, city);
+        if (skippedCount > 0) {
+          alert(`KML exported. Note: ${skippedCount} feature${skippedCount > 1 ? "s" : ""} had no geometry and were skipped.`);
+        }
+      }
+    } catch (err) {
+      console.error("Download error:", err);
+      alert(`Export failed: ${err.message}`);
+      logEvent("download_error", { action, dssModule: activeDssModule, message: err.message });
+    } finally {
+      logEvent("download_end", { action, dssModule: activeDssModule, durationMs: Math.round(performance.now() - downloadStartedAt) });
+      setIsDownloading(false);
+    }
+  };
+
   // ⭐ Handle Download Actions — delegates to gisExport utility
   const handleDownloadAction = async (action) => {
     console.log("Download action triggered:", action);
+
+    // DSS mode: excel/pdf/kml all export the active DSS module's data —
+    // the road-network export endpoints and the Excel scope modal belong
+    // to road/specialized datasets only. Print stays on the shared path
+    // below since it captures whatever the map is already rendering (the
+    // DSS WMS layer in this mode).
+    if (isDssMode && action !== "print") {
+      if (!activeDssModule) {
+        alert("Select a DSS layer first, then download.");
+        return;
+      }
+      await handleDssDownload(action);
+      return;
+    }
 
     // Excel export against the live road-network table asks the user to
     // pick a scope first (current filtered view vs. the whole city) with a
@@ -2831,7 +3633,7 @@ const DashboardPage = () => {
           ctx.fillStyle = "rgba(255,255,255,0.85)";
           ctx.strokeStyle = "rgba(0,0,0,0.5)";
           ctx.lineWidth = 3;
-          const label = `${city.toUpperCase()} Nagar Nigam  |  ${new Date().toLocaleDateString("en-IN")}`;
+          const label = `${city.toUpperCase()} Nagar Nigam${isDssMode && activeDssModuleConfig?.label ? `  |  DSS: ${activeDssModuleConfig.label}` : ""}  |  ${new Date().toLocaleDateString("en-IN")}`;
           ctx.strokeText(label, 12, canvas.height - 10);
           ctx.fillText(label, 12, canvas.height - 10);
           ctx.restore();
@@ -2900,7 +3702,7 @@ const DashboardPage = () => {
           layerVisibility,
           overlayVisibility,
           roadFilter: tableDataset.kind === "roads" ? roadFilter : "",
-          columnFilters: tableDataset.kind === "roads" ? columnFilters : specializedColumnFilters,
+          columnFilters: activeTableColumnFilters,
           title: tableDataset.title || (tableDataset.kind === "roads" ? "Road Attribute Table" : "Table Export"),
         });
 
@@ -3005,6 +3807,7 @@ const DashboardPage = () => {
           tableVisible={tableRows.length > 0 && !isTableMinimized}
           tableMinimized={isTableMinimized}
           tableHasRows={tableRows.length > 0}
+          layerColors={geoserverLayerColors}
           drainageController={{
             setLayerVisibility,
             tableDataset,
@@ -3062,6 +3865,8 @@ const DashboardPage = () => {
           drawMode={drawMode} // ⭐ NEW
           onSpatialQueryResults={handleSpatialQueryResults} // ⭐ NEW
           onAnalysisDataLoaded={handleAnalysisDataLoaded} // ⭐ NEW
+          onLayerColorsLoaded={setGeoserverLayerColors} // GeoServer colors for Sidebar icons
+          analysisFilteredRows={analysisFilteredRowsById} // per-layer filtered rows for map + legend
           onRoadSelected={handleRoadSelectedFromMap}
           onPopupClosed={handlePopupClosed}
           onMapLoadingChange={handleMapLoadingChange} // ⭐ NEW: Map loading prop
@@ -3075,10 +3880,13 @@ const DashboardPage = () => {
           isMultiSelectModeProp={isMultiSelectMode} //chainage
           activeDssModule={isDssMode ? activeDssModule : null}
           activeDssLayer={activeDssModuleConfig?.layer || null}
+          dssCqlFilter={dssCqlFilter}
           dssLegendGroups={isDssMode ? dssLegendGroups : null}
           specializedAllRows={specializedAllRows} // Add this
           tableDataset={tableDataset} // Add this
           specializedColumnFilters={specializedColumnFilters} // Add this for legend filtering
+          selectedZone={selectedZone} // ⭐ NEW: Pass zone selection to MapContainer
+          selectedWard={selectedWard} // ⭐ NEW: Pass ward selection to MapContainer
         />
 
         {/* ⭐ TOOLBAR — updated */}
@@ -3093,7 +3901,32 @@ const DashboardPage = () => {
           chainageActive={mode === "CHAINAGE"} //chainage
           chainageDisabled={!hasVisibleRoadLayer || !isChainageAvailable(city)} //chainage
           showRoadNetworkPanel={showRoadNetworkPanel} // ⭐ Pass state
-          onToggleRoadNetworkPanel={setShowRoadNetworkPanel} // ⭐ Pass setter
+          //s1
+          // onToggleRoadNetworkPanel={setShowRoadNetworkPanel} // ⭐ Pass setter
+          onToggleRoadNetworkPanel={(value) => {
+            const next = typeof value === "function"
+        ? value(showRoadNetworkPanel)
+        : value;
+
+        if (next) {
+          setShowChartPanel(false);
+          setChartPanelMinimized(false);
+          setBaseFilter("");
+          setColumnFilters({});
+          setZoomFilter("");
+          // Clear map layers activated through Summary
+          setLayerVisibility(prev => ({
+            ...prev,
+            roadClassifications: {},
+            amenities: {},
+            network: { ...prev.network, roads: false }
+          }));
+        }
+
+        setShowRoadNetworkPanel(next);
+  }}
+          chartPanelOpen={showChartPanel}
+          onToolSwitch={closeAllMapTools}
           baseMap={baseMap}
           overlayVisibility={overlayVisibility}
           roadNetworkVisible={!!layerVisibility?.network?.roads}
@@ -3101,17 +3934,21 @@ const DashboardPage = () => {
           onOverlayToggle={handleOverlayToggle}
           onRoadNetworkToggle={(checked) => handleLayerToggle("network", "roads", checked)}
           streetViewVisible={streetViewVisible}
-          onStreetViewToggle={setStreetViewVisible}
+          onStreetViewToggle={handleStreetViewToggle}
           onDssRoad={handleDssToggle}
           isDssMode={isDssMode}
           activeDssModule={isDssMode ? activeDssModule : null}
+          activeDssLayer={isDssMode ? activeDssModuleConfig?.layer || null : null}
+          dssModuleLabel={isDssMode ? activeDssModuleConfig?.label || null : null}
           onDssModuleSelect={handleDssModuleSelect}
           dssModuleStatus={dssModuleStatusMap}
           dssCheckingModule={dssCheckingModule}
-          onRoadSelected={(road) => {
-            console.log("Road selected:", road);
-            setSelectedRoad(road);
-          }}
+          // Search-box road picks go through the same selection pipeline a
+          // map click uses (handleRoadSelectedFromMap): sets selectedRoadId
+          // (orange map highlight + selected-row class + row pinned to the
+          // top of the table), selectedRoad name, and zoomFilter — which
+          // also drives the auto-zoom + details popup.
+          onRoadSelected={handleRoadSelectedFromMap}
           onApplyRoadFilter={(filter) => {
             console.log("APPLY FILTER:", filter);
             lastFilterSourceRef.current = "toolbar";
@@ -3196,23 +4033,42 @@ const DashboardPage = () => {
         />
 
 
-        {showChartPanel && (
-          <div style={chartPanelMinimized ? { display: "none" } : undefined}>
-            <ChartPanel
-              city={city}
-              isOpen={!chartPanelMinimized}
+        
+{showChartPanel && (
+  <div className={chartPanelMinimized ? "summary-minimized" : ""}>
+    <ChartPanel
+      city={city}
+      isOpen={true}
+
               tableOpen={tableRows.length > 0 && !isTableMinimized}
               onClose={() => {
                 setShowChartPanel(false);
                 setChartPanelMinimized(false);
+                //s1
+                setBaseFilter("");
+                setColumnFilters({ });
+                setRoadFilter("");
+                setZoomFilter("");
+                // the map's amenity layers follow this selection
+                setSelectedZone("");
+                setSelectedWard("");
+                // Clear Summary map layers
+                setLayerVisibility(prev => ({
+                    ...prev,
+                    roadClassifications: { }
+                }));
               }}
-              onMinimize={() => setChartPanelMinimized(true)}
+              onMinimize={() => setChartPanelMinimized(prev => !prev)}
               panelSide="left"
               onChartClick={handleChartPanelChartClick}
               onFilterChange={handleChartPanelFilterChange}
               onClassificationChange={handleClassificationChange}
               layerVisibility={layerVisibility}
               onAmenityToggle={handleChartPanelAmenityToggle}
+              selectedZone={selectedZone}
+              selectedWard={selectedWard}
+              onZoneChange={setSelectedZone}
+              onWardChange={setSelectedWard}
             />
           </div>
         )}
@@ -3239,7 +4095,7 @@ const DashboardPage = () => {
                   together were wrapping onto two lines on a phone. */}
               <span className="pagination-entries-text">
                 Showing {indexOfFirstRecord + 1} to{" "}
-                {Math.min(indexOfLastRecord, tableRows.length)} of{" "}
+                {Math.min(indexOfLastRecord, indexOfFirstRecord + currentRecords.length)} of{" "}
                 {(liveTableMetrics?.total_roads ?? globalTableMetrics.total_roads) || tableRows.length} entries
               </span>
               <div className="road-count-badge" style={{
@@ -3274,7 +4130,7 @@ const DashboardPage = () => {
                 </span>
               </div>
               {/* Active Filter Badge + Clear All */}
-              {Object.keys(columnFilters).length > 0 && (
+              {Object.keys(activeTableColumnFilters).length > 0 && (
                 <div style={{
                   background: "rgba(239, 68, 68, 0.1)",
                   padding: "4px 10px",
@@ -3288,11 +4144,22 @@ const DashboardPage = () => {
                   gap: "6px",
                   cursor: "pointer",
                 }} onClick={() => {
-                  setColumnFilters({});
+                  if (tableDataset.kind === "specialized") {
+                    setSpecializedColumnFilters({});
+                    setTableRows(specializedAllRows);
+                    setTableRowsAreServerPage(false);
+                    setZoomFilter("");
+                  } else if (tableDataset.kind === "analysis") {
+                    setAnalysisColumnFilters({});
+                    setTableRows(analysisFlatRows);
+                    setTableRowsAreServerPage(false);
+                  } else {
+                    setColumnFilters({});
+                  }
                   setShouldFetchTable(true);
                 }} title="Click to clear all column filters">
                   <i className="fas fa-filter" style={{ fontSize: 11 }}></i>
-                  {Object.keys(columnFilters).length} filter{Object.keys(columnFilters).length > 1 ? 's' : ''} active
+                  {Object.keys(activeTableColumnFilters).length} filter{Object.keys(activeTableColumnFilters).length > 1 ? 's' : ''} active
                   <span style={{ marginLeft: 2, fontSize: 14 }}>×</span>
                 </div>
               )}
@@ -3431,7 +4298,7 @@ const DashboardPage = () => {
                     <th>Select</th>
                   )}
                   {tableColumns.map((col) => {
-                    const activeFilters = tableDataset.kind === "specialized" ? specializedColumnFilters : columnFilters;
+                    const activeFilters = activeTableColumnFilters;
                     return (
                       <th key={col.key}>
                         <div
@@ -3531,7 +4398,7 @@ const DashboardPage = () => {
                         </td>
                       )}
                       {tableColumns.map((col) => (
-                        <td key={col.key}>
+                        <td key={col.key} title={row[col.key] === null || row[col.key] === undefined ? "" : String(row[col.key])}>
                           {["row_meter", "carriage_w", "length_km"].includes(col.key) &&
                             row[col.key] !== null &&
                             row[col.key] !== undefined
@@ -3563,25 +4430,33 @@ const DashboardPage = () => {
             }}
           >
             <div className="pagination-info" style={{ display: "flex", alignItems: "center", gap: "15px", flexWrap: "wrap" }}>
-              <span className="pagination-entries-text">
-                {activeDssModuleConfig?.label || "DSS"} — Showing {dssFilteredRows.length === 0 ? 0 : dssIndexOfFirst + 1} to{" "}
-                {Math.min(dssIndexOfLast, dssFilteredRows.length)} of {dssFilteredRows.length} entries
-              </span>
-              {!dssTableMinimized && (
-                <input
-                  type="text"
-                  value={dssSearchQuery}
-                  onChange={(e) => setDssSearchQuery(e.target.value)}
-                  placeholder="Search loaded DSS rows…"
-                  style={{
-                    fontSize: 12,
-                    padding: "4px 8px",
-                    borderRadius: 8,
-                    border: "1px solid rgba(0,0,0,0.15)",
-                    minWidth: 160,
-                  }}
-                />
-              )}
+              {/* s2 */}
+<span className="pagination-entries-text">
+  {activeDssModuleConfig?.label || "DSS"} — Showing{" "}
+  {dssCurrentRecords.length ? dssIndexOfFirst + 1 : 0} to{" "}
+  {dssIndexOfLast} of {dssTotalRows} entries
+</span>
+              <div className="road-count-badge" style={{
+                background: "rgba(74, 144, 226, 0.1)",
+                padding: "4px 12px",
+                borderRadius: "12px",
+                border: "1px solid rgba(74, 144, 226, 0.3)",
+                color: "#2c3e50",
+                fontWeight: "bold",
+                fontSize: "13px",
+                display: "flex",
+                gap: "10px"
+              }}>
+                <span title="Total number of currently filtered records">
+                  <i className="fas fa-layer-group road-count-badge__icon" style={{ marginRight: "4px", color: "black" }}></i>
+                  {dssTotalRows} Records
+                </span>
+                <span style={{ color: "rgba(0,0,0,0.2)" }}>|</span>
+                <span title="Total length (km) of currently filtered records">
+                  <i className="fas fa-ruler-horizontal road-count-badge__icon" style={{ marginRight: "4px", color: "black" }}></i>
+                  {dssTotalLengthKm != null ? Number(dssTotalLengthKm).toFixed(2) : "—"} km
+                </span>
+              </div>
               {Object.keys(dssColumnFilters).length > 0 && (
                 <div
                   style={{
@@ -3628,15 +4503,19 @@ const DashboardPage = () => {
               >
                 <i className="fas fa-chevron-right" />
               </button>
+            </div>
+            {/* Same table-controls group the road-network table uses —
+                minimize + close live here, not in pagination-buttons. */}
+            <div className="table-controls">
               <button
-                className="pagination-btn"
+                className="table-maximize-btn"
                 onClick={() => setDssTableMinimized((v) => !v)}
                 title={dssTableMinimized ? "Expand table" : "Minimize table"}
               >
-                <i className={`fas fa-chevron-${dssTableMinimized ? "up" : "down"}`} />
+                {dssTableMinimized ? "▲" : "▼"}
               </button>
               <button
-                className="pagination-btn"
+                className="table-close-btn"
                 onClick={() => {
                   // Closing the table also deactivates the module (not just
                   // hides the table) — otherwise the next BBOX refetch on
@@ -3647,7 +4526,7 @@ const DashboardPage = () => {
                 }}
                 title="Close DSS layer"
               >
-                <i className="fas fa-times" />
+                ×
               </button>
             </div>
           </div>
@@ -3687,13 +4566,14 @@ const DashboardPage = () => {
                             const dropdownWidth = 220;
                             const spaceRight = window.innerWidth - rect.left;
                             const left = spaceRight < dropdownWidth ? rect.right - dropdownWidth : rect.left;
+                            const isNumeric = NUMERIC_COLS.includes(key);
                             let pos = { left: Math.max(0, left) };
                             if (spaceBelow < dropdownHeight && spaceAbove > spaceBelow) {
                               pos.bottom = viewportHeight - rect.top;
-                              pos.maxHeight = Math.min(250, spaceAbove - 20);
+                              pos.maxHeight = isNumeric ? 280 : Math.min(250, spaceAbove - 20);
                             } else {
                               pos.top = rect.bottom;
-                              pos.maxHeight = Math.min(250, spaceBelow - 20);
+                              pos.maxHeight = isNumeric ? 280 : Math.min(250, spaceBelow - 20);
                             }
                             setFilterPosition(pos);
                             setActiveFilterColumn(`dss:${key}`);
@@ -3708,9 +4588,21 @@ const DashboardPage = () => {
                 </thead>
                 <tbody>
                   {dssCurrentRecords.map((row, i) => (
-                    <tr key={dssIndexOfFirst + i}>
+                    <tr
+                      key={dssIndexOfFirst + i}
+                      onClick={() => handleDssRowClick(row)}
+                      className={
+                        selectedRoadId != null &&
+                        String(selectedRoadId) === String(getRowSelectionId(row))
+                          ? "selected-row"
+                          : ""
+                      }
+                      style={{ cursor: "pointer" }}
+                    >
                       {dssColumns.map((key) => (
-                        <td key={key}>{row[key] === null || row[key] === undefined ? "" : String(row[key])}</td>
+                        <td key={key} title={row[key] === null || row[key] === undefined ? "" : String(row[key])}>
+                          {row[key] === null || row[key] === undefined ? "" : String(row[key])}
+                        </td>
                       ))}
                     </tr>
                   ))}
@@ -3728,10 +4620,11 @@ const DashboardPage = () => {
               position={filterPosition}
               city={city}
               baseFilter=""
-              columnFilters={{}}
+              columnFilters={dssColumnFilters}
               onRangePreview={null}
-              datasetKind="specialized"
-              localRows={dssAllRows}
+              datasetKind="dss"
+              dssModule={activeDssModule}
+              dssSearch={dssDebouncedSearch}
             />
           )}
         </div>
@@ -3845,7 +4738,7 @@ const DashboardPage = () => {
       {activeFilterColumn && filterPosition && !String(activeFilterColumn).startsWith("dss:") && (
         <FilterDropdown
           column={tableColumns.find(c => c.key === activeFilterColumn)}
-          currentFilters={(tableDataset.kind === "specialized" ? specializedColumnFilters : columnFilters)[activeFilterColumn]}
+          currentFilters={activeTableColumnFilters[activeFilterColumn]}
           onApply={(vals) => handleColumnFilterChange(activeFilterColumn, vals)}
           onClose={() => {
             setActiveFilterColumn(null);
@@ -3853,11 +4746,11 @@ const DashboardPage = () => {
           }}
           position={filterPosition}
           city={city}
-          baseFilter={tableDataset.kind === "specialized" ? "" : baseFilter}
-          columnFilters={tableDataset.kind === "specialized" ? specializedColumnFilters : columnFilters}
-          onRangePreview={tableDataset.kind === "specialized" ? null : requestLiveMetrics}
+          baseFilter={tableDataset.kind === "roads" ? baseFilter : ""}
+          columnFilters={activeTableColumnFilters}
+          onRangePreview={tableDataset.kind === "roads" ? requestLiveMetrics : null}
           datasetKind={tableDataset.kind}
-          localRows={tableDataset.kind === "specialized" ? specializedAllRows : null}
+          localRows={tableDataset.kind === "specialized" ? specializedAllRows : tableDataset.kind === "analysis" ? analysisFlatRows : null}
           networkId={tableDataset.networkId}
         />
       )}
