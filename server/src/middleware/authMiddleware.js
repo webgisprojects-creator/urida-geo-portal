@@ -81,11 +81,10 @@ export const parseCookies = (cookieHeader) => {
   }, {});
 };
 
-export const getClientIp = (req) => {
-  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  const rawIp = forwarded || req.ip || req.socket?.remoteAddress || '';
-  return String(rawIp).replace(/^::ffff:/, '');
-};
+// req.ip is the address the load balancer saw (app.js trusts exactly one proxy).
+// The first X-Forwarded-For entry must not be used: the caller writes it.
+export const getClientIp = (req) =>
+  String(req.ip || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
 
 const purgeExpiredTokens = () => {
   const now = Date.now();
@@ -153,7 +152,7 @@ export const ensureActiveTokensTable = async () => {
   return activeTokensReady;
 };
 
-export const storeActiveToken = async ({ token, userId, issuedAt, expiresAt, ip = null, userAgent = null }) => {
+export const storeActiveToken = async ({ token, userId, issuedAt, expiresAt, lastActivity = issuedAt, ip = null, userAgent = null }) => {
   if (!token || !userId) return;
   await ensureActiveTokensTable();
   const tokenHash = hashToken(token);
@@ -169,12 +168,18 @@ export const storeActiveToken = async ({ token, userId, issuedAt, expiresAt, ip 
            status = 'active',
            ip_address = EXCLUDED.ip_address,
            user_agent = EXCLUDED.user_agent`,
-      [tokenHash, String(userId), issuedAt, expiresAt, issuedAt, ip, userAgent]
+      [tokenHash, String(userId), issuedAt, expiresAt, lastActivity, ip, userAgent]
     );
   } catch (err) {
     console.error('active_tokens insert failed:', err?.message || err);
     throw err;
   }
+};
+
+export const getSessionIssuedAt = async (token) => {
+  await ensureActiveTokensTable();
+  const { rows } = await pool.query('SELECT issued_at FROM active_tokens WHERE token_hash = $1', [hashToken(token)]);
+  return rows[0]?.issued_at ? new Date(rows[0].issued_at) : null;
 };
 
 export const revokeActiveToken = async (token) => {
@@ -264,6 +269,8 @@ const loadSessionEntry = async (token, tokenHash) => {
   return { entry, fromCache: false };
 };
 
+const ALLOWED_BEFORE_PASSWORD_CHANGE = /^\/api\/auth\/(profile|change-password|logout)\/?(\?|$)/;
+
 export const verifyToken = async (req, res, next) => {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
@@ -316,6 +323,11 @@ export const verifyToken = async (req, res, next) => {
         `UPDATE active_tokens SET last_activity_time = $1 WHERE token_hash = $2`,
         [now, tokenHash]
       );
+    }
+    // A temporary password allows nothing except choosing a new one. The
+    // browser sends the user there; this holds for direct requests too.
+    if (decoded?.must_change_password && !ALLOWED_BEFORE_PASSWORD_CHANGE.test(req.originalUrl || '')) {
+      return res.status(403).json({ message: 'Please change your password first.', mustChangePassword: true });
     }
     req.user = decoded;
     req.token = token;

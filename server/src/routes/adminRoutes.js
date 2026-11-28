@@ -2,7 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { pool } from "../config/db.js";
-import { verifyToken, verifyRole, ensureActiveTokensTable } from "../middleware/authMiddleware.js";
+import { verifyToken, verifyRole, ensureActiveTokensTable, clearActiveTokensForUser } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
@@ -312,6 +312,28 @@ router.post("/users", async (req, res) => {
   }
 });
 
+// Ends every session of the account(s) an admin action applies to, so that the
+// change takes effect at once. Sessions are filed under user_id, or under the
+// username for accounts without one.
+const endSessions = async (rows) => {
+  for (const row of rows) {
+    const key = row?.user_id ?? row?.username;
+    if (key !== undefined && key !== null && key !== "") await clearActiveTokensForUser(String(key));
+  }
+};
+
+const endSessionsOf = async (tableRef, selected, userId) => {
+  const columns = [];
+  if (selected.user_id) columns.push(`${quoteIdentifier(selected.user_id)} AS user_id`);
+  if (selected.username) columns.push(`${quoteIdentifier(selected.username)} AS username`);
+  if (!columns.length) return;
+  const { rows } = await pool.query(
+    `SELECT ${columns.join(", ")} FROM ${tableRef} WHERE ${buildLookupClause(selected, "$1")}`,
+    [userId]
+  );
+  await endSessions(rows);
+};
+
 router.patch("/users/:userId/status", async (req, res) => {
   try {
     const userId = String(req.params.userId || "").trim();
@@ -366,6 +388,7 @@ router.patch("/users/:userId/status", async (req, res) => {
     if ((result.rowCount || 0) === 0) {
       return res.status(404).json({ error: "User not found" });
     }
+    if (!isActive) await endSessionsOf(tableRef, selected, userId);
     return res.json({ status: "ok" });
   } catch (err) {
     console.error("admin status update error:", err);
@@ -401,6 +424,7 @@ router.patch("/users/:userId/role", async (req, res) => {
     if ((result.rowCount || 0) === 0) {
       return res.status(404).json({ error: "User not found" });
     }
+    await endSessionsOf(tableRef, selected, userId);
     return res.json({ status: "ok" });
   } catch (err) {
     console.error("admin role update error:", err);
@@ -448,6 +472,7 @@ router.patch("/users/:userId/reset-password", async (req, res) => {
     if ((result.rowCount || 0) === 0) {
       return res.status(404).json({ error: "User not found" });
     }
+    await endSessionsOf(tableRef, selected, userId);
     return res.json({ status: "ok" });
   } catch (err) {
     console.error("admin password reset error:", err);
@@ -503,7 +528,8 @@ const handleGenerateTempPassword = async (req, res) => {
     if (!userId) return res.status(400).json({ error: "userId is required" });
     const { tableRef, selected } = await getUsersContext();
     if (!selected.password) return res.status(400).json({ error: "password column not found in users table" });
-    const whereClause = buildLookupClause(selected, "$1");
+    // $1 is the new password hash, $2 the user
+    const whereClause = buildLookupClause(selected, "$2");
     if (!whereClause) return res.status(400).json({ error: "No id column found in users table" });
     const tempPassword = generateTemporaryPassword(12);
     const hashed = await bcrypt.hash(tempPassword, 10);
@@ -530,6 +556,7 @@ const handleGenerateTempPassword = async (req, res) => {
     if ((updateRes.rowCount || 0) === 0) {
       return res.status(404).json({ error: "User not found" });
     }
+    await endSessionsOf(tableRef, selected, userId);
     return res.json({ status: "ok", temporary_password: tempPassword });
   } catch (err) {
     console.error("admin generate-temp-password error:", err);
@@ -605,6 +632,7 @@ router.delete("/users/:userId", async (req, res) => {
     if ((result.rowCount || 0) === 0) {
       return res.status(404).json({ error: "User not found" });
     }
+    await endSessions([targetRow]);
     return res.json({ status: "ok" });
   } catch (err) {
     console.error("admin delete user error:", err);

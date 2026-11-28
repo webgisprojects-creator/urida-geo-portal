@@ -202,3 +202,87 @@ test('session sweep closes only sessions that are really over', async () => {
   assert.deepEqual(Object.fromEntries(rows.map((r) => [r.token_hash, r.status])),
     { abandoned: 'inactivated', fresh: 'active', quiet20: 'active', too_old: 'session_expired' });
 });
+
+// ---- login safety ----
+const addUser = async (name, extra = {}) => {
+  const user = { role: 'user', city: 'ghaziabad', is_active: true, deleted_at: null, must_change_password: false, ...extra };
+  await pool.query(
+    `INSERT INTO public.users (username, password, role, city, user_id, is_active, deleted_at, must_change_password)
+     VALUES ($1, $2, $3, $4, $1, $5, $6, $7)`,
+    [name, await bcrypt.hash(PASSWORD, 4), user.role, user.city, user.is_active, user.deleted_at, user.must_change_password]
+  );
+};
+const probe = async (as) => (await call('/api/road-networks/ghaziabad/dss/streetLight/rows?limit=1', { as })).status;
+const send = (path, as, method, body) =>
+  call(path, { as, method, headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
+
+test('disabled and deleted accounts cannot log in; an empty is_active still can', async () => {
+  await addUser('off', { is_active: false });
+  await addUser('gone', { deleted_at: new Date() });
+  await addUser('legacy', { is_active: null });
+  for (const name of ['off', 'gone']) {
+    const response = await login(name);
+    assert.equal(response.status, 401, name);
+    assert.equal(response.json.message, 'Invalid login credentials.');
+  }
+  assert.equal((await login('legacy')).status, 200);
+});
+
+test('admin actions end the sessions of the account at once', async () => {
+  const actions = {
+    deactivate: (id) => send(`/api/admin/users/${id}/status`, 'boss', 'PATCH', { is_active: false }),
+    role: (id) => send(`/api/admin/users/${id}/role`, 'boss', 'PATCH', { role: 'planner' }),
+    reset: (id) => send(`/api/admin/users/${id}/reset-password`, 'boss', 'PATCH', { new_password: 'Another-9-password!' }),
+    temp: (id) => send(`/api/admin/users/${id}/temp-password`, 'boss', 'POST'),
+    remove: (id) => send(`/api/admin/users/${id}`, 'boss', 'DELETE'),
+  };
+  assert.equal((await login('boss')).status, 200);
+  for (const [name, action] of Object.entries(actions)) {
+    const user = `act_${name}`;
+    await addUser(user);
+    assert.equal((await login(user)).status, 200, name);
+    assert.equal(await probe(user), 200, name);
+    const response = await action(user);
+    assert.equal(response.status, 200, `${name} ${response.body}`);
+    assert.equal(await probe(user), 401, name);
+    assert.equal(await probe('boss'), 200, 'the admin stays signed in');
+  }
+});
+
+test('a temporary password allows only choosing a new one', async () => {
+  await addUser('fresh', { must_change_password: true });
+  assert.equal((await login('fresh')).status, 200);
+  const old = cookies.fresh;
+  assert.equal(await probe('fresh'), 403);
+  assert.equal((await call('/api/auth/profile', { as: 'fresh' })).status, 200);
+  const change = (value) => send('/api/auth/change-password', 'fresh', 'POST', { newPassword: value, confirmPassword: value });
+  assert.equal((await change(PASSWORD)).status, 400, 'the temporary password cannot be kept');
+  const { rows: before } = await pool.query("SELECT issued_at FROM active_tokens WHERE user_id = 'fresh' AND status = 'active'");
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const done = await change('Chosen-9-password!');
+  assert.equal(done.status, 200, String(done.body));
+  cookies.fresh = done.headers.getSetCookie().find((c) => c.startsWith('auth_token=')).split(';')[0];
+  assert.equal(await probe('fresh'), 200);
+  cookies.stale = old;
+  assert.equal(await probe('stale'), 401);
+  const { rows: after } = await pool.query("SELECT issued_at FROM active_tokens WHERE user_id = 'fresh' AND status = 'active'");
+  assert.equal(after.length, 1);
+  assert.equal(after[0].issued_at.getTime(), before[0].issued_at.getTime(), 'the session is not extended');
+  assert.equal((await change('Second-9-password!')).status, 403, 'no further change without an admin reset');
+});
+
+test('the login limit cannot be avoided by writing a forwarding header', async () => {
+  await addUser('target');
+  const statuses = [];
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    const { cookie, answer } = await newCaptcha();
+    // the load balancer appends the real address after whatever the caller sent
+    const response = await call('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie, 'x-forwarded-for': `10.0.0.${attempt}, 203.0.113.7` },
+      body: JSON.stringify({ username: 'target', password: 'Wrong-9-password!', captcha: answer }),
+    });
+    statuses.push(response.status);
+  }
+  assert.equal(statuses.at(-1), 429, statuses.join(','));
+});
