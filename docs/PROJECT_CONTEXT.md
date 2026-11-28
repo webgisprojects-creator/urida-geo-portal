@@ -1,6 +1,6 @@
 # URIDA Codebase Context & Technical Documentation
 
-This document provides a **complete, self-explanatory overview** of the URIDA (Urban Road Infrastructure Development Agency) codebase. Any AIâ€”Claude, GPT, or Geminiâ€”should read this file first to understand the architecture, database schema, APIs, UI layout, and deployment setup before modifying the codebase.
+This document provides a **complete, self-explanatory overview** of the URIDA (Urban Road Infrastructure Development Agency) codebase. Anyone working on it should read this file first to understand the architecture, database schema, APIs, UI layout, and deployment setup before modifying the codebase.
 
 ---
 

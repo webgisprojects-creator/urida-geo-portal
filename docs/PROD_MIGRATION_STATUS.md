@@ -1,6 +1,6 @@
 # URIDA Production Migration — Status Handoff
 
-Read this first if you are a new Claude Code session picking up this migration on a
+Read this first if you are picking up this migration in a new session on a
 different machine (GeoServer host, DB host, or one of the new production servers).
 This box (`/srv/urida/current`, a live staging/pre-production server) is NOT the
 production target — it's where the App-server package below was built.
