@@ -4,6 +4,7 @@ import express from "express";
 import NodeCache from "node-cache";
 import { getRoadTable, getWardTable, citySchemaMap, getAmenityTable, getCityUtmEpsg, getDrainTable } from "./config/cityConfig.js";
 import { verifyToken } from "./middleware/authMiddleware.js";
+import { requireOwnCity } from './middleware/cityScope.js';
 // DSS TABLE reads from the DB — only the GeoJSON/summary handlers are
 // wired to routes. Refresh/counts/health handlers stay unreachable (their
 // routes below are still commented out).
@@ -18,6 +19,8 @@ const router = express.Router();
 const queryCache = new NodeCache({ stdTTL: 300, checkperiod: 60 }); // Cache for 5 minutes
 
 router.use(verifyToken);
+// A user with a city can read only that city.
+router.param('cityCode', requireOwnCity);
 
 /*
  |-------------------------------------------------------------|

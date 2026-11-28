@@ -6,7 +6,9 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { pool } from '../config/db.js';
 import { blacklistToken, storeActiveToken, enforceSessionLimit, updateActiveTokenStatus, ensureActiveTokensTable, parseCookies, getClientIp } from '../middleware/authMiddleware.js';
-import { saveCaptcha, takeCaptcha } from '../utils/captchaStore.js';
+import { saveCaptcha, takeCaptcha, readCaptchaAnswer } from '../utils/captchaStore.js';
+import { renderCaptchaPng, CAPTCHA_CHARS } from '../utils/captchaImage.js';
+import { buildCaptchaWav } from '../utils/captchaAudio.js';
 
 // One account, up to this many devices logged in at once (e.g. phone +
 // browser) — logging in on one more evicts only the single oldest
@@ -86,53 +88,7 @@ const hashCaptchaValue = (value) =>
 const generateCaptchaText = (length = 5) => {
   // The answer is case-sensitive, so lowercase letters that differ from their
   // capital only in size (c, k, p, s, u, v, w, x, z) are left out, as are i, l, o.
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabdefghjmnqrty23456789';
-  return Array.from({ length }, () => chars[crypto.randomInt(chars.length)]).join('');
-};
-
-const buildCaptchaDataUrl = (value) => {
-  const chars = value.split('');
-  const width = 240;
-  const height = 74;
-  const curvedNoise = [
-    `<path d="M8,6 C28,18 18,48 50,58 S114,72 142,54" fill="none" stroke="rgba(72,114,221,0.58)" stroke-width="3.4" stroke-linecap="round"/>`,
-    `<path d="M86,18 C120,10 156,18 168,42 S188,72 214,68" fill="none" stroke="rgba(72,114,221,0.52)" stroke-width="3.1" stroke-linecap="round"/>`,
-    `<path d="M32,28 C76,46 116,30 150,42" fill="none" stroke="rgba(72,114,221,0.36)" stroke-width="2.1" stroke-linecap="round"/>`,
-  ].join('');
-  const textNodes = chars.map((char, idx) => {
-    const x = 26 + idx * 39;
-    const y = 40 + (idx % 2 === 0 ? 4 : -2);
-    const rotate = [-12, -4, 8, -7, 11][idx] || 0;
-    return `
-      <g transform="rotate(${rotate} ${x} ${y})">
-        <text x="${x}" y="${y}" font-family="Georgia, 'Times New Roman', serif" font-size="44" font-weight="700" fill="rgba(95,132,226,0.22)" stroke="rgba(95,132,226,0.18)" stroke-width="2.6">${char}</text>
-        <text x="${x}" y="${y}" font-family="Georgia, 'Times New Roman', serif" font-size="41" font-weight="700" fill="#5b7fdc">${char}</text>
-      </g>
-    `;
-  }).join('');
-  const dots = Array.from({ length: 90 }, (_, idx) => {
-    const cx = 8 + (idx * 17) % (width - 16);
-    const cy = 8 + (idx * 23) % (height - 16);
-    const r = idx % 5 === 0 ? 2 : 1.2;
-    const opacity = idx % 7 === 0 ? 0.36 : 0.22;
-    return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="rgba(81,123,223,${opacity})"/>`;
-  }).join('');
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="CAPTCHA">
-      <defs>
-        <filter id="captchaBlur" x="-10%" y="-10%" width="120%" height="120%">
-          <feGaussianBlur stdDeviation="0.35"/>
-        </filter>
-      </defs>
-      <rect width="${width}" height="${height}" rx="2" fill="#f7f8fc" stroke="#d7deef"/>
-      ${dots}
-      <g filter="url(#captchaBlur)">
-        ${textNodes}
-      </g>
-      ${curvedNoise}
-    </svg>
-  `.trim();
-  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  return Array.from({ length }, () => CAPTCHA_CHARS[crypto.randomInt(CAPTCHA_CHARS.length)]).join('');
 };
 
 const consumeCaptcha = async (req, res, captchaValue) => {
@@ -311,11 +267,27 @@ const logEvent = (type, username, extra = {}) => {
   } catch {}
 };
 
+// Used by the server tests, which run in the same process. No route calls this.
+export const peekCaptchaForTest = (captchaId) => readCaptchaAnswer(captchaId);
+
+// Spoken form of the CAPTCHA the caller's cookie points to.
+export const getCaptchaAudio = async (req, res) => {
+  try {
+    const answer = await readCaptchaAnswer(parseCookies(req.headers.cookie)[captchaCookieName]);
+    if (!answer) return res.status(404).json({ success: false, message: 'CAPTCHA expired. Please try again.' });
+    res.set('Cache-Control', 'no-store');
+    return res.type('audio/wav').send(buildCaptchaWav(answer));
+  } catch (err) {
+    console.error('Could not build CAPTCHA audio:', err.message);
+    return res.status(500).json({ success: false, message: 'CAPTCHA audio unavailable. Please try again.' });
+  }
+};
+
 export const getCaptcha = async (req, res) => {
   const captchaValue = generateCaptchaText();
   const captchaId = crypto.randomUUID();
   try {
-    await saveCaptcha(captchaId, hashCaptchaValue(captchaValue), captchaTtlMs);
+    await saveCaptcha(captchaId, hashCaptchaValue(captchaValue), captchaValue, captchaTtlMs);
   } catch (err) {
     console.error('Could not save CAPTCHA:', err.message);
     return res.status(500).json({ success: false, message: 'CAPTCHA unavailable. Please try again.' });
@@ -324,16 +296,7 @@ export const getCaptcha = async (req, res) => {
   return res.json({
     success: true,
     captcha: {
-      image: buildCaptchaDataUrl(captchaValue),
-      // Plaintext only for the frontend's audio ("speak the captcha")
-      // accessibility control — never sent back in any error message, and
-      // the actual answer check in consumeCaptcha() still validates
-      // server-side against answerHash, so this doesn't change what login
-      // requires. It does mean anyone reading this response can read the
-      // captcha directly instead of solving the image — an inherent
-      // trade-off of any client-side-spoken audio captcha, not something
-      // fixable without server-side text-to-speech.
-      audioText: captchaValue,
+      image: `data:image/png;base64,${renderCaptchaPng(captchaValue).toString('base64')}`,
       expiresInSeconds: Math.floor(captchaTtlMs / 1000),
     },
   });
