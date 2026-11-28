@@ -480,7 +480,6 @@ export async function runActiveTokensExpiryCheck() {
     await ensureActiveTokensTable();
     const now = new Date();
     const absoluteTimeoutCutoff = new Date(now.getTime() - absoluteTimeoutMs);
-    const fieldTaskUserSet = fieldTaskUsernames();
 
     // Mark sessions as expired if their absolute timeout has passed
     const absoluteResult = await pool.query(
@@ -494,36 +493,21 @@ export async function runActiveTokensExpiryCheck() {
       console.log(`[active_tokens] expiry check marked ${absoluteResult.rowCount} session(s) as session_expired (absolute timeout)`);
     }
 
-    // For idle timeout, we need to check per-user since field task accounts
-    // have a longer timeout. Fetch all active sessions and check individually.
-    const { rows } = await pool.query(
-      `SELECT token_hash, user_id, last_activity_time
-       FROM active_tokens
-       WHERE status = 'active'`
+    // Idle timeout. This sweep only tidies up sessions nobody is using; the
+    // exact per-user limit is enforced by verifyToken on each request. It uses
+    // the longer of the two limits, so it can never end a field-task session
+    // early, whatever active_tokens.user_id holds. One statement, so a request
+    // that refreshes last_activity_time in between is never overwritten.
+    const idleCutoff = new Date(now.getTime() - Math.max(idleTimeoutMs, fieldTaskIdleTimeoutMs));
+    const idleResult = await pool.query(
+      `UPDATE active_tokens
+       SET status = 'inactivated'
+       WHERE status = 'active'
+         AND last_activity_time < $1`,
+      [idleCutoff]
     );
-
-    const expiredForIdle = [];
-    for (const row of rows) {
-      const lastActivity = row.last_activity_time ? new Date(row.last_activity_time) : null;
-      if (!lastActivity) continue;
-
-      const userId = String(row.user_id || "").toLowerCase().trim();
-      const userTimeoutMs = fieldTaskUserSet.has(userId) ? fieldTaskIdleTimeoutMs : idleTimeoutMs;
-      const idleCutoff = new Date(now.getTime() - userTimeoutMs);
-
-      if (lastActivity < idleCutoff) {
-        expiredForIdle.push(row.token_hash);
-      }
-    }
-
-    if (expiredForIdle.length > 0) {
-      await pool.query(
-        `UPDATE active_tokens
-         SET status = 'inactivated'
-         WHERE token_hash = ANY($1)`,
-        [expiredForIdle]
-      );
-      console.log(`[active_tokens] expiry check marked ${expiredForIdle.length} session(s) as inactivated (idle timeout)`);
+    if ((idleResult.rowCount || 0) > 0) {
+      console.log(`[active_tokens] expiry check marked ${idleResult.rowCount} session(s) as inactivated (idle timeout)`);
     }
   } catch (err) {
     console.error('active_tokens expiry check failed:', err?.message || err);

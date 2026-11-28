@@ -63,7 +63,11 @@ export default function LoginPage() {
     // often run together or mispronounce as a single token — the previous
     // version never spoke the captcha at all, just a fixed instruction
     // string, regardless of what was actually on screen.
-    const spoken = captchaAudioText.split("").join(", ");
+    // The answer is case-sensitive, so say which letters are capitals.
+    const spoken = captchaAudioText
+      .split("")
+      .map((ch) => (/[A-Z]/.test(ch) ? `capital ${ch}` : /[a-z]/.test(ch) ? `small ${ch.toUpperCase()}` : ch))
+      .join(", ");
     const utterance = new SpeechSynthesisUtterance(spoken);
     utterance.rate = 0.8;
     utterance.pitch = 1;
@@ -485,6 +489,9 @@ export default function LoginPage() {
                   onChange={(e) => setCaptcha(e.target.value)}
                   className="form__input"
                   autoComplete="off"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                 />
               </div>
               <button type="submit" className="form__button" disabled={loading}>

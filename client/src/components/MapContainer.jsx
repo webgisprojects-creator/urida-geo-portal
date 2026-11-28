@@ -7194,6 +7194,9 @@ const MapContainer = forwardRef(({
             return res.json();
           })
           .then((geojson) => {
+            // The layer may have been switched off, or the city changed, while
+            // these rows were loading; late results must not fill the table.
+            if (analysisLayersRef.current[id] !== wmsLayer) return;
             const features = new GeoJSON().readFeatures(geojson, {
               dataProjection: "EPSG:4326",
               featureProjection: "EPSG:3857",
@@ -7220,6 +7223,7 @@ const MapContainer = forwardRef(({
             }
           })
           .catch((err) => {
+            if (analysisLayersRef.current[id] !== wmsLayer) return;
             showFeatureNotice({
               feature: "Road analysis",
               dedupeKey: `${city}|road-analysis|${id}`,

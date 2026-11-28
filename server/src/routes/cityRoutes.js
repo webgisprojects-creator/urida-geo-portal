@@ -712,20 +712,24 @@ router.get('/:city/ward-summary', getWardSummary);
 // New endpoint for amenity counts with zone/ward filtering
 router.get('/:city/amenities', async (req, res) => {
   try {
-    const city = req.params.city;
-    const schema = citySchemaMap[city];
+    const city = String(req.params.city).toLowerCase();
+    const schema = Object.prototype.hasOwnProperty.call(citySchemaMap, city) ? citySchemaMap[city] : null;
     if (!schema) {
       return res.status(404).json({ error: 'City not found' });
     }
 
-    const zoneFilter = req.query.zone || null;
-    const wardFilter = req.query.ward || null;
+    const { zone, ward } = req.query;
+    if ([zone, ward].some((v) => v !== undefined && typeof v !== 'string')) {
+      return res.status(400).json({ error: 'Invalid zone or ward' });
+    }
+    const zoneFilter = zone || null;
+    const wardFilter = ward || null;
 
     const amenities = await fetchAmenityCounts(schema, zoneFilter, wardFilter);
     res.json(amenities);
   } catch (err) {
     console.error('Amenity counts error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Amenity counts could not be loaded' });
   }
 });
 

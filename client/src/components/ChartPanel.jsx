@@ -473,7 +473,7 @@ const wardDropdownRef = useRef(null);//new
             return;
         }
 
-        fetch(`${baseApi}/${cityKey}/wards?zone=${selectedZoneState}`)
+        fetch(`${baseApi}/${cityKey}/wards?zone=${encodeURIComponent(selectedZoneState)}`)
             .then(r => r.json())
             .then((data) => {
                 wardsCacheRef.current.set(cacheKey, data);
@@ -1021,7 +1021,7 @@ const wardDropdownRef = useRef(null);//new
                             setShowWardDropdown(false);
                         }}
                     >
-                        <span>{selectedZoneState ? `Z${zones.find(z => String(z.zone_no) === String(selectedZoneState))?.zone_no}-${zones.find(z => String(z.zone_no) === String(selectedZoneState))?.name || ""}` : "All Zones"}</span>
+                        <span>{selectedZoneState ? `Z${selectedZoneState}-${zones.find(x => String(x.zone_no) === String(selectedZoneState))?.name || ""}` : "All Zones"}</span>
                         <i className={`fas fa-chevron-${showZoneDropdown ? 'up' : 'down'}`}></i>
                     </div>
                     {showZoneDropdown && (
@@ -1058,7 +1058,7 @@ const wardDropdownRef = useRef(null);//new
                             setShowZoneDropdown(false);
                         }}
                     >
-                        <span>{selectedWardState ? `W${wards.find(w => String(w.ward_no) === String(selectedWardState))?.ward_no}-${wards.find(w => String(w.ward_no) === String(selectedWardState))?.name || ""}` : "All Wards"}</span>
+                        <span>{selectedWardState ? `W${selectedWardState}-${wards.find(x => String(x.ward_no) === String(selectedWardState))?.name || ""}` : "All Wards"}</span>
                         <i className={`fas fa-chevron-${showWardDropdown ? 'up' : 'down'}`}></i>
                     </div>
                     {showWardDropdown && (

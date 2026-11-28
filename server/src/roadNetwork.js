@@ -1633,7 +1633,7 @@ router.get("/:cityCode/dss/:moduleKey/rows", async (req, res) => {
     const quote = name => `"${String(name).replace(/"/g, '""')}"`;
     const table = `${quote(schema)}.${quote(view)}`;
 
-    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const page = Math.min(1000000, Math.max(1, parseInt(req.query.page, 10) || 1));
     // limit=0 means unlimited (exports), same convention as /details.
     const rawLimit = parseInt(req.query.limit, 10);
     const unlimited = rawLimit === 0;

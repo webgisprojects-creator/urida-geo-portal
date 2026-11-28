@@ -4049,6 +4049,9 @@ const dssIndexOfLast =
                 setColumnFilters({ });
                 setRoadFilter("");
                 setZoomFilter("");
+                // the map's amenity layers follow this selection
+                setSelectedZone("");
+                setSelectedWard("");
                 // Clear Summary map layers
                 setLayerVisibility(prev => ({
                     ...prev,
