@@ -2,9 +2,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import sharp from 'sharp';
 import { canReadCity, requireOwnCity } from '../src/middleware/cityScope.js';
 import { renderCaptchaPng, CAPTCHA_CHARS } from '../src/utils/captchaImage.js';
 import { buildCaptchaWav } from '../src/utils/captchaAudio.js';
+import { tryStoreEmptyTile } from '../src/cache/emptyTile.js';
 
 test('a user with a city reads only that city', () => {
   const user = { role: 'junior_engineer', city: 'Agra ' };
@@ -60,4 +65,26 @@ test('every captcha character can be spoken', () => {
 test('unsupported characters are refused', () => {
   assert.throws(() => renderCaptchaPng('<'));
   assert.throws(() => buildCaptchaWav('../..'));
+});
+
+test('empty tiles keep being shared after the file system link limit is reached', async (t) => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'empty-tile-'));
+  t.after(() => fs.promises.rm(root, { recursive: true, force: true }));
+  const buffer = await sharp({ create: { width: 8, height: 8, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
+  const store = (name) => tryStoreEmptyTile({ buffer, filePath: path.join(root, name), familyRoot: root });
+  assert.equal(await store('first.png'), true);
+  const shared = path.join(root, '_shared_empty_tile.png');
+  const before = (await fs.promises.stat(shared)).ino;
+  // the next link call fails the way ext4 does at its limit
+  const link = fs.promises.link;
+  let refused = false;
+  t.mock.method(fs.promises, 'link', async (from, to) => {
+    if (!refused) { refused = true; throw Object.assign(new Error('too many links'), { code: 'EMLINK' }); }
+    return link(from, to);
+  });
+  assert.equal(await store('second.png'), true);
+  const after = await fs.promises.stat(shared);
+  assert.notEqual(after.ino, before);
+  assert.equal((await fs.promises.stat(path.join(root, 'second.png'))).ino, after.ino);
+  assert.deepEqual(await fs.promises.readFile(path.join(root, 'first.png')), buffer);
 });

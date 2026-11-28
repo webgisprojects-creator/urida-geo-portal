@@ -87,6 +87,21 @@ export async function tryStoreEmptyTile({ buffer, filePath, familyRoot }) {
       await atomicWriteFile(filePath, buffer);
       return false;
     }
+    if (err.code === "EMLINK") {
+      // A file can have only so many hard links (65000 on ext4). Put a fresh
+      // copy in place of the full one and link to that; the tiles already
+      // linked keep pointing at the old copy.
+      try {
+        await atomicWriteFile(sharedPath, buffer);
+        await fs.promises.link(sharedPath, filePath);
+        return true;
+      } catch (retryErr) {
+        if (retryErr.code === "EEXIST") return true;
+        console.error("[emptyTile] could not start a new shared tile:", retryErr.message);
+        await atomicWriteFile(filePath, buffer);
+        return false;
+      }
+    }
     console.error("[emptyTile] hardlink failed, falling back to normal write:", err.message);
     await atomicWriteFile(filePath, buffer);
     return false;
